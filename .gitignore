@@ -78,3 +78,6 @@ output.txt
 
 # NSMBW: pinned third-party dependency sources (Launcher/Prepare-Dependencies.ps1)
 /Dependencies/
+
+# Per-disc local translator configuration (contains no game code, but is machine-specific)
+/projects/nsmbw/recomp.local.yml
