@@ -27,12 +27,13 @@ final class SettingsMenu {
     }
 
     private void showMain() {
-        final String[] items = {"Display", "Controls"};
+        final String[] items = {"Display", "Controls", "Performance"};
         new AlertDialog.Builder(activity)
                 .setTitle("Settings")
                 .setItems(items, (dialog, which) -> {
                     if (which == 0) showDisplayMenu();
-                    else showControlsMenu();
+                    else if (which == 1) showControlsMenu();
+                    else showPerformanceMenu();
                 })
                 .setNegativeButton("Done", null)
                 .show();
@@ -69,9 +70,37 @@ final class SettingsMenu {
                 .show();
     }
 
+    private void showPerformanceMenu() {
+        final boolean fast = settings.gpuCompat() == AppSettings.GPU_COMPAT_OFF;
+        final String[] items = {
+            "GPU vertex fetch: " + (fast ? "FAST (experimental)" : "SAFE / AUTO"),
+            "Performance diagnostics: " + (settings.performanceTrace() ? "ON" : "OFF"),
+            "Share latest native performance report",
+        };
+        new AlertDialog.Builder(activity)
+                .setTitle("Native GPU Performance")
+                .setMessage("The renderer's safe vertex reads may cost extra shader work on Mali. "
+                        + "Fast mode is an experiment: if textures or geometry break, choose Safe / Auto. "
+                        + "Diagnostics records game, GX, end_frame and GPU wait timings. Restart Play after changing settings.")
+                .setItems(items, (dialog, which) -> {
+                    if (which == 0) {
+                        settings.setGpuCompat(fast ? AppSettings.GPU_COMPAT_AUTO : AppSettings.GPU_COMPAT_OFF);
+                        save();
+                        showPerformanceMenu();
+                    } else if (which == 1) {
+                        settings.setPerformanceTrace(!settings.performanceTrace());
+                        showPerformanceMenu();
+                    } else {
+                        PerformanceReport.share(activity, settings);
+                    }
+                })
+                .setNegativeButton("Back", (dialog, which) -> showMain())
+                .show();
+    }
+
     private static String gpuCompatLabel(int mode) {
-        if (mode == AppSettings.GPU_COMPAT_ON) return "On";
-        if (mode == AppSettings.GPU_COMPAT_OFF) return "Off";
+        if (mode == AppSettings.GPU_COMPAT_ON) return "Safe (slower vertex fetch)";
+        if (mode == AppSettings.GPU_COMPAT_OFF) return "Fast (experimental)";
         return "Auto";
     }
 
@@ -81,9 +110,9 @@ final class SettingsMenu {
      */
     private void showGpuCompatChoice() {
         final String[] labels = {
-            "Auto (recommended): on for the GPUs that need it",
-            "On: always use the GPU fixes",
-            "Off: never use them",
+            "Auto (safe on all Android GPUs by default)",
+            "Safe: scalar vertex fetch (avoids driver rendering bugs)",
+            "Fast: vector vertex fetch (may improve Mali, check graphics)",
         };
         new AlertDialog.Builder(activity)
                 .setTitle("Graphics Compatibility")
