@@ -79,9 +79,6 @@ final class SettingsMenu {
         };
         new AlertDialog.Builder(activity)
                 .setTitle("Native GPU Performance")
-                .setMessage("The renderer's safe vertex reads may cost extra shader work on Mali. "
-                        + "Fast mode is an experiment: if textures or geometry break, choose Safe / Auto. "
-                        + "Diagnostics records game, GX, end_frame and GPU wait timings. Restart Play after changing settings.")
                 .setItems(items, (dialog, which) -> {
                     if (which == 0) {
                         settings.setGpuCompat(fast ? AppSettings.GPU_COMPAT_AUTO : AppSettings.GPU_COMPAT_OFF);
