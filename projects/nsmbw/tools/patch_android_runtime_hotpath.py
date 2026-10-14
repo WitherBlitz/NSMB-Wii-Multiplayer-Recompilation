@@ -3,9 +3,11 @@
 
 Aurora increments a 64-bit atomic counter in its two hot draw entry points
 even when NSMBW_LOG_FPS is disabled. The counter is only read for diagnostics.
-Cap mobile pipeline compiler workers at three (from six on 8-core Android)
-to reduce shader prewarm contention with the game thread. The persistent
-Vulkan pipeline cache is not cleared and no shaders/effects are disabled.
+Cap mobile pipeline compiler workers at three (from six on 8-core Android).
+Skip boot-time eager pipeline prewarming as a separate memory-pressure A/B test:
+on-demand pipeline compilation and persistent cache writes still operate, and
+Vulkan's cache is not cleared. The first visit may stutter more than a warm run.
+This is not a verified FPS fix and does not disable shaders or effects.
 The official v0.1.1 Android game binary remains otherwise byte-identical.
 
 This is NOT a full recompilation. No gameplay speedup is asserted until a
@@ -17,7 +19,7 @@ import struct
 from pathlib import Path
 
 EXPECTED_SHA256 = "7342582a3db13a01844cb1975fcc2ac5bc5e84c8a638c8f7095cd03635c0f3c8"
-PATCHED_SHA256 = "fcbf70754401836b31402f2bfea7b8f8fde2ede861f0f72ecacd454c598041a2"
+PATCHED_SHA256 = "31c362eac548b3bc302b5ef9e7d182fbf09ada0b031254a08e90c9581bdf6f3e"
 VADDR_TO_FILE_OFFSET = 0x4000
 ARM64_NOP = bytes.fromhex("1f2003d5")
 
@@ -30,6 +32,12 @@ PATCHES = (
     (0x068DCDAC, bytes.fromhex("99593494"), ARM64_NOP, "Aurora GX raw draw counter"),
     (0x068BE22C, bytes.fromhex("33159f9a"), bytes.fromhex("730080d2"),
      "Aurora pipeline workers 6 to 3 on Galaxy A15"),
+    # initialize_pipeline_cache(): replace TBZ (jump only when the cache
+    # couldn't be opened) with an unconditional B to the SAME existing target.
+    # That path goes straight to start_pipeline_cache_writer(), leaving
+    # on-demand pipeline compilation and future cache writes active.
+    (0x068BE0D0, bytes.fromhex("40a50036"), bytes.fromhex("2a050014"),
+     "Skip eager SQLite pipeline prewarm, preserve cache writer"),
 )
 
 
