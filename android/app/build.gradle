@@ -7,7 +7,9 @@ android {
     compileSdk 34
 
     defaultConfig {
-        applicationId 'com.wither.nsmbw.ylports'
+        // Separate package: public CI creates ephemeral debug signing keys.
+        // Never force users to uninstall their existing port just to A/B-test FPS.
+        applicationId 'com.wither.nsmbw.ylports.cachetest'
         // Guest RAM uses memfd_create, which bionic has from Android 11 (API 30).
         minSdk 30
         targetSdk 34
