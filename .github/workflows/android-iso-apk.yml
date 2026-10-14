@@ -1,4 +1,4 @@
-name: Android ARM64 APK (ARM64 native hotpath experiment)
+name: Android ARM64 APK (Mali cache worker A/B test)
 
 on:
   push:
@@ -60,7 +60,7 @@ jobs:
           lib=android/native/jniLibs/arm64-v8a/libmain.so
           python3 projects/nsmbw/tools/patch_android_runtime_hotpath.py "$lib" "$RUNNER_TEMP/libmain-hotpath.so"
           mv "$RUNNER_TEMP/libmain-hotpath.so" "$lib"
-          echo 'f1b1ac089dcd8b49efef0c62aad0d55295ce215587a3ac9c8408414ebde418d8  '"$lib" | sha256sum -c -
+          echo 'fcbf70754401836b31402f2bfea7b8f8fde2ede861f0f72ecacd454c598041a2  '"$lib" | sha256sum -c -
 
       - name: Install Android SDK platform
         shell: bash
@@ -102,6 +102,7 @@ jobs:
           apk=android/app/build/outputs/apk/release/app-release.apk
           test -s "$apk"
           unzip -Z1 "$apk" | grep -qx 'lib/arm64-v8a/libmain.so'
+          unzip -p "$apk" lib/arm64-v8a/libmain.so | sha256sum | grep -q '^fcbf70754401836b31402f2bfea7b8f8fde2ede861f0f72ecacd454c598041a2 '
           unzip -Z1 "$apk" | grep -qx 'lib/arm64-v8a/libdisc_import.so'
           unzip -Z1 "$apk" | grep -q '^assets/runtime/'
           unzip -Z1 "$apk" | grep -qx 'classes.dex'
@@ -109,7 +110,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NSMBW-YlPorts-NativeHotpath-Experimental-ARM64
+          name: NSMBW-YlPorts-MaliPipeline-3Workers-ARM64
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 30
