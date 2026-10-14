@@ -1,4 +1,4 @@
-name: Android ARM64 APK (Mali cache worker A/B test)
+name: Android ARM64 APK (CPU and thermal diagnostic)
 
 on:
   push:
@@ -110,7 +110,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NSMBW-YlPorts-MaliPipeline-3Workers-ARM64
+          name: NSMBW-YlPorts-CPUThermal-Diagnostics-v23-ARM64
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 30
