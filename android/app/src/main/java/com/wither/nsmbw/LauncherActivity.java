@@ -39,6 +39,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
+import java.util.zip.Deflater;
 
 /**
  * Start screen: play, or import the player's own game the way Dolphin extracts it (the folder, or
@@ -48,6 +50,12 @@ public final class LauncherActivity extends Activity {
     private static final int REQUEST_IMPORT = 1;
     private static final int REQUEST_ZIP = 2;
     private static final int REQUEST_DISC = 3;
+    private static final int REQUEST_EXPORT_REBUILD = 4;
+    private static final String[] BUILD_INPUTS = {
+            "sys/boot.bin", "sys/main.dol", "files/rels/d_profileNP.rel.LZ",
+            "files/rels/d_basesNP.rel.LZ", "files/rels/d_enemiesNP.rel.LZ",
+            "files/rels/d_en_bossNP.rel.LZ"
+    };
     /** Set by GameActivity.restartForSession: open the game again once its old process is gone. */
     static final String EXTRA_RESTART_GAME = "restartGame";
     /** Set by the game's "Start Menu": show this screen even with Skip Start Menu on. */
@@ -172,6 +180,10 @@ public final class LauncherActivity extends Activity {
         final Button importZip = button("Import Game Data Zip…");
         importZip.setOnClickListener(v -> pickZip());
         column.addView(importZip);
+
+        final Button exportBuildData = button("Export private native rebuild inputs");
+        exportBuildData.setOnClickListener(v -> exportBuildData());
+        column.addView(exportBuildData);
 
         final TextView version = text("NSMBW " + versionText(), 13);
         version.setTextColor(Color.rgb(120, 128, 136));
@@ -304,7 +316,77 @@ public final class LauncherActivity extends Activity {
             runImport(progress -> copyZip(uri, progress));
         } else if (requestCode == REQUEST_DISC) {
             runImport(progress -> copyDisc(uri, progress));
+        } else if (requestCode == REQUEST_EXPORT_REBUILD) {
+            writeBuildInputs(uri);
         }
+    }
+
+    /** Exports only executable rebuilding inputs, never levels, textures, NAND or saved games. */
+    private void exportBuildData() {
+        if (!AppFiles.gameReady(this)) {
+            new AlertDialog.Builder(this).setMessage("Import a verified game first.")
+                    .setPositiveButton("OK", null).show();
+            return;
+        }
+        final File game = AppFiles.gameDir(this);
+        for (String name : BUILD_INPUTS) {
+            if (!new File(game, name).isFile()) {
+                new AlertDialog.Builder(this)
+                        .setMessage("The installed game is missing build input: " + name)
+                        .setPositiveButton("OK", null).show();
+                return;
+            }
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Private native rebuild inputs")
+                .setMessage("Export only the original game executable and four compressed REL modules "
+                        + "(plus its small disc header). These are necessary to rebuild the actual ARM64 game engine. "
+                        + "They contain copyrighted game code: keep the ZIP private and do not commit "
+                        + "it to a public GitHub repository. No save games are included.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Save private ZIP", (dialog, which) -> {
+                    Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    i.addCategory(Intent.CATEGORY_OPENABLE);
+                    i.setType("application/zip");
+                    i.putExtra(Intent.EXTRA_TITLE, "NSMBW-private-build-inputs.zip");
+                    startActivityForResult(i, REQUEST_EXPORT_REBUILD);
+                })
+                .show();
+    }
+
+    private void writeBuildInputs(Uri uri) {
+        final File game = AppFiles.gameDir(this);
+        final AlertDialog progress = new AlertDialog.Builder(this)
+                .setTitle("Exporting build inputs")
+                .setMessage("Writing the six required files…")
+                .setCancelable(false).show();
+        new Thread(() -> {
+            String message;
+            try (OutputStream stream = getContentResolver().openOutputStream(uri, "w")) {
+                if (stream == null) throw new IOException("Cannot write to the selected document");
+                try (ZipOutputStream zip = new ZipOutputStream(stream)) {
+                    zip.setLevel(Deflater.BEST_SPEED);
+                    final byte[] buf = new byte[128 * 1024];
+                    for (String name : BUILD_INPUTS) {
+                        zip.putNextEntry(new ZipEntry(name));
+                        try (FileInputStream in = new FileInputStream(new File(game, name))) {
+                            int count;
+                            while ((count = in.read(buf)) != -1) zip.write(buf, 0, count);
+                        }
+                        zip.closeEntry();
+                    }
+                }
+                message = "Private build inputs exported. Keep the ZIP private; it contains game code.";
+            } catch (Exception e) {
+                message = "Export failed: " + e.getMessage();
+            }
+            final String result = message;
+            main.post(() -> {
+                progress.dismiss();
+                new AlertDialog.Builder(this).setMessage(result)
+                        .setPositiveButton("OK", null).show();
+            });
+        }, "game-rebuild-input-export").start();
     }
 
     // --- import --------------------------------------------------------------------------------
