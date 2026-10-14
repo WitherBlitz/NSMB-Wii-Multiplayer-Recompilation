@@ -1,4 +1,4 @@
-name: Android ARM64 APK (Mali performance + ISO WBFS RVZ)
+name: Android ARM64 APK (import + private rebuild export)
 
 on:
   push:
@@ -100,7 +100,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NSMBW-YlPorts-Mali-Performance-ISO-WBFS-RVZ-ARM64
+          name: NSMBW-YlPorts-Private-Rebuild-Export-ARM64
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 30
