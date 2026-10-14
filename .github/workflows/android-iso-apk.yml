@@ -1,4 +1,4 @@
-name: Android ARM64 APK (import + private rebuild export)
+name: Android ARM64 APK (ARM64 native hotpath experiment)
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
     paths:
       - 'android/**'
       - 'android-disc-import/**'
+      - 'projects/nsmbw/tools/patch_android_runtime_hotpath.py'
       - '.github/workflows/android-iso-apk.yml'
   workflow_dispatch:
 
@@ -52,6 +53,14 @@ jobs:
           cp -a "$RUNNER_TEMP/original/lib/." android/native/jniLibs/
           cp -a "$RUNNER_TEMP/original/assets/." android/native/assets/
           du -sh android/native/*
+      - name: Optimize pinned ARM64 renderer binary (no private game inputs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          lib=android/native/jniLibs/arm64-v8a/libmain.so
+          python3 projects/nsmbw/tools/patch_android_runtime_hotpath.py "$lib" "$RUNNER_TEMP/libmain-hotpath.so"
+          mv "$RUNNER_TEMP/libmain-hotpath.so" "$lib"
+          echo 'f1b1ac089dcd8b49efef0c62aad0d55295ce215587a3ac9c8408414ebde418d8  '"$lib" | sha256sum -c -
 
       - name: Install Android SDK platform
         shell: bash
@@ -100,7 +109,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NSMBW-YlPorts-Private-Rebuild-Export-ARM64
+          name: NSMBW-YlPorts-NativeHotpath-Experimental-ARM64
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 30
