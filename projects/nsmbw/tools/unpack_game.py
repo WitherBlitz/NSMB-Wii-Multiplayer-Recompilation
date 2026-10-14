@@ -115,7 +115,7 @@ def main() -> None:
               "compatibility with the original function map is not yet verified.")
     out.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(root / "sys" / "main.dol", out / "main.dol")
-    (out / "main.dol.sha256").write_text(digest + "\\n")
+    (out / "main.dol.sha256").write_text(digest + "\n")
     for name in RELS:
         rel = lz11((root / "files" / "rels" / f"{name}.rel.LZ").read_bytes())
         (out / f"{name}.rel").write_bytes(rel)
