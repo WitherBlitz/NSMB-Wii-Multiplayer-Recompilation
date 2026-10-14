@@ -33,10 +33,35 @@ python projects/nsmbw/tools/unpack_game.py <your extracted game folder>
 python projects/nsmbw/tools/prelink_rels.py
 ```
 
-`unpack_game.py` checks the disc (SMNE01 revision 1, clean `main.dol`), copies `sys/main.dol` and
-unpacks the four boot RELs (`files/rels/*.rel.LZ`) into `..\game`. `prelink_rels.py` links the RELs
-offline the way the game links them at boot, into the one `nsmbw_linked.rel` the translator reads
-([`recomp.yml`](recomp.yml)).
+`unpack_game.py` verifies the SMNE01 revision 1 header, an allow-listed SHA-256,
+and the DOL section layout; it copies `sys/main.dol` and unpacks the four boot RELs
+(`files/rels/*.rel.LZ`) into the sibling `game` directory. `prelink_rels.py` then
+joins the RELs into `nsmbw_linked.rel` for the translator.
+
+**A second, structurally validated DOL:** A user's private SMNE01 rev 1 extraction had
+SHA-256 `166eb6b7cca21418e316a6cfbf1bfbf0a213eb8f6396d42126a1482bb764a955`,
+which differs from the SHA pinned in `recomp.yml`. The difference alone does **not**
+establish that their disc is modified. To prepare this input, run:
+
+```sh
+python projects/nsmbw/tools/unpack_game.py /path/to/private-extracted-game
+python projects/nsmbw/tools/prelink_rels.py
+python projects/nsmbw/tools/prepare_input_profile.py
+```
+
+The helper selects `recomp.yml` for the reference hash or creates a git-ignored
+`recomp.local.yml` for the second hash. Use the selected file for **each**
+Translator.Cli `--project` invocation, not the hardcoded `recomp.yml`.
+**This only passes input hash verification:** the existing function-address
+map, native HLE hooks and generated translations still need validation against
+the second DOL before distributing a new `libmain.so`.
+
+**Privacy and native builds:** `main.dol` and the RELs contain copyrighted
+game code. Keep them and any translated output in a private workspace and
+never upload them to the public fork or public GitHub Actions artifacts.
+The public Android CI reuses the upstream precompiled `libmain.so`; changes
+under `runtime` and `aurora-main` only change gameplay performance **after**
+the full native library has been rebuilt separately.
 
 ## 3. Translate
 
