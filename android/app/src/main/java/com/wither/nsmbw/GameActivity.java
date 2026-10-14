@@ -49,6 +49,7 @@ public final class GameActivity extends SDLActivity
     static native float[] nativeTakeSettings();
 
     private WifiManager.MulticastLock multicastLock;
+    private AndroidPerformanceSampler androidSampler;
 
     private AppSettings settings;
     private boolean bootWidescreen;  // the game reads 4:3 versus widescreen once, when it starts
@@ -84,6 +85,12 @@ public final class GameActivity extends SDLActivity
         nativeReady = !SDLActivity.mBrokenLibraries;
         if (nativeReady) {
             nativeSetDeviceName(deviceName());
+            if (settings.performanceTrace()) {
+                // Collect OS metrics alongside native VI/GX timings without touching gameplay.
+                // Runs at low priority every 2 seconds in this same :game process.
+                androidSampler = new AndroidPerformanceSampler(this);
+                androidSampler.start();
+            }
         }
         // LAN rooms are found with broadcasts, which many Wi-Fi drivers drop unless an app holds this.
         final WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
@@ -231,6 +238,10 @@ public final class GameActivity extends SDLActivity
 
     @Override
     protected void onDestroy() {
+        if (androidSampler != null) {
+            androidSampler.stop();
+            androidSampler = null;
+        }
         if (multicastLock != null && multicastLock.isHeld()) {
             multicastLock.release();
         }
