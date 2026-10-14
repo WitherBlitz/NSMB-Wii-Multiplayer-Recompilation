@@ -1,6 +1,7 @@
 package com.wither.nsmbw;
 
 import android.content.Context;
+import android.os.Build;
 import android.content.SharedPreferences;
 
 /** Player settings, kept in one SharedPreferences file shared by the launcher and the game. */
@@ -19,11 +20,16 @@ final class AppSettings {
 
     private static final String FILE = "settings";
     private final SharedPreferences prefs;
+    private final boolean isA15;
 
     AppSettings(Context context) {
         // Both processes (launcher and :game) read it. Writes use commit(): the game process is
         // ended right after its menu closes, which would drop a pending apply().
         prefs = context.getSharedPreferences(FILE, Context.MODE_PRIVATE);
+        // The A15 Mali-G57 does not need Adreno-specific scalar vertex fetch by default.
+        // This is an experiment, not a promise of faster rendering. Can be reversed in Display.
+        isA15 = "samsung".equalsIgnoreCase(Build.MANUFACTURER)
+                && "SM-A155M".equalsIgnoreCase(Build.MODEL);
     }
 
     int aspectMode() { return prefs.getInt("aspect_mode", ASPECT_FILL); }
@@ -32,7 +38,10 @@ final class AppSettings {
     float resolutionScale() { return prefs.getFloat("resolution_scale", 1f); }
     void setResolutionScale(float scale) { prefs.edit().putFloat("resolution_scale", scale).commit(); }
 
-    int gpuCompat() { return prefs.getInt("gpu_compat", GPU_COMPAT_AUTO); }
+    int gpuCompat() { return prefs.getInt("gpu_compat", isA15 ? GPU_COMPAT_OFF : GPU_COMPAT_AUTO); }
+    boolean isGalaxyA15() { return isA15; }
+    boolean performanceTrace() { return prefs.getBoolean("perf_trace", false); }
+    void setPerformanceTrace(boolean enabled) { prefs.edit().putBoolean("perf_trace", enabled).commit(); }
     void setGpuCompat(int mode) { prefs.edit().putInt("gpu_compat", mode).commit(); }
 
     boolean showFps() { return prefs.getBoolean("show_fps", false); }
