@@ -35,9 +35,18 @@ function(mkw_apply_common_compile_options target)
     target_compile_options(${target} PRIVATE -O3 -ffast-math -w -pipe)
 endfunction()
 
+# Experimental native ARM64 optimization tier for translated Wii instructions.
+# The reference release uses -O2: preserve it unless explicitly benchmarking a
+# private rebuilt game. Do not relax Wii FP semantics or enable unsafe SLP.
+set(MKW_TRANSLATED_OPT_LEVEL "2" CACHE STRING "Optimization for translated PowerPC shards (2 or 3)")
+set_property(CACHE MKW_TRANSLATED_OPT_LEVEL PROPERTY STRINGS 2 3)
+if(NOT MKW_TRANSLATED_OPT_LEVEL STREQUAL "2" AND NOT MKW_TRANSLATED_OPT_LEVEL STREQUAL "3")
+    message(FATAL_ERROR "MKW_TRANSLATED_OPT_LEVEL must be 2 or 3")
+endif()
+
 function(mkw_apply_translated_compile_options target)
     target_compile_options(${target} PRIVATE
-        -O2 ${MKW_TRANSLATED_PPC_FP_OPTIONS} -fno-slp-vectorize -w -pipe)
+        -O${MKW_TRANSLATED_OPT_LEVEL} ${MKW_TRANSLATED_PPC_FP_OPTIONS} -fno-slp-vectorize -w -pipe)
 endfunction()
 
 function(mkw_configure_object_target target)
