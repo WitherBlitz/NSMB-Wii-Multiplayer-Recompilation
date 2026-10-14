@@ -150,6 +150,13 @@ static void choose_gpu_compat() {
                         contains_ignore_case(text(g_adapterInfo.device), "adreno") ||
                         contains_ignore_case(text(g_adapterInfo.description), "qualcomm") ||
                         g_adapterInfo.vendorID == 0x5143;
+  // Adreno needs scalar vertex loads on some driver revisions. Mali has different
+  // shader compilers, so do not pay this cost there unless a user forces Safe.
+  // Unknown mobile vendors retain the conservative path.
+  const bool mali = contains_ignore_case(text(g_adapterInfo.device), "mali") ||
+                    contains_ignore_case(text(g_adapterInfo.description), "mali") ||
+                    contains_ignore_case(text(g_adapterInfo.vendor), "arm") ||
+                    g_adapterInfo.vendorID == 0x13B5;
 #if defined(__ANDROID__)
   constexpr bool mobile = true;
 #else
@@ -169,8 +176,10 @@ static void choose_gpu_compat() {
     g_safeVertexFetch = false;
     reason = "off (setting)";
   } else {
-    g_safeVertexFetch = qualcomm || mobile;
-    reason = qualcomm ? "on (auto: Qualcomm Adreno)" : mobile ? "on (auto: mobile GPU)" : "off (auto)";
+    g_safeVertexFetch = qualcomm || (mobile && !mali);
+    reason = qualcomm ? "on (auto: Qualcomm Adreno)" :
+             mali ? "off (auto: ARM Mali; enable compatibility if broken)" :
+             mobile ? "on (auto: unknown mobile GPU)" : "off (auto)";
   }
   g_shaderDebug = (gfx_flag("notex") ? ShaderDebugNoTextures : 0u) |
                   (gfx_flag("uvvis") ? ShaderDebugTexCoords : 0u) |
