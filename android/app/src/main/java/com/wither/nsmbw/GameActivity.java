@@ -66,6 +66,13 @@ public final class GameActivity extends SDLActivity
         try {
             AppFiles.prepareRuntime(this);
             AppFiles.writeConfig(this, settings);
+            // The shipped native runtime already supports detailed GX / present / wait timings.
+            // Make that switch available without adb or recompiling the game executable.
+            if (settings.performanceTrace()) {
+                Os.setenv("NSMBW_LOG_FPS", "1", true);
+            } else {
+                Os.unsetenv("NSMBW_LOG_FPS");
+            }
             // Read by runtime/src/platform/host_platform.cpp before anything else starts.
             Os.setenv("WIICOMPILED_RUNTIME_DIR", AppFiles.runtimeDir(this).getAbsolutePath(), true);
             Os.setenv("WIICOMPILED_DATA_DIR", AppFiles.dataDir(this).getAbsolutePath(), true);
