@@ -4,9 +4,12 @@ import pathlib
 import struct
 import sys
 import unittest
+import tempfile
+from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from unpack_game import check_dol_layout, MAIN_DOL_SHA256, ALTERNATE_MAIN_DOL_SHA256
+import prepare_input_profile as profile
 
 
 def fixture():
@@ -46,6 +49,30 @@ class LayoutTests(unittest.TestCase):
     def test_short_file_rejected(self):
         with self.assertRaises(ValueError):
             check_dol_layout(b"SMNE01")
+
+    def test_private_alternate_profile_preserves_reference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            game = root / "game"
+            game.mkdir()
+            (game / "main.dol").write_bytes(fixture())
+            reference = root / "recomp.yml"
+            reference.write_text("inputs:\\n  dol:\\n    sha256: " + MAIN_DOL_SHA256 + "\\n")
+            local = root / "recomp.local.yml"
+            with patch.object(profile, "BASE", reference), patch.object(profile, "PROFILE", local):
+                with patch.object(profile.hashlib, "sha256") as sha:
+                    sha.return_value.hexdigest.return_value = ALTERNATE_MAIN_DOL_SHA256
+                    selected = profile.prepare(game)
+            self.assertEqual(local, selected)
+            self.assertIn(ALTERNATE_MAIN_DOL_SHA256, local.read_text())
+            self.assertIn(MAIN_DOL_SHA256, reference.read_text())
+
+    def test_private_profile_refuses_unknown_hash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            game = pathlib.Path(directory)
+            (game / "main.dol").write_bytes(fixture())
+            with self.assertRaises(ValueError):
+                profile.prepare(game)
 
 
 if __name__ == "__main__":
