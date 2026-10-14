@@ -2232,7 +2232,12 @@ bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, ui
                      uint32_t vertexBytes) {
   ZoneScoped;
   ProcessTimer timer;
-  g_statDraws.fetch_add(1, std::memory_order_relaxed);
+  // Collect diagnostic draw counts only while profiling. In normal gameplay this
+  // is executed thousands of times per frame; avoid an unconditional atomic RMW
+  // on the ARM game thread when nobody reads the counter.
+  if (StatTiming()) {
+    g_statDraws.fetch_add(1, std::memory_order_relaxed);
+  }
   if (vertices == nullptr || vtxCount == 0 || vertexBytes == 0) {
     return false;
   }
@@ -2287,7 +2292,12 @@ bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, ui
 
 static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndian) {
   ZoneScoped;
-  g_statDraws.fetch_add(1, std::memory_order_relaxed);
+  // Collect diagnostic draw counts only while profiling. In normal gameplay this
+  // is executed thousands of times per frame; avoid an unconditional atomic RMW
+  // on the ARM game thread when nobody reads the counter.
+  if (StatTiming()) {
+    g_statDraws.fetch_add(1, std::memory_order_relaxed);
+  }
   GXVtxFmt fmt = static_cast<GXVtxFmt>(cmd & CP_VAT_MASK);
   GXPrimitive prim = primitive_from_draw_cmd(cmd);
 
