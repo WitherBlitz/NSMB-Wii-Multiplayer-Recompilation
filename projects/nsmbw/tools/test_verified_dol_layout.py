@@ -57,7 +57,7 @@ class LayoutTests(unittest.TestCase):
             game.mkdir()
             (game / "main.dol").write_bytes(fixture())
             reference = root / "recomp.yml"
-            reference.write_text("inputs:\\n  dol:\\n    sha256: " + MAIN_DOL_SHA256 + "\\n")
+            reference.write_text("inputs:\n  dol:\n    sha256: " + MAIN_DOL_SHA256 + "\n")
             local = root / "recomp.local.yml"
             with patch.object(profile, "BASE", reference), patch.object(profile, "PROFILE", local):
                 with patch.object(profile.hashlib, "sha256") as sha:
