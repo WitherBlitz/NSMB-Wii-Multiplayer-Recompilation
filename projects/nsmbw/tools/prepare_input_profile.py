@@ -15,7 +15,7 @@ from pathlib import Path
 from unpack_game import MAIN_DOL_SHA256, ALTERNATE_MAIN_DOL_SHA256, check_dol_layout
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_GAME = ROOT.parents[1] / "game"
+DEFAULT_GAME = ROOT.parents[2] / "game"
 PROFILE = ROOT / "recomp.local.yml"
 BASE = ROOT / "recomp.yml"
 
