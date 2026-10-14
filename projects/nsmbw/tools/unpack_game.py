@@ -14,7 +14,32 @@ import sys
 from pathlib import Path
 
 RELS = ("d_profileNP", "d_basesNP", "d_enemiesNP", "d_en_bossNP")
+# The release author's DOL and a second SMNE01 rev 1 disc extraction have distinct
+# SHA-256 hashes. Both still require identical section layout and boot revision.
+# The alternative below was verified from a privately supplied image in October 2026;
+# this does NOT establish that both game variants are byte-for-byte equivalent.
 MAIN_DOL_SHA256 = "6d755ec24c395fee600a856a85785e0e99c0b7ecb680d573a6cdd1aa6f7beee7"
+ALTERNATE_MAIN_DOL_SHA256 = "166eb6b7cca21418e316a6cfbf1bfbf0a213eb8f6396d42126a1482bb764a955"
+
+
+def check_dol_layout(data: bytes) -> None:
+    """Reject inputs that match the disc header but not the expected execution map."""
+    if len(data) < 0x100:
+        raise ValueError("main.dol is truncated")
+    text_offsets = struct.unpack_from(">7I", data, 0)
+    data_offsets = struct.unpack_from(">11I", data, 0x1c)
+    text_addrs = struct.unpack_from(">7I", data, 0x48)
+    data_addrs = struct.unpack_from(">11I", data, 0x64)
+    sizes = struct.unpack_from(">18I", data, 0x90)
+    entry_point = struct.unpack_from(">I", data, 0xe0)[0]
+    if entry_point != 0x80004050 or text_offsets[0] != 0x100 or text_addrs[0] != 0x80004000:
+        raise ValueError("DOL entry point or code layout does not match SMNE01 rev 1")
+    if text_addrs[1] != 0x80006780 or data_addrs[2] != 0x802ed9e0:
+        raise ValueError("DOL section addresses differ from the recompilation address map")
+    for offset, addr, size in zip(text_offsets + data_offsets, text_addrs + data_addrs, sizes):
+        if size and (offset < 0x100 or offset + size > len(data) or not 0x80000000 <= addr < 0x81800000):
+            raise ValueError("DOL has an invalid or out-of-bounds section")
+
 DEFAULT_OUT = Path(__file__).resolve().parents[3].parent / "game"
 
 
@@ -76,10 +101,21 @@ def main() -> None:
         sys.exit(f"this is {header[:6].decode('ascii', 'replace')} revision {header[7]}; "
                  "the port needs New Super Mario Bros. Wii SMNE01 revision 1")
     dol = (root / "sys" / "main.dol").read_bytes()
-    if hashlib.sha256(dol).hexdigest() != MAIN_DOL_SHA256:
-        sys.exit("sys/main.dol differs from the clean SMNE01 rev 1 executable (modified game?)")
+    digest = hashlib.sha256(dol).hexdigest()
+    if digest not in (MAIN_DOL_SHA256, ALTERNATE_MAIN_DOL_SHA256):
+        sys.exit("sys/main.dol is not among the two verified SMNE01 rev 1 layouts: "
+                 f"SHA-256={digest}. Refusing to translate an unknown executable.")
+    try:
+        check_dol_layout(dol)
+    except ValueError as error:
+        sys.exit(f"Unsupported DOL layout: {error}")
+    if digest == ALTERNATE_MAIN_DOL_SHA256:
+        print("NOTE: alternate verified SMNE01 rev 1 executable. "
+              "Translator must use a matching local project hash; "
+              "compatibility with the original function map is not yet verified.")
     out.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(root / "sys" / "main.dol", out / "main.dol")
+    (out / "main.dol.sha256").write_text(digest + "\\n")
     for name in RELS:
         rel = lz11((root / "files" / "rels" / f"{name}.rel.LZ").read_bytes())
         (out / f"{name}.rel").write_bytes(rel)
