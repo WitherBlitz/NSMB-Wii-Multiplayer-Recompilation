@@ -12,3 +12,4 @@ crate-type = ["cdylib"]
 jni = "0.21"
 # Pin to a reviewed revision for reproducible builds; accepts ISO/WBFS/RVZ.
 nod = { git = "https://github.com/encounter/nod", rev = "ebd80cac99b48a323200d84365e07a58cc27412d", default-features = false, features = ["compress-bzip2-static", "compress-lzma-static", "compress-zlib-static", "compress-zstd-static"] }
+zerocopy = "0.8"
