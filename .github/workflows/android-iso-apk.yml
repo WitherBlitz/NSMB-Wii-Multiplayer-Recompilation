@@ -1,4 +1,4 @@
-name: Android ARM64 APK (ISO WBFS RVZ importer)
+name: Android ARM64 APK (Mali performance + ISO WBFS RVZ)
 
 on:
   push:
@@ -100,7 +100,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NSMBW-YlPorts-ISO-WBFS-RVZ-Android-ARM64
+          name: NSMBW-YlPorts-Mali-Performance-ISO-WBFS-RVZ-ARM64
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 30
