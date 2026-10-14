@@ -1,0 +1,24 @@
+name: Verify Wii DOL input validation
+
+on:
+  push:
+    paths:
+      - 'projects/nsmbw/tools/unpack_game.py'
+      - 'projects/nsmbw/tools/prepare_input_profile.py'
+      - 'projects/nsmbw/tools/test_verified_dol_layout.py'
+      - '.github/workflows/dol-layout-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dol-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify source-only DOL guards
+        run: python projects/nsmbw/tools/test_verified_dol_layout.py -v
