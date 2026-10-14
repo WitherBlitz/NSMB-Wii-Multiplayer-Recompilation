@@ -1,10 +1,11 @@
-name: Android ARM64 APK (ISO importer)
+name: Android ARM64 APK (ISO WBFS RVZ importer)
 
 on:
   push:
     branches: [main]
     paths:
       - 'android/**'
+      - 'android-disc-import/**'
       - '.github/workflows/android-iso-apk.yml'
   workflow_dispatch:
 
@@ -13,7 +14,7 @@ permissions:
 
 jobs:
   android-apk:
-    name: Android ARM64 APK (official native runtime + fork UI)
+    name: Android ARM64 APK (native runtime + nod importer)
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -25,6 +26,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: android-disc-import -> target
 
       # The fork intentionally contains neither proprietary game assets nor
       # the ~130 MB compiled upstream native binary. The official release
@@ -57,6 +64,25 @@ jobs:
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" 'platforms;android-34' 'build-tools;34.0.0'
 
+      - name: Compile ARM64 ISO / WBFS / RVZ native reader
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -1)"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" 'ndk;27.2.12479018'
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+          export NDK_CLANG="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_CLANG/aarch64-linux-android30-clang"
+          export CC_aarch64_linux_android="$NDK_CLANG/aarch64-linux-android30-clang"
+          export CXX_aarch64_linux_android="$NDK_CLANG/aarch64-linux-android30-clang++"
+          export AR_aarch64_linux_android="$NDK_CLANG/llvm-ar"
+          export CARGO_BUILD_JOBS=4
+          cargo build --release --manifest-path android-disc-import/Cargo.toml --target aarch64-linux-android
+          mkdir -p android/native/jniLibs/arm64-v8a
+          cp android-disc-import/target/aarch64-linux-android/release/libdisc_import.so android/native/jniLibs/arm64-v8a/libdisc_import.so
+          test -s android/native/jniLibs/arm64-v8a/libdisc_import.so
+
       - name: Build signed Android APK
         run: gradle -p android :app:assembleRelease --stacktrace --no-daemon
 
@@ -67,13 +93,14 @@ jobs:
           apk=android/app/build/outputs/apk/release/app-release.apk
           test -s "$apk"
           unzip -Z1 "$apk" | grep -qx 'lib/arm64-v8a/libmain.so'
+          unzip -Z1 "$apk" | grep -qx 'lib/arm64-v8a/libdisc_import.so'
           unzip -Z1 "$apk" | grep -q '^assets/runtime/'
           unzip -Z1 "$apk" | grep -qx 'classes.dex'
           ls -lh "$apk"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NSMBW-YlPorts-ISO-Android-ARM64
+          name: NSMBW-YlPorts-ISO-WBFS-RVZ-Android-ARM64
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 30
