@@ -47,7 +47,7 @@ import java.util.zip.ZipInputStream;
 public final class LauncherActivity extends Activity {
     private static final int REQUEST_IMPORT = 1;
     private static final int REQUEST_ZIP = 2;
-    private static final int REQUEST_ISO = 3;
+    private static final int REQUEST_DISC = 3;
     /** Set by GameActivity.restartForSession: open the game again once its old process is gone. */
     static final String EXTRA_RESTART_GAME = "restartGame";
     /** Set by the game's "Start Menu": show this screen even with Skip Start Menu on. */
@@ -56,8 +56,8 @@ public final class LauncherActivity extends Activity {
     static final String PROJECT_URL = "https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation";
 
     private static final String DOLPHIN_STEPS =
-            "Use your own uncompressed New Super Mario Bros. Wii USA ISO (SMNE01, revision 1). "
-            + "Tap Import Wii ISO and select it directly on this phone. No computer or Dolphin "
+            "Use your own New Super Mario Bros. Wii USA image (ISO, WBFS or RVZ, SMNE01 revision 1). "
+            + "Tap Import Wii Game and select it directly on this phone. No computer or Dolphin "
             + "extraction is needed. Other formats can still be imported as extracted files or ZIP.";
 
     private AppSettings settings;
@@ -142,7 +142,7 @@ public final class LauncherActivity extends Activity {
         stepsTitle.setGravity(Gravity.START);
         stepsBox.addView(stepsTitle);
         final TextView stepsText = text(
-                "1. Tap Import Wii ISO (.iso) and select your own uncompressed USA game disc.\n"
+                "1. Tap Import Wii Game (.iso, .wbfs, .rvz) and select your own USA disc image.\n"
                 + "2. Wait for the game to be extracted directly on your phone.\n"
                 + "3. Tap Play. The ISO itself will not be modified.\n\n"
                 + "Requires USA SMNE01 revision 1. Extracted folder and ZIP imports also work.", 15);
@@ -155,14 +155,14 @@ public final class LauncherActivity extends Activity {
                 getResources().getDisplayMetrics().widthPixels - 2 * pad), LinearLayout.LayoutParams.WRAP_CONTENT));
 
         final TextView importHelp = text("Import your own New Super Mario Bros. Wii (USA, SMNE01) once. "
-                + "Select an uncompressed .iso directly on Android, or use Dolphin's extracted DATA "
+                + "Select a .iso, .wbfs or .rvz directly on Android, or use Dolphin's extracted DATA "
                 + "folder/ZIP. Only USA SMNE01 revision 1 is supported. Saves are kept.", 13);
         importHelp.setTextColor(Color.rgb(170, 178, 186));
         importHelp.setPadding(0, dp(24), 0, 0);
         column.addView(importHelp);
 
-        final Button importIso = button("Import Wii ISO (.iso) - no PC needed");
-        importIso.setOnClickListener(v -> pickIso());
+        final Button importIso = button("Import Wii Game (.iso / .wbfs / .rvz)");
+        importIso.setOnClickListener(v -> pickDisc());
         column.addView(importIso);
 
         final Button importFolder = button("Import from Extracted Game Data Folder…");
@@ -214,7 +214,7 @@ public final class LauncherActivity extends Activity {
         final boolean present = AppFiles.hasGameData(this);
         final String problem = present ? AppFiles.gameProblem(AppFiles.gameDir(this)) : null;
         if (!present) {
-            status.setText("No game data yet. Import your own .iso, extracted folder or ZIP.");
+            status.setText("No game data yet. Import your own ISO, WBFS, RVZ, extracted folder or ZIP.");
         } else if (problem != null) {
             status.setText("The imported game can't be played. " + problem);
         } else {
@@ -275,11 +275,11 @@ public final class LauncherActivity extends Activity {
         }
     }
 
-    private void pickIso() {
+    private void pickDisc() {
         final Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
-        startActivityForResult(intent, REQUEST_ISO);
+        startActivityForResult(intent, REQUEST_DISC);
     }
 
     private void pickZip() {
@@ -302,8 +302,8 @@ public final class LauncherActivity extends Activity {
             runImport(progress -> copyGame(uri, progress));
         } else if (requestCode == REQUEST_ZIP) {
             runImport(progress -> copyZip(uri, progress));
-        } else if (requestCode == REQUEST_ISO) {
-            runImport(progress -> copyIso(uri, progress));
+        } else if (requestCode == REQUEST_DISC) {
+            runImport(progress -> copyDisc(uri, progress));
         }
     }
 
@@ -356,14 +356,14 @@ public final class LauncherActivity extends Activity {
 
     private File stagingDir() { return new File(AppFiles.dataDir(this), "game.importing"); }
 
-    /** Reads the ISO through Android's seekable document descriptor, without copying a 4.7 GB ISO. */
-    private String copyIso(Uri uri, Progress progress) throws IOException {
+    /** Read an ISO, WBFS or RVZ without a full intermediate ISO or PC conversion. */
+    private String copyDisc(Uri uri, Progress progress) throws IOException {
         final File staging = stagingDir();
         AppFiles.deleteRecursively(staging);
         try (ParcelFileDescriptor descriptor = getContentResolver().openFileDescriptor(uri, "r")) {
-            if (descriptor == null) throw new IOException("Could not open the ISO document");
-            final FileInputStream input = new FileInputStream(descriptor.getFileDescriptor());
-            final int count = WiiIsoExtractor.extract(input.getChannel(), staging, progress::update);
+            if (descriptor == null) throw new IOException("Could not open the disc image");
+            final int count = NativeDiscExtractor.extractDisc(
+                    descriptor.getFd(), staging.getAbsolutePath(), progress::update);
             return install(staging, count);
         }
     }
