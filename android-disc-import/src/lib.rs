@@ -4,7 +4,7 @@
 use std::{
     fs::{self, File},
     io::{self, Write},
-    os::fd::{BorrowedFd, FromRawFd},
+    os::fd::BorrowedFd,
     path::{Component, Path, PathBuf},
 };
 
@@ -13,6 +13,7 @@ use jni::{
     objects::{JClass, JObject, JString, JValue},
     sys::{jint, jstring},
 };
+use zerocopy::IntoBytes;
 use nod::{
     common::PartitionKind,
     read::{DiscOptions, DiscReader, PartitionOptions},
@@ -94,7 +95,7 @@ fn extract_disc(
 
     let disc_root = root.join("disc");
     fs::create_dir_all(&disc_root).map_err(|e| format!("Create disc directory: {e}"))?;
-    fs::write(disc_root.join("header.bin"), &header.game_id[..])
+    fs::write(disc_root.join("header.bin"), &header.as_bytes()[..0x100])
         .map_err(|e| format!("Write header: {e}"))?;
     if let Some(region) = disc.region() {
         fs::write(disc_root.join("region.bin"), region)
