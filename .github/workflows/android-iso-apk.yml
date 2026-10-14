@@ -1,0 +1,74 @@
+name: Android ARM64 APK (ISO importer)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-iso-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-apk:
+    name: Android ARM64 APK (official native runtime + fork UI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      # The fork intentionally contains neither proprietary game assets nor
+      # the ~130 MB compiled upstream native binary. The official release
+      # carries that ARM64 game runtime and its freely distributable bootstrap
+      # assets, while this workflow recompiles the current fork's Java UI.
+      - name: Stage official v0.1.1 ARM64 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 4 --retry-delay 3 \
+            'https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases/download/v0.1.1/NSMBW-0.1.1-android-arm64.apk' \
+            -o "$RUNNER_TEMP/upstream.apk"
+          echo 'a4273dceff7d3c6e74599921954a1db3b8d59653284a4295e10c5d5754e6239e  '"$RUNNER_TEMP/upstream.apk" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/original" android/native/jniLibs android/native/assets
+          unzip -q "$RUNNER_TEMP/upstream.apk" 'lib/arm64-v8a/*' 'assets/runtime/*' -d "$RUNNER_TEMP/original"
+          test -s "$RUNNER_TEMP/original/lib/arm64-v8a/libmain.so"
+          test -d "$RUNNER_TEMP/original/assets/runtime"
+          cp -a "$RUNNER_TEMP/original/lib/." android/native/jniLibs/
+          cp -a "$RUNNER_TEMP/original/assets/." android/native/assets/
+          du -sh android/native/*
+
+      - name: Install Android SDK platform
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
+
+      - name: Build signed Android APK
+        run: gradle -p android :app:assembleRelease --stacktrace --no-daemon
+
+      - name: Confirm native payload and DEX
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          test -s "$apk"
+          unzip -Z1 "$apk" | grep -qx 'lib/arm64-v8a/libmain.so'
+          unzip -Z1 "$apk" | grep -q '^assets/runtime/'
+          unzip -Z1 "$apk" | grep -qx 'classes.dex'
+          ls -lh "$apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NSMBW-YlPorts-ISO-Android-ARM64
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
