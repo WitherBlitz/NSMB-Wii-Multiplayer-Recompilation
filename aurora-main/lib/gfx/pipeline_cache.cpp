@@ -65,7 +65,15 @@ constexpr size_t MaxQueuedPipelineBuilds = 256;
 // First-use compilation works best as a short parallel burst. Leave two logical processors for the
 // render and game threads, and cap large hosts to limit driver submissions and memory use.
 constexpr size_t ReservedLogicalProcessors = 2;
+// On Android, aggressive shader compilation can compete with the translated
+// game's CPU budget on 2-big/6-little mobile SoCs (e.g. Galaxy A15). Bound the
+// burst to three workers; cached pipelines still persist across launches.
+// Desktop retains its existing worker limit. Benchmark cold/warm caches.
+#if defined(__ANDROID__)
+constexpr size_t MaxPipelineWorkers = 3;
+#else
 constexpr size_t MaxPipelineWorkers = 22;
+#endif
 // Cached clear and GX pipelines are prewarmed using the full worker pool.
 constexpr size_t MaxBackgroundPipelineWorkers = MaxPipelineWorkers;
 // For synchronous pipeline fallback (OpenGL)
