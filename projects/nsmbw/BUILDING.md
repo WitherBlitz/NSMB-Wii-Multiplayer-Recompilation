@@ -49,6 +49,18 @@ python projects/nsmbw/tools/prelink_rels.py
 python projects/nsmbw/tools/prepare_input_profile.py
 ```
 
+Before translating, audit the private export against the project's public function map:
+
+```sh
+python projects/nsmbw/tools/audit_rebuild_input.py /path/to/NSMBW-private-build-inputs.zip
+```
+
+This verifies the disc revision, DOL SHA-256 and executable layout, four REL
+executable sections, and every address in MAP.txt. The supplied rev 1 export
+was checked against the 39,582 public function entries: each address is in
+an executable range, with no duplicate starts. This does not establish that
+instructions and HLE hooks are equivalent; test before shipping.
+
 The helper selects `recomp.yml` for the reference hash or creates a git-ignored
 `recomp.local.yml` for the second hash. Use the selected file for **each**
 Translator.Cli `--project` invocation, not the hardcoded `recomp.yml`.
