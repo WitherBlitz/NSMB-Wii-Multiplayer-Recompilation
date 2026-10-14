@@ -56,6 +56,15 @@ Translator.Cli `--project` invocation, not the hardcoded `recomp.yml`.
 map, native HLE hooks and generated translations still need validation against
 the second DOL before distributing a new `libmain.so`.
 
+**ARM64 performance A/B testing:** After a full private native rebuild becomes
+available, configure and compile the same translated source once with
+`-DMKW_TRANSLATED_OPT_LEVEL=2` (existing Release behavior) and once with
+`-DMKW_TRANSLATED_OPT_LEVEL=3` (experimental). Keep all other flags identical,
+including the PowerPC floating-point semantics and disabled SLP vectorizer.
+Benchmark the same scenes at 1x and 1.5x with profiling OFF. Revert if the
+game regresses, crashes or produces graphical/physics errors. The alternate
+input hash does not itself improve performance.
+
 **Privacy and native builds:** `main.dol` and the RELs contain copyrighted
 game code. Keep them and any translated output in a private workspace and
 never upload them to the public fork or public GitHub Actions artifacts.
