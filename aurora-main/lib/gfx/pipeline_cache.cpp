@@ -1191,7 +1191,17 @@ void initialize_pipeline_cache() {
              workerCount, MaxBackgroundPipelineWorkers);
   }
 
+#if defined(__ANDROID__)
+  // A/B experiment on memory-constrained phones: do not eagerly instantiate
+  // every pipeline recipe from the persistent SQLite cache at startup. Pipelines
+  // are still compiled on demand, reused in RAM and persisted to disk. This
+  // tests whether the large Dawn/GPU memory footprint comes from prewarming,
+  // rather than degrading shaders, copies or texture quality.
+  // Startup may stutter on first use; measure both cold and repeated levels.
+  Log.info("Android cache A/B: skipping startup pipeline prewarm, keeping on-demand cache");
+#else
   load_pipeline_cache();
+#endif
   if (!g_pipelineCacheBroken) {
     start_pipeline_cache_writer();
   }
