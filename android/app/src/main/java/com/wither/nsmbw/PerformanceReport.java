@@ -86,6 +86,31 @@ final class PerformanceReport {
         } else if (frames == 0) {
             out.append("\nEnable Performance Diagnostics to add 2-second timing breakdowns.\n");
         }
+        // Match Android OS measurements to the same run where possible.
+        // The telemetry file is replaced at each game launch, and retained after
+        // the separate :game process exits. Never attach a stale report silently.
+        final File androidLog = new File(logRoot, "android-telemetry.log");
+        if (androidLog.isFile() && Math.abs(androidLog.lastModified() - newest.lastModified()) < 15L * 60L * 1000L) {
+            out.append("\nAndroid OS / CPU / thermal telemetry (2-second samples):\n");
+            final ArrayDeque<String> androidLines = new ArrayDeque<>(120);
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                    new FileInputStream(androidLog), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line.startsWith("[android-perf]") || line.startsWith("NSMBW Android performance")
+                            || line.startsWith("Time:")) {
+                        if (androidLines.size() == 110) androidLines.removeFirst();
+                        androidLines.addLast(line.length() > 500 ? line.substring(0, 500) : line);
+                    }
+                }
+            } catch (IOException e) {
+                out.append("Telemetry unavailable: ").append(e.getClass().getSimpleName()).append('\n');
+            }
+            for (String line : androidLines) out.append(line).append('\n');
+        } else {
+            out.append("\nAndroid OS telemetry unavailable for this native run. "
+                    + "Enable Performance Diagnostics before pressing Play.\n");
+        }
         return out.toString();
     }
 }
