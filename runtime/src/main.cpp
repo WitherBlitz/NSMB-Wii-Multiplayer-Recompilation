@@ -1474,7 +1474,14 @@ int RuntimeMain(int argc, char** argv) {
             auroraConfig.resourcesPath = auroraResourcesPath.c_str();
         }
         auroraConfig.logCallback = &RuntimeAuroraLogCallback;
+        // Release Android builds should not generate the Aurora debug trace
+        // in ordinary play. NSMBW_LOG_FPS timing measurements use RT_LOGF and
+        // remain available through Performance Diagnostics when explicitly on.
+#if defined(__ANDROID__) && defined(NDEBUG)
+        auroraConfig.logLevel = LOG_INFO;
+#else
         auroraConfig.logLevel = LOG_DEBUG;
+#endif
         // NSMBW display settings: aspect_mode, else the older widescreen/force_16_9 keys.
         DisplaySettings::Settings displaySettings;
         displaySettings.aspect = RuntimeConfigFile::AspectMode(
