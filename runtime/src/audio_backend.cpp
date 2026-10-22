@@ -30,6 +30,18 @@ void AudioBackend::SetMasterVolume(float volume) {
     ApplyGainLocked();
 }
 
+void AudioBackend::SetDevicePaused(bool paused) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_stream == nullptr) {
+        return;
+    }
+    if (paused) {
+        SDL_PauseAudioStreamDevice(m_stream);
+    } else {
+        SDL_ResumeAudioStreamDevice(m_stream);
+    }
+}
+
 void AudioBackend::SetMuted(bool muted) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_muted = muted;

@@ -202,9 +202,18 @@ std::atomic<int64_t> g_measuredPeriod{0}; // the shortest recent gap between cal
 int64_t g_previous = 0;
 int64_t g_shortest = 0;
 int g_gaps = 0;
+// While the game is paused in the background the callbacks stop (60 wake-ups a second for nothing);
+// Timing wakes the looper to start them again.
+std::atomic<bool> g_parked{false};
+std::atomic<ALooper*> g_looper{nullptr};
 
 void OnFrame(int64_t frameTimeNanos, void* data) {
     auto* choreographer = static_cast<AChoreographer*>(data);
+    if (HostSuspend::Paused()) {
+        g_previous = 0;
+        g_parked.store(true, std::memory_order_release);
+        return;
+    }
     g_lastVsync.store(frameTimeNanos, std::memory_order_release);
     // Callbacks can skip vsyncs but never come closer together than one, so the shortest gap of a
     // batch is the period.
@@ -237,9 +246,14 @@ void Start() {
                 return;
             }
             AChoreographer_registerRefreshRateCallback(choreographer, OnRefreshRate, nullptr);
+            g_looper.store(ALooper_forThread(), std::memory_order_release);
             AChoreographer_postFrameCallback64(choreographer, OnFrame, choreographer);
             while (true) {
                 ALooper_pollOnce(-1, nullptr, nullptr, nullptr);
+                if (g_parked.load(std::memory_order_acquire) && !HostSuspend::Paused()) {
+                    g_parked.store(false, std::memory_order_release);
+                    AChoreographer_postFrameCallback64(choreographer, OnFrame, choreographer);
+                }
             }
         }).detach();
     });
@@ -248,6 +262,11 @@ void Start() {
 // The display period and the time of a recent vsync, once both are known.
 bool Timing(int64_t* period, int64_t* vsync) {
     Start();
+    if (g_parked.load(std::memory_order_acquire)) {
+        if (ALooper* looper = g_looper.load(std::memory_order_acquire)) {
+            ALooper_wake(looper);  // the game runs again: take the vsync callbacks again
+        }
+    }
     *vsync = g_lastVsync.load(std::memory_order_acquire);
     *period = g_period.load(std::memory_order_acquire);
     if (*period <= 0) {

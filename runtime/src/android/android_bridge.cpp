@@ -119,7 +119,7 @@ JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeTap(JNIEnv*, jcl
 }
 
 // GameActivity.nativeTakeSettings: {render scale, show FPS 1/0, aspect, spinning coins 1/0, frame graph 1/0,
-// V-Sync 1/0} when the game's settings
+// V-Sync 1/0, frametime graph size %, touch controls 1/0 or -1 unchanged} when the game's settings
 // window changed them since the last call, else null; the app saves them for the next start.
 JNIEXPORT jfloatArray JNICALL Java_com_wither_nsmbw_GameActivity_nativeTakeSettings(JNIEnv* env, jclass)
 {
@@ -129,14 +129,24 @@ JNIEXPORT jfloatArray JNICALL Java_com_wither_nsmbw_GameActivity_nativeTakeSetti
     bool spinningCoins = true;
     bool frameGraph = false;
     bool vsync = false;
-    if (!NetplayUi::TakeSettingsChange(scale, showFps, aspect, spinningCoins, frameGraph, vsync)) {
+    int frameGraphSize = 50;
+    int touchControls = -1;
+    if (!NetplayUi::TakeSettingsChange(scale, showFps, aspect, spinningCoins, frameGraph, vsync, frameGraphSize,
+                                       touchControls)) {
         return nullptr;
     }
-    jfloatArray result = env->NewFloatArray(6);
-    const jfloat values[6] = {scale, showFps ? 1.0f : 0.0f, static_cast<jfloat>(aspect), spinningCoins ? 1.0f : 0.0f,
-                              frameGraph ? 1.0f : 0.0f, vsync ? 1.0f : 0.0f};
-    env->SetFloatArrayRegion(result, 0, 6, values);
+    jfloatArray result = env->NewFloatArray(8);
+    const jfloat values[8] = {scale, showFps ? 1.0f : 0.0f, static_cast<jfloat>(aspect), spinningCoins ? 1.0f : 0.0f,
+                              frameGraph ? 1.0f : 0.0f, vsync ? 1.0f : 0.0f, static_cast<jfloat>(frameGraphSize),
+                              static_cast<jfloat>(touchControls)};
+    env->SetFloatArrayRegion(result, 0, 8, values);
     return result;
+}
+
+// GameActivity.nativeSetTouchControls: the app's touch controls setting, which the Keybinds tab shows.
+JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeSetTouchControls(JNIEnv*, jclass, jboolean on)
+{
+    settings_overlay::SetTouchControls(on != JNI_FALSE);
 }
 
 // GameActivity.nativeTapScreen: whether a menu that taps drive is up (the app hides its remote).
@@ -146,11 +156,13 @@ JNIEXPORT jboolean JNICALL Java_com_wither_nsmbw_GameActivity_nativeTapScreen(JN
 }
 
 // GameActivity.nativeSetBackground: the app left the screen (true) or came back (false). Leaving, the
-// game writes a backup Quick Save and pauses (host_suspend.h); nativeGamePaused says when it has.
-JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeSetBackground(JNIEnv*, jclass, jboolean background)
+// game writes a backup Quick Save (backup: the app left; not when the screen just turned off) and
+// pauses (host_suspend.h); nativeGamePaused says when it has.
+JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeSetBackground(JNIEnv*, jclass, jboolean background,
+                                                                             jboolean backup)
 {
     if (background) {
-        HostSuspend::RequestPause(true);
+        HostSuspend::RequestPause(backup != JNI_FALSE);
     } else {
         HostSuspend::RequestResume();
     }

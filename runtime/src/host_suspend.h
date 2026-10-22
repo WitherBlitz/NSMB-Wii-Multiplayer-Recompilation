@@ -17,6 +17,8 @@ struct CpuContext;
 // stopped, with nothing to catch up.
 namespace HostSuspend {
 
+// backup: Android leaving the app (a backup Quick Save first); the screen turning off pauses
+// without one (the game just waits in memory).
 void RequestPause(bool backup);
 void RequestResume();
 bool Paused();
@@ -24,6 +26,11 @@ bool Paused();
 // The game thread, at each retrace (before VI computes due retraces). Returns how long it was blocked,
 // in nanoseconds (0 when it wasn't).
 uint64_t OnRetrace();
+
+// The game thread reading the remote (KPADReadEx, channel 0): a backup Quick Save is started from
+// here, where the game itself saves - a guest thread that may wait (the scheduler's idle loop, where
+// OnRetrace runs, may not: a save that had to wait there resumed the boot thread, and the game exited).
+void OnGameThread();
 
 // Total time the game has spent paused: subtracted from the guest's time base.
 uint64_t PausedNanoseconds();

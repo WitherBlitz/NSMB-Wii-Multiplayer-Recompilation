@@ -1,5 +1,6 @@
 #include "host_suspend.h"
 
+#include "audio_backend.h"
 #include "det_clock.h"
 #include "guest_interrupt_context.h"
 #include "memory.h"
@@ -31,6 +32,8 @@ constexpr uint32_t kGameFlagFreeMode = 1u << 5, kGameFlagCoinBattle = 1u << 6;
 constexpr uint32_t kSceneWorldMap = 0x003, kSceneStage = 0x005;
 constexpr uint16_t kProfileOpeningTitle = 0x2BB;            // the title screen's demo runs as a STAGE
 constexpr auto kSaveTimeout = std::chrono::seconds(4);
+// How long a pause waits for the game thread to start its backup Quick Save before pausing without.
+constexpr auto kBackupStartTimeout = std::chrono::seconds(1);
 
 enum class State { Running, Saving, Paused, DeleteBackup };
 
@@ -42,6 +45,10 @@ std::atomic<bool> g_pauseRequested{false};  // g_pauseWanted, readable without t
 State g_state = State::Running;  // the game thread's
 bool g_backupWritten = false;    // the game thread's: a Quick Save of ours is on the NAND
 Clock::time_point g_saveDeadline;
+// A backup asked for, waiting for the game thread (OnGameThread) to start it; when it should have.
+bool g_backupPending = false;
+Clock::time_point g_backupStartDeadline;
+bool g_backupDeclined = false;  // the game thread found a backup not allowed now (a menu open, ...)
 std::atomic<uint64_t> g_pausedNs{0};
 std::atomic<bool> g_paused{false};
 
@@ -170,16 +177,23 @@ uint64_t OnRetrace() {
     switch (g_state) {
     case State::Running:
         if (!pauseWanted) {
+            g_backupPending = false;
             return 0;
         }
-        if (backupWanted && BackupAllowed()) {
-            CallGuest(kSaveGame, 0, 1);  // SaveGame(_, quick = true)
-            g_backupWritten = true;
-            g_saveDeadline = Clock::now() + kSaveTimeout;
-            g_state = State::Saving;
-            RT_LOGF(RT_TAG_RUNTIME, "suspend: writing a Quick Save as a backup\n");
-            return 0;  // the game runs on until its NAND thread has written it
+        if (backupWanted && !g_backupDeclined) {
+            // The game thread starts the save (OnGameThread); the game runs on until it has.
+            if (!g_backupPending) {
+                g_backupPending = true;
+                g_backupStartDeadline = Clock::now() + kBackupStartTimeout;
+                return 0;
+            }
+            if (Clock::now() < g_backupStartDeadline) {
+                return 0;
+            }
+            RT_LOGF(RT_TAG_RUNTIME, "suspend: the game thread did not save in time; pausing without a backup\n");
         }
+        g_backupPending = false;
+        g_backupDeclined = false;
         g_state = State::Paused;
         break;
     case State::Saving:
@@ -209,10 +223,12 @@ uint64_t OnRetrace() {
     RT_LOGF(RT_TAG_RUNTIME, "suspend: game paused\n");
     const auto stopped = Clock::now();
     g_paused.store(true, std::memory_order_release);
+    AudioBackend::Instance().SetDevicePaused(true);  // nothing plays, so nothing is streamed
     {
         std::unique_lock<std::mutex> lock(g_mutex);
         g_wake.wait(lock, [] { return !g_pauseWanted; });
     }
+    AudioBackend::Instance().SetDevicePaused(false);
     g_paused.store(false, std::memory_order_release);
     const uint64_t pausedNs =
         static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - stopped).count());
@@ -220,6 +236,22 @@ uint64_t OnRetrace() {
     g_state = g_backupWritten ? State::DeleteBackup : State::Running;
     RT_LOGF(RT_TAG_RUNTIME, "suspend: resumed after %.1f s\n", static_cast<double>(pausedNs) / 1e9);
     return pausedNs;
+}
+
+void OnGameThread() {
+    if (!g_backupPending || g_state != State::Running) {
+        return;
+    }
+    g_backupPending = false;
+    if (!BackupAllowed()) {
+        g_backupDeclined = true;  // OnRetrace pauses without one
+        return;
+    }
+    CallGuest(kSaveGame, 0, 1);  // SaveGame(_, quick = true), as the + menu's Quick Save calls it
+    g_backupWritten = true;
+    g_saveDeadline = Clock::now() + kSaveTimeout;
+    g_state = State::Saving;
+    RT_LOGF(RT_TAG_RUNTIME, "suspend: writing a Quick Save as a backup\n");
 }
 
 } // namespace HostSuspend

@@ -926,7 +926,7 @@ bool present_presentation_job(const PresentationJob& job) {
   std::chrono::nanoseconds scheduleWaitDuration{};
   std::chrono::nanoseconds presentDuration{};
   bool presented = false;
-  if (g_surfaceReconfigurePending.load(std::memory_order_acquire) ||
+  if (g_surfaceReconfigurePending.load(std::memory_order_acquire) || window::surface_lost_pending() ||
       window::native_resize_pending() || !window::is_presentable()) {
     return false;
   }
@@ -1017,7 +1017,7 @@ bool present_presentation_job(const PresentationJob& job) {
         }
         // A native resize can arrive after acquisition, so drop the obsolete image and let the render
         // worker reconfigure at its ordered frame boundary.
-        if (!g_surfaceReconfigurePending.load(std::memory_order_acquire) &&
+        if (!g_surfaceReconfigurePending.load(std::memory_order_acquire) && !window::surface_lost_pending() &&
             !window::native_resize_pending() && window::is_presentable() &&
             window::native_window_size_matches(
                 webgpu::g_graphicsConfig.surfaceConfiguration.width,
@@ -1452,6 +1452,10 @@ bool begin_frame_impl(bool pumpEvents, ImGuiFramePolicy imguiPolicy, bool* imgui
   webgpu::fail_if_device_lost();
   if (pumpEvents) {
     window::pump_events();
+  }
+  // A surface Android destroyed (screen off, app left) needs a new Dawn surface, not a reconfigure.
+  if (window::take_surface_lost()) {
+    request_surface_recreate();
   }
   const bool surfaceReconfigurePending =
       g_surfaceReconfigurePending.load(std::memory_order_acquire);

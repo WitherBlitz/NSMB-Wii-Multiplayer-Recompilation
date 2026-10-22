@@ -22,6 +22,9 @@ public:
     // Applied to the final host output, covering both AX and direct AI DMA.
     void SetMasterVolume(float volume);
     void SetMuted(bool muted);
+    // The output device stopped (the game paused in the background: no silence is streamed) or
+    // running again.
+    void SetDevicePaused(bool paused);
 
 private:
     AudioBackend() = default;

@@ -44,6 +44,9 @@ void pump_events() noexcept;
 bool native_resize_pending() noexcept;
 bool native_window_size_matches(uint32_t width, uint32_t height) noexcept;
 void set_surface_ready(bool ready) noexcept;
+// NSMBW: the surface was lost since the last take (the next frame must build a new Dawn surface).
+bool surface_lost_pending() noexcept;
+bool take_surface_lost() noexcept;
 void set_title(const char* title);
 void set_fullscreen(bool fullscreen);
 bool get_fullscreen();
