@@ -84,7 +84,8 @@ final class MotionInput implements SensorEventListener {
             // Gravity in screen coordinates (x right, y up) for the way the phone is turned.
             final float gx = gravity[0], gy = gravity[1];
             float sx = gx, sy = gy;
-            final Display display = activity.getDisplay();
+            final Display display = android.os.Build.VERSION.SDK_INT >= 30 ? activity.getDisplay()
+                    : activity.getWindowManager().getDefaultDisplay();
             switch (display != null ? display.getRotation() : Surface.ROTATION_90) {
                 case Surface.ROTATION_90: sx = -gy; sy = gx; break;
                 case Surface.ROTATION_180: sx = -gx; sy = -gy; break;

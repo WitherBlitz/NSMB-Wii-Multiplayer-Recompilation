@@ -10,6 +10,7 @@ import android.provider.Settings;
 import android.os.Process;
 import android.system.Os;
 import android.util.Log;
+import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -137,6 +138,10 @@ public final class GameActivity extends SDLActivity
                     if (changed.length > 7 && changed[7] >= 0f) {
                         settings.setTouchControls(changed[7] > 0.5f);  // the Keybinds tab's checkbox
                         applyControlSettings();
+                    }
+                    final int renderer = changed.length > 8 ? Math.round(changed[8]) : -1;
+                    if (renderer >= 0 && renderer < AppSettings.RENDERERS.length) {
+                        settings.setGraphicsApi(AppSettings.RENDERERS[renderer]);  // the Video tab's Renderer
                     }
                 }
             }
@@ -317,6 +322,14 @@ public final class GameActivity extends SDLActivity
     }
 
     private void hideSystemBars() {
+        if (android.os.Build.VERSION.SDK_INT < 30) {
+            // Android 8-10: the immersive flags the insets controller replaced.
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+            return;
+        }
         getWindow().setDecorFitsSystemWindows(false);
         final WindowInsetsController controller = getWindow().getInsetsController();
         if (controller != null) {

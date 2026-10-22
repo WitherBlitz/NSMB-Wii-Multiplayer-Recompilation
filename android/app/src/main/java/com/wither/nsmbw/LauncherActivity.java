@@ -443,7 +443,7 @@ public final class LauncherActivity extends Activity {
     private String versionText() {
         try {
             final PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
-            return info.versionName + " · Build " + info.getLongVersionCode();
+            return info.versionName + " · Build " + AppFiles.versionCode(info);
         } catch (PackageManager.NameNotFoundException e) {
             return "";
         }

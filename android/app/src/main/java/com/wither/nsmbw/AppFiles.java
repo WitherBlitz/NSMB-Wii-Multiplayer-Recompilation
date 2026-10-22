@@ -129,7 +129,7 @@ final class AppFiles {
                 + "gpu_compat = " + settings.gpuCompat() + "\n"
                 + "resolution_multiplier = " + String.format(Locale.ROOT, "%.2f", settings.resolutionScale()) + "\n"
                 + "frame_interpolation_fps = 0\n"
-                + "graphics_api = \"auto\"\n"
+                + "graphics_api = \"" + settings.graphicsApi() + "\"\n"
                 + "skip_unready_pipelines = true\n"
                 + "disable_copy_filter = true\n"
                 + "show_fps = " + settings.showFps() + "\n"
@@ -195,10 +195,16 @@ final class AppFiles {
     private static String apkStamp(Context context) {
         try {
             final PackageInfo info = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
-            return info.getLongVersionCode() + ":" + info.lastUpdateTime;
+            return versionCode(info) + ":" + info.lastUpdateTime;
         } catch (PackageManager.NameNotFoundException e) {
             return "unknown";
         }
+    }
+
+    /** The app's version code (getLongVersionCode is Android 9+; before it, the int field). */
+    @SuppressWarnings("deprecation")
+    static long versionCode(PackageInfo info) {
+        return android.os.Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode;
     }
 
     /** Copies an asset directory recursively. AssetManager.list() is empty for a file. */

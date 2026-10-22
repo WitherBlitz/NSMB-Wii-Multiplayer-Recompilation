@@ -55,6 +55,7 @@ final class SettingsMenu {
             "Spinning Coins: " + (settings.spinningCoins() ? "On" : "Off"),
             "V-Sync: " + (settings.vsync() ? "On" : "Off"),
             "Graphics Compatibility: " + gpuCompatLabel(settings.gpuCompat()),
+            "Renderer: " + AppSettings.rendererLabel(settings.graphicsApi()),
         };
         new AlertDialog.Builder(activity)
                 .setTitle("Display")
@@ -65,9 +66,33 @@ final class SettingsMenu {
                     else if (which == 3) { settings.setFrameGraph(!settings.frameGraph()); save(); showDisplayMenu(); }
                     else if (which == 4) { settings.setSpinningCoins(!settings.spinningCoins()); save(); showDisplayMenu(); }
                     else if (which == 5) { settings.setVSync(!settings.vsync()); save(); showDisplayMenu(); }
-                    else showGpuCompatChoice();
+                    else if (which == 6) showGpuCompatChoice();
+                    else showRendererChoice();
                 })
                 .setNegativeButton("Back", (dialog, which) -> showMain())
+                .show();
+    }
+
+    /**
+     * The graphics API: Automatic uses Vulkan, or OpenGL ES 3.1+ on a phone without a working Vulkan
+     * driver; either can be forced (a phone whose Vulkan driver misdraws can try OpenGL ES).
+     */
+    private void showRendererChoice() {
+        final String[] labels = {
+            "Automatic (recommended): Vulkan, else OpenGL ES",
+            "Vulkan",
+            "OpenGL ES 3.1+",
+        };
+        final int selected = java.util.Arrays.asList(AppSettings.RENDERERS).indexOf(settings.graphicsApi());
+        new AlertDialog.Builder(activity)
+                .setTitle("Renderer")
+                .setSingleChoiceItems(labels, Math.max(0, selected), (dialog, which) -> {
+                    settings.setGraphicsApi(AppSettings.RENDERERS[which]);
+                    save();
+                    dialog.dismiss();
+                    showDisplayMenu();
+                })
+                .setNegativeButton("Back", (dialog, which) -> showDisplayMenu())
                 .show();
     }
 

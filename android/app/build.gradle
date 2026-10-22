@@ -8,8 +8,9 @@ android {
 
     defaultConfig {
         applicationId 'com.wither.nsmbw'
-        // Guest RAM uses memfd_create, which bionic has from Android 11 (API 30).
-        minSdk 30
+        // Android 8.0 and up: the native side calls memfd_create itself (or uses ashmem) and looks the
+        // newer Choreographer calls up at run time.
+        minSdk 26
         targetSdk 34
         versionCode 18
         versionName '0.2.2'

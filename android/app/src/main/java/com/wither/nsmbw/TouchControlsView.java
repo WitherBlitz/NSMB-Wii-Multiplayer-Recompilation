@@ -143,7 +143,7 @@ final class TouchControlsView extends View {
         // Keep the thumbs' controls clear of a camera cutout on either short edge.
         float left = 0, right = 0;
         final WindowInsets insets = getRootWindowInsets();
-        if (insets != null && insets.getDisplayCutout() != null) {
+        if (android.os.Build.VERSION.SDK_INT >= 28 && insets != null && insets.getDisplayCutout() != null) {
             left = insets.getDisplayCutout().getSafeInsetLeft();
             right = insets.getDisplayCutout().getSafeInsetRight();
         }

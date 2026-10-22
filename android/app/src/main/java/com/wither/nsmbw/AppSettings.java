@@ -55,6 +55,20 @@ final class AppSettings {
     void setFrameGraphSize(int percent) { prefs.edit().putInt("frame_graph_size", percent).commit(); }
     void setVSync(boolean on) { prefs.edit().putBoolean("vsync", on).commit(); }
 
+    /** The renderer, as Config.toml's [video] graphics_api: "auto" (Vulkan, else OpenGL ES), "vulkan"
+     *  or "opengles". The game's Video tab and the Display menu both set it; it applies at the next start. */
+    static final String[] RENDERERS = {"auto", "vulkan", "opengles"};
+    static final String[] RENDERER_LABELS = {"Automatic", "Vulkan", "OpenGL ES"};
+    String graphicsApi() {
+        final String value = prefs.getString("graphics_api", "auto");
+        return java.util.Arrays.asList(RENDERERS).contains(value) ? value : "auto";
+    }
+    void setGraphicsApi(String value) { prefs.edit().putString("graphics_api", value).commit(); }
+    static String rendererLabel(String value) {
+        final int index = java.util.Arrays.asList(RENDERERS).indexOf(value);
+        return RENDERER_LABELS[Math.max(0, index)];
+    }
+
     boolean touchControls() { return prefs.getBoolean("touch_controls", true); }
     void setTouchControls(boolean on) { prefs.edit().putBoolean("touch_controls", on).commit(); }
 
