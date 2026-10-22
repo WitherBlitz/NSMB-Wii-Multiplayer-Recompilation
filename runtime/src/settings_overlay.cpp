@@ -1244,10 +1244,14 @@ void DrawFrameGraph() {
         sum += t;
         ++samples;
     }
+    // The Video tab's Frametime Graph size: 50% is the graph's original size. Its text grows with
+    // a bigger graph but never shrinks below the overlay's own size.
+    const float sizeScale = static_cast<float>(g_frameGraphSize) / 50.0f;
+    ImGui::SetWindowFontScale(std::max(1.0f, sizeScale));
     ImGui::Text("Frame: %.1f ms", last);
     ImGui::TextDisabled("avg %.1f  max %.1f", samples > 0 ? sum / samples : 0.0f, peak);
-    // The Video tab's Frametime Graph size: 50% is the graph's original size.
-    const float scale = ImGui::GetFontSize() / 13.0f * static_cast<float>(g_frameGraphSize) / 50.0f;
+    ImGui::SetWindowFontScale(1.0f);
+    const float scale = ImGui::GetFontSize() / 13.0f * sizeScale;
     const ImVec2 size(kFrameTimeCount * scale, 50.0f * scale);
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     ImGui::Dummy(size);
@@ -1714,6 +1718,17 @@ void HandleEvents(const AuroraEvent* events) noexcept {
     for (const AuroraEvent* ev = events; ev->type != AURORA_NONE; ++ev) {
         if (ev->type == AURORA_CONTROLLER_ADDED || ev->type == AURORA_CONTROLLER_REMOVED) {
             g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
+            // Which pad each player's remote now reads (player 1 is Mario).
+            std::string ports;
+            for (uint32_t port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
+                const s32 index = PADGetIndexForPort(port);
+                SDL_Gamepad* pad = index >= 0 ? PADGetSDLGamepadForIndex(static_cast<u32>(index)) : nullptr;
+                const char* name = pad != nullptr ? SDL_GetGamepadName(pad) : nullptr;
+                ports += " P" + std::to_string(port + 1) + "=" + (pad != nullptr ? (name != nullptr ? name : "pad") : "-");
+            }
+            RT_LOGF(RT_TAG_RUNTIME, "controller %s (id %d);%s\n",
+                    ev->type == AURORA_CONTROLLER_ADDED ? "connected" : "disconnected", static_cast<int>(ev->controller),
+                    ports.c_str());
         }
         if (ev->type != AURORA_SDL_EVENT) {
             continue;

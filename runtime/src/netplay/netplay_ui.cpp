@@ -1356,14 +1356,15 @@ void DrawVideoTab(const Canvas& c) {
             g_dragGraphSize = true;
             g_ui.cursor = kVideoGraph;
         }
-        if (g_dragGraphSize) {
+        if (g_dragGraphSize && g_pointerNow.held) {
             const float t = std::clamp((g_pointerNow.x - start.x) / std::max(1.0f, end.x - start.x), 0.0f, 1.0f);
             const int size = kGraphSizeMin + static_cast<int>(std::lround(t * (kGraphSizeMax - kGraphSizeMin) / 5.0f)) * 5;
-            settings_overlay::SetFrameGraphSize(size, !g_pointerNow.held);
-            if (!g_pointerNow.held) {
-                g_dragGraphSize = false;
-                g_settingsChanged = true;
-            }
+            settings_overlay::SetFrameGraphSize(size, false);
+        } else if (g_dragGraphSize) {
+            // The finger's gone, so its position is too: keep the last size and save it.
+            settings_overlay::SetFrameGraphSize(settings_overlay::FrameGraphSize(), true);
+            g_dragGraphSize = false;
+            g_settingsChanged = true;
         }
         const int size = settings_overlay::FrameGraphSize();
         DrawSliderAt(c, kGraphSliderX0, kGraphSliderX1, y, GraphSizeToFill(size), selected);

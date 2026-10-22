@@ -503,6 +503,13 @@ bool initialize() {
       SDL_HINT_SCREENSAVER_INHIBIT_ACTIVITY_NAME, SDL_GetError());
   TRY(SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_GAMECUBE_RUMBLE_BRAKE, "1"), "Error setting {}: {}",
       SDL_HINT_JOYSTICK_HIDAPI_GAMECUBE_RUMBLE_BRAKE, SDL_GetError());
+#if defined(SDL_PLATFORM_ANDROID)
+  // NSMBW: controllers through Android's own input stack, not SDL's USB/HID driver. HIDAPI opened a
+  // USB controller (a GameSir G8 plugged into the phone) itself, which needs USB permission again
+  // after every reconnect; while that was pending SDL also kept the device off Android's path, so a
+  // reconnected controller gave no input until the app restarted. Android handles hot-plugging.
+  TRY(SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0"), "Error setting {}: {}", SDL_HINT_JOYSTICK_HIDAPI, SDL_GetError());
+#endif
 
   TRY(SDL_DisableScreenSaver(), "Error disabling screensaver: {}", SDL_GetError());
   if (g_config.allowJoystickBackgroundEvents) {
