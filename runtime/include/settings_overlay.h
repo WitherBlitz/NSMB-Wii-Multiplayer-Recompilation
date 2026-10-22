@@ -20,6 +20,13 @@ bool ShowFps() noexcept;
 // A frame-time graph under the FPS counter, off by default. Saved to Config.toml.
 void SetFrameGraph(bool show) noexcept;
 bool FrameGraph() noexcept;
+// The frametime graph's size in percent, 5-200 (50 is its original size). `save` writes Config.toml
+// (a slider being dragged saves when it is let go).
+void SetFrameGraphSize(int percent, bool save) noexcept;
+// Android's on-screen controls (the app shows or hides them; the Keybinds tab's checkbox asks it to).
+void SetTouchControls(bool on) noexcept;
+bool TouchControls() noexcept;
+int FrameGraphSize() noexcept;
 // V-Sync: presents wait for the display, and the game's clock follows its refresh (hle/vi.cpp).
 // Off by default. Saved to Config.toml.
 void SetVSync(bool enabled) noexcept;

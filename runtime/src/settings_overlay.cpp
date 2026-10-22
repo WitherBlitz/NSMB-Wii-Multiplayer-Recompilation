@@ -122,6 +122,8 @@ bool g_skipUnreadyPipelines = RuntimeConfigFile::SkipUnreadyPipelines(true);
 bool g_disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
 bool g_showFps = RuntimeConfigFile::ShowFps(false);  // off unless turned on
 bool g_frameGraph = RuntimeConfigFile::FrameGraph(false);
+bool g_touchControls = RuntimeConfigFile::TouchControls(true);
+int g_frameGraphSize = std::clamp(static_cast<int>(RuntimeConfigFile::FrameGraphSize(50)), 5, 200);
 std::atomic<bool> g_vsync{RuntimeConfigFile::VSync(false)};
 #if defined(__APPLE__)
 bool g_metalFxSpatialUpscaling = RuntimeConfigFile::MetalFxSpatialUpscaling(false);
@@ -1244,7 +1246,8 @@ void DrawFrameGraph() {
     }
     ImGui::Text("Frame: %.1f ms", last);
     ImGui::TextDisabled("avg %.1f  max %.1f", samples > 0 ? sum / samples : 0.0f, peak);
-    const float scale = ImGui::GetFontSize() / 13.0f;
+    // The Video tab's Frametime Graph size: 50% is the graph's original size.
+    const float scale = ImGui::GetFontSize() / 13.0f * static_cast<float>(g_frameGraphSize) / 50.0f;
     const ImVec2 size(kFrameTimeCount * scale, 50.0f * scale);
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     ImGui::Dummy(size);
@@ -1832,6 +1835,25 @@ void FlushGameSound() noexcept {
 void SetFrameGraph(bool show) noexcept {
     g_frameGraph = show;
     RuntimeConfigFile::SetFrameGraph(show);
+}
+
+void SetFrameGraphSize(int percent, bool save) noexcept {
+    g_frameGraphSize = std::clamp(percent, 5, 200);
+    if (save) {
+        RuntimeConfigFile::SetFrameGraphSize(static_cast<uint32_t>(g_frameGraphSize));
+    }
+}
+
+int FrameGraphSize() noexcept {
+    return g_frameGraphSize;
+}
+
+void SetTouchControls(bool on) noexcept {
+    g_touchControls = on;
+}
+
+bool TouchControls() noexcept {
+    return g_touchControls;
 }
 
 bool FrameGraph() noexcept {

@@ -52,6 +52,8 @@ struct RuntimeUserConfig {
     std::optional<bool> showFps;
     std::optional<bool> spinningCoins;  // NSMBW: [video] spinning_coins, animated tiles
     std::optional<bool> frameGraph;     // NSMBW: [video] frame_graph, frame times under the FPS counter
+    std::optional<bool> touchControls;  // NSMBW: [video] touch_controls, written by the Android app
+    std::optional<uint32_t> frameGraphSize;  // NSMBW: [video] frame_graph_size, percent (5-200; 50 = the original size)
     std::optional<bool> vsync;          // NSMBW: [video] vsync, presents wait for the display (Windows)
     std::optional<std::string> language;  // NSMBW: [game] language, "en" "es" or "fr" (the USA disc's three)
     std::optional<uint32_t> disabledPostProcessingPaths;
@@ -582,6 +584,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.showFps = FindConfigValue<bool>(document, "video", "show_fps");
     config.spinningCoins = FindConfigValue<bool>(document, "video", "spinning_coins");
     config.frameGraph = FindConfigValue<bool>(document, "video", "frame_graph");
+    config.frameGraphSize = FindConfigUint(document, "video", "frame_graph_size");
+    config.touchControls = FindConfigValue<bool>(document, "video", "touch_controls");
     config.vsync = FindConfigValue<bool>(document, "video", "vsync");
     if (auto value = FindConfigValue<std::string>(document, "game", "language");
         value && (*value == "en" || *value == "es" || *value == "fr")) {
@@ -841,6 +845,19 @@ inline bool SetLanguage(const std::string& value) {
 
 inline bool FrameGraph(bool fallback = false) {
     return Get().frameGraph.value_or(fallback);
+}
+
+inline bool TouchControls(bool fallback = true) {
+    return Get().touchControls.value_or(fallback);
+}
+
+inline uint32_t FrameGraphSize(uint32_t fallback = 50) {
+    return Get().frameGraphSize.value_or(fallback);
+}
+
+inline bool SetFrameGraphSize(uint32_t value) {
+    Mutable().frameGraphSize = value;
+    return WriteSetting("video", "frame_graph_size", std::to_string(value));
 }
 
 inline bool SetFrameGraph(bool value) {

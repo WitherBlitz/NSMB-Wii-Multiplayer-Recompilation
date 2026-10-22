@@ -1000,7 +1000,8 @@ void DrawToggle(const Canvas& c) {
 // screen with the game's view widened, and Match Screen Resolution the screen's own pixels across
 // the whole screen (the multiplier is greyed out meanwhile). Keybinds: the keyboard's remote.
 constexpr float kScales[] = {0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f};
-std::atomic<bool> g_settingsChanged{false};  // the Android app copies them into its own settings
+std::atomic<bool> g_settingsChanged{false};
+std::atomic<bool> g_touchControlsToggled{false};  // the Keybinds tab's Touch Controls, since the last take  // the Android app copies them into its own settings
 enum SettingsTab { kTabVideo, kTabAudio, kTabKeybinds, kTabLanguage };
 int g_settingsTab = kTabVideo;
 constexpr int kSettingsTabs = 4;
@@ -1030,8 +1031,18 @@ constexpr int kVideoVSync = kVSyncRow ? kVideoFps + 3 : -1;
 constexpr int kVideoOk = kVideoFps + (kVSyncRow ? 4 : 3);
 constexpr const char* kFullscreenNames[] = {"Off", "Borderless", "Exclusive"};
 constexpr int kKeyRows = 6;
-constexpr int kKeySmartSpin = 1 + Keybinds::kActionCount;  // the Space Smart Spin QoL checkbox
-constexpr int kKeyReset = kKeySmartSpin + 1, kKeyOk = kKeyReset + 1;
+// The QoL checkboxes under the keys: Space Smart Spin, Reverse Tilt and, on Android, Touch Controls.
+constexpr int kKeySmartSpin = 1 + Keybinds::kActionCount;
+constexpr int kKeyReverseTilt = kKeySmartSpin + 1;
+#if defined(__ANDROID__)
+constexpr bool kTouchToggle = true;
+#else
+constexpr bool kTouchToggle = false;
+#endif
+constexpr int kKeyTouch = kTouchToggle ? kKeyReverseTilt + 1 : -1;
+constexpr int kKeyReset = (kTouchToggle ? kKeyTouch : kKeyReverseTilt) + 1, kKeyOk = kKeyReset + 1;
+constexpr int kKeyToggles[] = {kKeySmartSpin, kKeyReverseTilt, kKeyTouch};
+constexpr int kKeyToggleCount = kTouchToggle ? 3 : 2;
 
 struct VideoChoice {
     float scale;
@@ -1178,8 +1189,8 @@ float VolumeRowY(int row) {
     return 100.0f - 72.0f * row;
 }
 
-void DrawSlider(const Canvas& c, float y, int percent, bool selected) {
-    const ImVec2 a = ToScreen(c, kSliderX0, y), b = ToScreen(c, kSliderX1, y);
+void DrawSliderAt(const Canvas& c, float x0, float x1, float y, int percent, bool selected) {
+    const ImVec2 a = ToScreen(c, x0, y), b = ToScreen(c, x1, y);
     const float s = c.view.scale;
     const float half = 10.0f * s;
     const auto alpha = [&](int value) { return static_cast<int>(value * c.alpha); };
@@ -1195,6 +1206,19 @@ void DrawSlider(const Canvas& c, float y, int percent, bool selected) {
     c.list->AddCircleFilled(ImVec2(fill, a.y), knob,
                             selected ? IM_COL32(255, 230, 60, alpha(255)) : IM_COL32(255, 255, 255, alpha(255)));
     c.list->AddCircle(ImVec2(fill, a.y), knob, edge, 0, 3.5f * s);
+}
+
+void DrawSlider(const Canvas& c, float y, int percent, bool selected) {
+    DrawSliderAt(c, kSliderX0, kSliderX1, y, percent, selected);
+}
+
+// The Frametime Graph row's size slider (Video tab): 5% to 200%, 50% the graph's original size.
+constexpr float kGraphSliderX0 = 92.0f, kGraphSliderX1 = 232.0f;
+constexpr int kGraphSizeMin = 5, kGraphSizeMax = 200;
+bool g_dragGraphSize = false;
+
+int GraphSizeToFill(int size) {
+    return (size - kGraphSizeMin) * 100 / (kGraphSizeMax - kGraphSizeMin);
 }
 
 void DrawAudioTab(const Canvas& c) {
@@ -1317,7 +1341,34 @@ void DrawVideoTab(const Canvas& c) {
     }
     const int first = kFullscreenRow ? 3 : 2;
     row("Show FPS Counter", first, kVideoFps, settings_overlay::ShowFps());
-    row("Frametime Graph", first + 1, kVideoGraph, settings_overlay::FrameGraph());
+    {
+        // Frametime Graph: the button turns it on and off; the slider beside it sets its size (a
+        // finger or the mouse drags it; left and right move it 5% at a time).
+        const float y = top - (first + 1) * step;
+        const bool selected = g_ui.cursor == kVideoGraph;
+        Button(c, "Frametime Graph", -85, y, 300, selected, true, g_ui.frame, buttonSize, kRowH);
+        Checkbox(c, -209, y, settings_overlay::FrameGraph());
+        AddHit(-85, y, 304, step - 2, kVideoGraph);
+        const ImVec2 start = ToScreen(c, kGraphSliderX0, y), end = ToScreen(c, kGraphSliderX1, y);
+        const float reach = 24.0f * c.view.scale;
+        if (g_pointerNow.pressed && g_pointerNow.x >= start.x - reach && g_pointerNow.x <= end.x + reach &&
+            std::fabs(g_pointerNow.y - start.y) <= (step / 2) * c.view.scale) {
+            g_dragGraphSize = true;
+            g_ui.cursor = kVideoGraph;
+        }
+        if (g_dragGraphSize) {
+            const float t = std::clamp((g_pointerNow.x - start.x) / std::max(1.0f, end.x - start.x), 0.0f, 1.0f);
+            const int size = kGraphSizeMin + static_cast<int>(std::lround(t * (kGraphSizeMax - kGraphSizeMin) / 5.0f)) * 5;
+            settings_overlay::SetFrameGraphSize(size, !g_pointerNow.held);
+            if (!g_pointerNow.held) {
+                g_dragGraphSize = false;
+                g_settingsChanged = true;
+            }
+        }
+        const int size = settings_overlay::FrameGraphSize();
+        DrawSliderAt(c, kGraphSliderX0, kGraphSliderX1, y, GraphSizeToFill(size), selected);
+        Text(c, std::to_string(size) + "%", 290, y, labelSize, 1, selected ? 0xFFF0B0FFu : 0xFFFFFFFFu);
+    }
     row("Spinning Coins", first + 2, kVideoCoins, settings_overlay::SpinningCoins());
     if (kVSyncRow) {
         row("V-Sync", first + 3, kVideoVSync, settings_overlay::VSync());
@@ -1331,7 +1382,7 @@ void DrawVideoTab(const Canvas& c) {
                                  : fullscreen == 2 ? "Exclusive: the game takes over the display."
                                                    : "Off: the game plays in a window.";
     const char* note = g_ui.cursor == kVideoFullscreen ? fullscreenNote
-                       : g_ui.cursor == kVideoGraph ? "How long each frame took, under the FPS counter."
+                       : g_ui.cursor == kVideoGraph ? "Each frame's time, under the FPS counter. Left and right: its size."
                        : g_ui.cursor == kVideoCoins ? "Animated coins and blocks. Off saves a little GPU work."
                        : g_ui.cursor == kVideoVSync ? "No tearing: frames wait for the display, the game keeps its pace."
                                                     : hint;
@@ -1355,9 +1406,17 @@ void DrawKeybindsTab(const Canvas& c) {
     if (capturing >= 0) {
         Text(c, "Press the new key (Esc cancels).", 0, -122, 22);
     } else {
-        Button(c, "Space Smart Spin QoL", 24, -122, 400, g_ui.cursor == kKeySmartSpin, true, g_ui.frame, 26.0f, 36.0f);
-        Checkbox(c, -150, -122, Keybinds::SmartSpin());
-        AddHit(0, -122, 410, 40, kKeySmartSpin);
+        // The QoL switches side by side.
+        const char* labels[] = {"Space Smart Spin", "Reverse Tilt", "Touch Controls"};
+        const bool on[] = {Keybinds::SmartSpin(), Keybinds::ReverseTilt(), settings_overlay::TouchControls()};
+        const float width = kTouchToggle ? 226.0f : 330.0f, gap = kTouchToggle ? 232.0f : 340.0f;
+        for (int i = 0; i < kKeyToggleCount; ++i) {
+            const float x = (static_cast<float>(i) - (kKeyToggleCount - 1) * 0.5f) * gap;
+            Button(c, labels[i], x + 18, -122, width, g_ui.cursor == kKeyToggles[i], true, g_ui.frame,
+                   kTouchToggle ? 21.0f : 24.0f, 36.0f);
+            Checkbox(c, x - width / 2 + 24, -122, on[i]);
+            AddHit(x, -122, width + 6, 40, kKeyToggles[i]);
+        }
     }
     const float y = -kSettingsHeight / 2 + 43.0f;
     Button(c, "Reset Defaults", -126, y, 232, g_ui.cursor == kKeyReset, true, g_ui.frame, 26.0f);
@@ -1430,6 +1489,9 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
         } else if (confirm && cursor == kVideoGraph) {
             settings_overlay::SetFrameGraph(!settings_overlay::FrameGraph());
             g_settingsChanged = true;
+        } else if ((left || right) && cursor == kVideoGraph) {
+            settings_overlay::SetFrameGraphSize(settings_overlay::FrameGraphSize() + (left ? -5 : 5), true);
+            g_settingsChanged = true;
         } else if (confirm && cursor == kVideoVSync) {
             settings_overlay::SetVSync(!settings_overlay::VSync());
             g_settingsChanged = true;
@@ -1466,10 +1528,20 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
         }
         return;
     }
-    if (cursor == kKeySmartSpin) {
-        if (up) cursor = kKeyRows;
+    if (const auto toggle = std::find(kKeyToggles, kKeyToggles + kKeyToggleCount, cursor);
+        toggle != kKeyToggles + kKeyToggleCount) {
+        const auto index = static_cast<int>(toggle - kKeyToggles);
+        if (left && index > 0) cursor = kKeyToggles[index - 1];
+        if (right && index + 1 < kKeyToggleCount) cursor = kKeyToggles[index + 1];
+        if (up) cursor = index == 0 ? kKeyRows : 2 * kKeyRows;  // the last key of the column above
         if (down) cursor = kKeyReset;
-        if (confirm) Keybinds::SetSmartSpin(!Keybinds::SmartSpin());
+        if (confirm && cursor == kKeySmartSpin) Keybinds::SetSmartSpin(!Keybinds::SmartSpin());
+        if (confirm && cursor == kKeyReverseTilt) Keybinds::SetReverseTilt(!Keybinds::ReverseTilt());
+        if (confirm && cursor == kKeyTouch) {
+            settings_overlay::SetTouchControls(!settings_overlay::TouchControls());
+            g_touchControlsToggled = true;
+            g_settingsChanged = true;
+        }
         return;
     }
     if (cursor >= kKeyReset) {
@@ -1481,7 +1553,7 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
     }
     const int action = cursor - 1, column = action / kKeyRows, row = action % kKeyRows;
     if (up) cursor = row == 0 ? 0 : cursor - 1;
-    if (down) cursor = row == kKeyRows - 1 ? kKeySmartSpin : cursor + 1;
+    if (down) cursor = row == kKeyRows - 1 ? (column == 0 ? kKeySmartSpin : kKeyReverseTilt) : cursor + 1;
     if ((left && column == 1) || (right && column == 0)) cursor = 1 + (1 - column) * kKeyRows + row;
     if (confirm) Keybinds::BeginCapture(action);
 }
@@ -1927,7 +1999,7 @@ bool TapScreenUp() {
 }
 
 bool TakeSettingsChange(float& renderScale, bool& showFps, int& aspect, bool& spinningCoins, bool& frameGraph,
-                        bool& vsync) {
+                        bool& vsync, int& frameGraphSize, int& touchControls) {
     if (!g_settingsChanged.exchange(false)) {
         return false;
     }
@@ -1937,6 +2009,9 @@ bool TakeSettingsChange(float& renderScale, bool& showFps, int& aspect, bool& sp
     spinningCoins = settings_overlay::SpinningCoins();
     frameGraph = settings_overlay::FrameGraph();
     vsync = settings_overlay::VSync();
+    frameGraphSize = settings_overlay::FrameGraphSize();
+    // Only a change made here: the app's own menu changes it too, and tells the game.
+    touchControls = g_touchControlsToggled.exchange(false) ? (settings_overlay::TouchControls() ? 1 : 0) : -1;
     return true;
 }
 

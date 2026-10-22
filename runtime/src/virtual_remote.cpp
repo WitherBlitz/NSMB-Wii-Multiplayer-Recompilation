@@ -306,6 +306,10 @@ bool Sample(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
     if (chan == 0) {
         merge(TouchIntent());
     }
+    // Reverse Tilt QoL: whatever the tilt came from (motion sensors, a stick, keys), mirrored.
+    if (Keybinds::ReverseTilt()) {
+        intent.tilt = -intent.tilt;
+    }
     if (InputBindings::InputBlocked()) {
         intent = {};  // the settings overlay owns input; the remote stays connected at rest
     }

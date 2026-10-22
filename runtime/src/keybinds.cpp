@@ -45,6 +45,7 @@ int g_capturing = -1;
 std::vector<bool> g_heldAtCapture;  // keys already down when the capture began
 bool g_suppress = false;            // a capture just ended: ignore the keyboard until all keys are up
 std::atomic<int> g_smartSpin{-1};   // Space Smart Spin QoL: -1 until read from Config.toml
+std::atomic<int> g_reverseTilt{-1};  // Reverse Tilt QoL: -1 until read from Config.toml
 
 std::vector<SDL_Scancode> Parse(const std::string& text) {
     std::vector<SDL_Scancode> codes;
@@ -162,6 +163,20 @@ bool SmartSpin() {
 void SetSmartSpin(bool on) {
     RuntimeConfigFile::SetKeyboardBinding("smart_spin", on ? "true" : "false");
     g_smartSpin.store(on ? 1 : 0, std::memory_order_relaxed);
+}
+
+bool ReverseTilt() {
+    int on = g_reverseTilt.load(std::memory_order_relaxed);
+    if (on < 0) {
+        on = RuntimeConfigFile::KeyboardBinding("reverse_tilt") == "true" ? 1 : 0;
+        g_reverseTilt.store(on, std::memory_order_relaxed);
+    }
+    return on != 0;
+}
+
+void SetReverseTilt(bool on) {
+    RuntimeConfigFile::SetKeyboardBinding("reverse_tilt", on ? "true" : "false");
+    g_reverseTilt.store(on ? 1 : 0, std::memory_order_relaxed);
 }
 
 void BeginCapture(int action) {
