@@ -374,9 +374,10 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
         set(MKW_BASELINE_ARCH_FLAG -march=x86-64-v3)
     endif()
 elseif(MKW_PLATFORM_ANDROID)
-    # Cross-compiled, so -mcpu=native would describe the build machine. ARMv8.2-A (LSE atomics,
-    # RCpc loads) is the floor of every Android phone since Cortex-A55/A75.
-    set(MKW_BASELINE_ARCH_FLAG -march=armv8.2-a)
+    # Cross-compiled, so -mcpu=native would describe the build machine. NSMBW: ARMv8.0-A, so phones
+    # older than the Cortex-A55/A75 run it too (the Snapdragon 835's Kryo 280 has no LSE atomics and
+    # took SIGILL on ldadd); outline atomics still use LSE where the CPU has it, picked at run time.
+    set(MKW_BASELINE_ARCH_FLAG -march=armv8-a -moutline-atomics)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
     set(MKW_BASELINE_ARCH_FLAG -mcpu=native)
 else()

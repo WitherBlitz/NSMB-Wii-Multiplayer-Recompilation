@@ -31,11 +31,13 @@ inline constexpr uintptr_t kFixedFlatGuestBase = 0x0000'0080'0000'0000ull;
 // older/embedded targets (e.g. this project's own tested Jetson/L4T board, kernel
 // 4.9). There mmap() silently ignores a hint above the ceiling and hands back an
 // address near the top of the real range instead, which this module's caller
-// then rejects as "already occupied". 64 GiB is reachable on every AArch64 VA
-// width in real use (39-bit minimum and up) and was confirmed via direct mmap
-// probing to sit far below where the PIE image, heap, shared libraries and
-// stack actually land (all clustered above ~340 GiB on a 39-bit/512 GiB system).
-inline constexpr uintptr_t kFixedFlatGuestBase = 0x0000'0010'0000'0000ull;
+// then rejects as "already occupied". NSMBW: 256 GiB, reachable on every AArch64
+// VA width in real use (39-bit minimum and up). The upstream 64 GiB collided on
+// Android 8 (LG V30+, kernel 4.4, 39-bit): that kernel places PIE executables
+// from 4 GiB up with up to 64 GiB of randomization, and app_process64 sat at
+// 0x10'2BBE'F000. Newer kernels put the PIE image, heap, shared libraries and
+// stack above ~340 GiB of a 39-bit/512 GiB space, so 256-260 GiB is clear of both.
+inline constexpr uintptr_t kFixedFlatGuestBase = 0x0000'0040'0000'0000ull;
 #else
 #error "guest_flat_memory.h has no fixed flat guest base chosen for this architecture"
 #endif

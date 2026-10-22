@@ -33,6 +33,37 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#if defined(__ANDROID__)
+#include <android/sharedmem.h>
+#include <sys/syscall.h>
+#endif
+#ifndef MFD_CLOEXEC
+#define MFD_CLOEXEC 0x0001U
+#endif
+
+namespace {
+// An anonymous shared-memory fd that can be mapped more than once. bionic's memfd_create wrapper is
+// Android 11+, but the kernel call is older (Linux 3.17): Android 8-10 make the syscall directly, and
+// a kernel without it gets ashmem through ASharedMemory_create, which is already `size` bytes (sized).
+int CreateSharedMemory(const char* name, size_t size, bool& sized) {
+    sized = false;
+#if defined(__ANDROID__) && __ANDROID_API__ < 30
+    const int fd = static_cast<int>(syscall(__NR_memfd_create, name, MFD_CLOEXEC));
+    if (fd >= 0) {
+        return fd;
+    }
+    const int ashmem = ASharedMemory_create(name, size);
+    if (ashmem >= 0) {
+        fcntl(ashmem, F_SETFD, FD_CLOEXEC);
+        sized = true;
+    }
+    return ashmem;
+#else
+    (void)size;
+    return memfd_create(name, MFD_CLOEXEC);
+#endif
+}
+} // namespace
 #endif
 
 namespace GuestFlat {
@@ -571,11 +602,12 @@ void Initialize(const std::vector<RegionRequest>& regions) {
         // twice below (once here as the always-accessible host view, once per-region as the
         // guest view whose protection the fault handler controls), the same "one backing store,
         // two VA aliases" trick CreateFileMapping/MapViewOfFile(3) gives Windows.
-        section.fd = memfd_create("wiicompiled-guest-ram", MFD_CLOEXEC);
+        bool sized = false;
+        section.fd = CreateSharedMemory("wiicompiled-guest-ram", static_cast<size_t>(rounded), sized);
         if (section.fd < 0) {
             throw std::runtime_error(LastErrorText("memfd_create for guest RAM"));
         }
-        if (ftruncate(section.fd, static_cast<off_t>(rounded)) != 0) {
+        if (!sized && ftruncate(section.fd, static_cast<off_t>(rounded)) != 0) {
             throw std::runtime_error(LastErrorText("ftruncate for guest RAM"));
         }
         section.hostView = static_cast<uint8_t*>(

@@ -41,6 +41,7 @@
 #elif defined(__ANDROID__)
 #include <android/choreographer.h>
 #include <android/looper.h>
+#include <dlfcn.h>
 #endif
 
 #include <aurora/aurora.h>
@@ -207,6 +208,8 @@ int g_gaps = 0;
 std::atomic<bool> g_parked{false};
 std::atomic<ALooper*> g_looper{nullptr};
 
+void PostFrame(AChoreographer* choreographer);
+
 void OnFrame(int64_t frameTimeNanos, void* data) {
     auto* choreographer = static_cast<AChoreographer*>(data);
     if (HostSuspend::Paused()) {
@@ -229,7 +232,27 @@ void OnFrame(int64_t frameTimeNanos, void* data) {
         }
     }
     g_previous = frameTimeNanos;
-    AChoreographer_postFrameCallback64(choreographer, OnFrame, choreographer);
+    PostFrame(choreographer);
+}
+
+// Before Android 10 the callback takes a long (64 bits on arm64 as well).
+void OnFrameLong(long frameTimeNanos, void* data) {
+    OnFrame(frameTimeNanos, data);
+}
+
+// The 64-bit callback is Android 10+ and the refresh rate callback Android 11+: looked up at run time,
+// so Android 8 and 9 take the old callback and measure the period from the callbacks' gaps.
+void PostFrame(AChoreographer* choreographer) {
+    using PostFrame64 = void (*)(AChoreographer*, AChoreographer_frameCallback64, void*);
+    static const auto post64 = reinterpret_cast<PostFrame64>(dlsym(RTLD_DEFAULT, "AChoreographer_postFrameCallback64"));
+    if (post64 != nullptr) {
+        post64(choreographer, OnFrame, choreographer);
+    } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        AChoreographer_postFrameCallback(choreographer, OnFrameLong, choreographer);
+#pragma clang diagnostic pop
+    }
 }
 
 void OnRefreshRate(int64_t vsyncPeriodNanos, void*) {
@@ -245,14 +268,18 @@ void Start() {
             if (choreographer == nullptr) {
                 return;
             }
-            AChoreographer_registerRefreshRateCallback(choreographer, OnRefreshRate, nullptr);
+            using RegisterRefreshRate = void (*)(AChoreographer*, AChoreographer_refreshRateCallback, void*);
+            if (const auto registerRefreshRate = reinterpret_cast<RegisterRefreshRate>(
+                    dlsym(RTLD_DEFAULT, "AChoreographer_registerRefreshRateCallback"))) {
+                registerRefreshRate(choreographer, OnRefreshRate, nullptr);
+            }
             g_looper.store(ALooper_forThread(), std::memory_order_release);
-            AChoreographer_postFrameCallback64(choreographer, OnFrame, choreographer);
+            PostFrame(choreographer);
             while (true) {
                 ALooper_pollOnce(-1, nullptr, nullptr, nullptr);
                 if (g_parked.load(std::memory_order_acquire) && !HostSuspend::Paused()) {
                     g_parked.store(false, std::memory_order_release);
-                    AChoreographer_postFrameCallback64(choreographer, OnFrame, choreographer);
+                    PostFrame(choreographer);
                 }
             }
         }).detach();
