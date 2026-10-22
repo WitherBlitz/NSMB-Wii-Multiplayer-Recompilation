@@ -108,7 +108,19 @@ constexpr std::string_view ShaderMain = R"(
 fn load_depth(coord: vec2i) -> f32 {
     return textureLoad(src, coord, 0);
 }
+)"sv;
 
+// Compatibility mode allows neither textureLoad nor a non-comparison sampler on a texture_depth_2d:
+// the depth texture is bound as unfilterable float instead.
+constexpr std::string_view ShaderMainCompat = R"(
+@group(0) @binding(0) var src: texture_2d<f32>;
+
+fn load_depth(coord: vec2i) -> f32 {
+    return textureLoad(src, coord, 0).x;
+}
+)"sv;
+
+constexpr std::string_view ShaderEntry = R"(
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3u) {
     if (id.x >= params.dstSize.x || id.y >= params.dstSize.y) {
@@ -125,10 +137,10 @@ fn cs_main(@builtin(global_invocation_id) id: vec3u) {
 
 std::string build_shader_source() {
   std::string source;
-  source.reserve(ShaderPreamble.size() + ReversedZBody.size() + ShaderMain.size());
   source += ShaderPreamble;
   source += gx::UseReversedZ ? ReversedZBody : ForwardZBody;
-  source += ShaderMain;
+  source += webgpu::compat_mode() ? ShaderMainCompat : ShaderMain;
+  source += ShaderEntry;
   return source;
 }
 
@@ -161,13 +173,14 @@ wgpu::ComputePipeline create_pipeline(const wgpu::BindGroupLayout& bindGroupLayo
 }
 
 wgpu::BindGroupLayout create_bind_group_layout(const char* label) {
-  constexpr std::array entries{
+  const std::array entries{
       wgpu::BindGroupLayoutEntry{
           .binding = 0,
           .visibility = wgpu::ShaderStage::Compute,
           .texture =
               wgpu::TextureBindingLayout{
-                  .sampleType = wgpu::TextureSampleType::Depth,
+                  .sampleType = webgpu::compat_mode() ? wgpu::TextureSampleType::UnfilterableFloat
+                                                      : wgpu::TextureSampleType::Depth,
                   .viewDimension = wgpu::TextureViewDimension::e2D,
               },
       },

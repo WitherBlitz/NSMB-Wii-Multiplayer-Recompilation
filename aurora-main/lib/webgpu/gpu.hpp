@@ -71,7 +71,13 @@ extern uint32_t g_shaderDebug;
 // The adapter's device name, for AuroraInfo.gpuName.
 const char* adapter_name() noexcept;
 
-bool initialize(AuroraBackend backend);
+// OpenGL ES: lets go of Dawn's EGL context on the calling thread, so another thread can take it.
+void release_gl_context();
+// The device runs in WebGPU compatibility mode (D3D11, OpenGL ES): no textureLoad on depth textures.
+bool compat_mode();
+// allowSoftware: false turns down a CPU adapter (WARP, SwiftShader), so the automatic search can try
+// the next backend on the real GPU first.
+bool initialize(AuroraBackend backend, bool allowSoftware = true);
 void shutdown();
 // Device-loss callbacks may run on a Dawn-managed thread and only publish loss state; frame
 // threads call this at ordered boundaries to turn it into the one user-visible fatal error.

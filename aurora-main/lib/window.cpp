@@ -67,6 +67,11 @@ std::atomic_bool g_surfaceReady = true;
 #endif
 bool g_lastPaused = false;
 bool g_gotFocus = false;
+
+bool test_no_activate() {
+  static const bool value = SDL_getenv("AURORA_TEST_NOACTIVATE") != nullptr;
+  return value;
+}
 #if defined(_WIN32)
 WNDPROC g_prevWindowProc = nullptr;
 // Native window handle captured once when the hook is installed. The presenter checks the native
@@ -384,6 +389,11 @@ bool create_window(AuroraBackend backend) {
   if (g_config.startFullscreen) {
     flags |= SDL_WINDOW_FULLSCREEN;
   }
+  // AURORA_TEST_NOACTIVATE (automated runs on a PC someone is using): the window never takes focus.
+  if (test_no_activate()) {
+    flags |= SDL_WINDOW_NOT_FOCUSABLE;
+    SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+  }
 #endif
   switch (backend) {
 #ifdef AURORA_ENABLE_GX
@@ -397,7 +407,8 @@ bool create_window(AuroraBackend backend) {
     flags |= SDL_WINDOW_METAL;
     break;
 #endif
-#ifdef DAWN_ENABLE_BACKEND_OPENGL
+#if defined(DAWN_ENABLE_BACKEND_OPENGL) && !defined(SDL_PLATFORM_ANDROID)
+  // (On Android, Dawn makes its own EGL surface on the native window, which can hold only one.)
   case BACKEND_OPENGL:
   case BACKEND_OPENGLES:
     flags |= SDL_WINDOW_OPENGL;

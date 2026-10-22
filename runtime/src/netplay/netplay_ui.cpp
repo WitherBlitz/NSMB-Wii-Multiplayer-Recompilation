@@ -1008,9 +1008,9 @@ constexpr int kSettingsTabs = 4;
 float g_lastScale = 1.0f;                    // the multiplier Match Screen Resolution returns to
 bool g_lastWide = true;
 
-// Cursor rows. Video: 0 tabs, 1 resolution, 2 match screen, 3 fullscreen, then FPS, frametime
-// graph, spinning coins, V-Sync and OK. Keybinds: 0 tabs, 1-12 the controls (two columns of six),
-// 13 Reset Defaults, 14 OK.
+// Cursor rows. Video: 0 tabs, 1 resolution, 2 match screen, 3 fullscreen, then renderer, FPS,
+// frametime graph, spinning coins and V-Sync (one row, side by side) and OK. Keybinds: 0 tabs, 1-12
+// the controls (two columns of six), 13 Reset Defaults, 14 OK.
 // V-Sync is a Windows and Android row (both can lock the game's clock to the display; on Android the
 // app keeps the choice through TakeSettingsChange). Fullscreen is a desktop row: a phone is always
 // fullscreen.
@@ -1025,11 +1025,40 @@ constexpr bool kFullscreenRow = false;
 constexpr bool kFullscreenRow = true;
 #endif
 constexpr int kVideoFullscreen = kFullscreenRow ? 3 : -1;
-constexpr int kVideoFps = kFullscreenRow ? 4 : 3;
+constexpr int kVideoRenderer = kFullscreenRow ? 4 : 3;
+constexpr int kVideoFps = kVideoRenderer + 1;
 constexpr int kVideoGraph = kVideoFps + 1, kVideoCoins = kVideoFps + 2;
 constexpr int kVideoVSync = kVSyncRow ? kVideoFps + 3 : -1;
 constexpr int kVideoOk = kVideoFps + (kVSyncRow ? 4 : 3);
 constexpr const char* kFullscreenNames[] = {"Off", "Borderless", "Exclusive"};
+// The renderers to pick from ([video] graphics_api, the names main.cpp maps to aurora's backends);
+// Automatic tries them best first and falls back down the list.
+struct RendererChoice {
+    const char* configName;
+    const char* label;
+};
+#if defined(__APPLE__)
+constexpr RendererChoice kRenderers[] = {{"auto", "Automatic"}, {"metal", "Metal"}};
+#elif defined(__ANDROID__)
+constexpr RendererChoice kRenderers[] = {{"auto", "Automatic"}, {"vulkan", "Vulkan"}, {"opengles", "OpenGL ES"}};
+#elif defined(_WIN32)
+constexpr RendererChoice kRenderers[] = {
+    {"auto", "Automatic"}, {"d3d12", "Direct3D 12"}, {"vulkan", "Vulkan"}, {"d3d11", "Direct3D 11"}};
+#else
+constexpr RendererChoice kRenderers[] = {{"auto", "Automatic"}, {"vulkan", "Vulkan"}};
+#endif
+constexpr int kRendererCount = static_cast<int>(sizeof(kRenderers) / sizeof(kRenderers[0]));
+std::atomic<bool> g_rendererChanged{false};  // the Android app keeps the choice (TakeSettingsChange)
+
+int RendererIndex() {
+    const std::string chosen = settings_overlay::GraphicsApiChoice();
+    for (int i = 0; i < kRendererCount; ++i) {
+        if (chosen == kRenderers[i].configName) {
+            return i;
+        }
+    }
+    return 0;
+}
 constexpr int kKeyRows = 6;
 // The QoL checkboxes under the keys: Space Smart Spin, Reverse Tilt and, on Android, Touch Controls.
 constexpr int kKeySmartSpin = 1 + Keybinds::kActionCount;
@@ -1309,8 +1338,8 @@ void DrawVideoTab(const Canvas& c) {
     const bool match = scale <= 0.0f;
     const std::vector<VideoChoice> choices = VideoChoices();
     const VideoChoice shown = choices[CurrentChoice(choices)];
-    // Five to seven rows between the tabs and the hint line.
-    constexpr int kRows = 5 + (kFullscreenRow ? 1 : 0) + (kVSyncRow ? 1 : 0);
+    // Six or seven rows between the tabs and the hint line.
+    constexpr int kRows = 6 + (kFullscreenRow ? 1 : 0);
     const float kRowH = kRows >= 7 ? 33.0f : kRows == 6 ? 37.0f : 42.0f;
     const float step = kRows >= 7 ? 37.0f : kRows == 6 ? 43.0f : 50.0f;
     const float top = kRows >= 7 ? 125.0f : kRows == 6 ? 123.0f : 118.0f;
@@ -1339,7 +1368,15 @@ void DrawVideoTab(const Canvas& c) {
                g_ui.cursor == kVideoFullscreen, true, g_ui.frame, buttonSize, kRowH);
         AddHit(105, y, 276, step - 2, kVideoFullscreen);
     }
-    const int first = kFullscreenRow ? 3 : 2;
+    {
+        // Renderer: each press moves to the next (left steps back); it takes effect at the next start.
+        const float y = top - (kFullscreenRow ? 3 : 2) * step;
+        Text(c, "Renderer", -300, y, labelSize, 0);
+        Button(c, kRenderers[RendererIndex()].label, 105, y, 270, g_ui.cursor == kVideoRenderer, kRendererCount > 1,
+               g_ui.frame, buttonSize, kRowH);
+        AddHit(105, y, 276, step - 2, kVideoRenderer);
+    }
+    const int first = kFullscreenRow ? 4 : 3;
     row("Show FPS Counter", first, kVideoFps, settings_overlay::ShowFps());
     {
         // Frametime Graph: the button turns it on and off; the slider beside it sets its size (a
@@ -1370,9 +1407,19 @@ void DrawVideoTab(const Canvas& c) {
         DrawSliderAt(c, kGraphSliderX0, kGraphSliderX1, y, GraphSizeToFill(size), selected);
         Text(c, std::to_string(size) + "%", 290, y, labelSize, 1, selected ? 0xFFF0B0FFu : 0xFFFFFFFFu);
     }
-    row("Spinning Coins", first + 2, kVideoCoins, settings_overlay::SpinningCoins());
     if (kVSyncRow) {
-        row("V-Sync", first + 3, kVideoVSync, settings_overlay::VSync());
+        // Spinning Coins and V-Sync side by side, like the Keybinds tab's checkboxes.
+        const float y = top - (first + 2) * step;
+        constexpr float kWidth = 330.0f, kGap = 340.0f;
+        const auto half = [&](const char* label, float x, int cursor, bool on) {
+            Button(c, label, x + 18, y, kWidth, g_ui.cursor == cursor, true, g_ui.frame, buttonSize, kRowH);
+            Checkbox(c, x - kWidth / 2 + 24, y, on);
+            AddHit(x, y, kWidth + 6, step - 2, cursor);
+        };
+        half("Spinning Coins", -kGap / 2, kVideoCoins, settings_overlay::SpinningCoins());
+        half("V-Sync", kGap / 2, kVideoVSync, settings_overlay::VSync());
+    } else {
+        row("Spinning Coins", first + 2, kVideoCoins, settings_overlay::SpinningCoins());
     }
     const char* hint = match ? "The screen's own resolution, filling the whole screen."
                        : !DisplaySettings::SurfaceWide() ? "Rendered at this many lines, then scaled to the screen."
@@ -1382,7 +1429,10 @@ void DrawVideoTab(const Canvas& c) {
     const char* fullscreenNote = fullscreen == 1 ? "Borderless: a window covering the whole screen (F11)."
                                  : fullscreen == 2 ? "Exclusive: the game takes over the display."
                                                    : "Off: the game plays in a window.";
+    const std::string rendererNote = std::string(RendererIndex() == 0 ? "The best this device has. " : "") +
+                                     "Takes effect at the next start. Now: " + settings_overlay::RunningGraphicsApi() + ".";
     const char* note = g_ui.cursor == kVideoFullscreen ? fullscreenNote
+                       : g_ui.cursor == kVideoRenderer ? rendererNote.c_str()
                        : g_ui.cursor == kVideoGraph ? "Each frame's time, under the FPS counter. Left and right: its size."
                        : g_ui.cursor == kVideoCoins ? "Animated coins and blocks. Off saves a little GPU work."
                        : g_ui.cursor == kVideoVSync ? "No tearing: frames wait for the display, the game keeps its pace."
@@ -1474,9 +1524,25 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
     }
     if (g_settingsTab == kTabVideo) {
         const bool match = settings_overlay::RenderScale() <= 0.0f;
-        if (up) cursor = cursor == 2 && match ? 0 : cursor - 1;
-        if (down) cursor = std::min(kVideoOk, cursor + 1);
-        if (cursor == 1 && (left || right || confirm)) {
+        // Spinning Coins and V-Sync share a row: left and right move between them.
+        if (up) {
+            cursor = cursor == 2 && match              ? 0
+                     : cursor == kVideoOk && kVSyncRow ? kVideoCoins
+                     : cursor == kVideoVSync           ? kVideoGraph
+                                                       : cursor - 1;
+        }
+        if (down) cursor = cursor == kVideoCoins && kVSyncRow ? kVideoOk : std::min(kVideoOk, cursor + 1);
+        if (kVSyncRow && cursor == kVideoCoins && right) {
+            cursor = kVideoVSync;
+        } else if (kVSyncRow && cursor == kVideoVSync && left) {
+            cursor = kVideoCoins;
+        } else if (cursor == kVideoRenderer && (confirm || left || right)) {
+            const int next = (RendererIndex() + (left ? kRendererCount - 1 : 1)) % kRendererCount;
+            settings_overlay::SetGraphicsApiChoice(kRenderers[next].configName);
+            settings_overlay::PlayGameSound(settings_overlay::kGameSoundDecide);
+            g_rendererChanged = true;
+            g_settingsChanged = true;
+        } else if (cursor == 1 && (left || right || confirm)) {
             StepVideo(left ? -1 : 1, confirm);
         } else if (confirm && cursor == 2) {
             ToggleMatchScreen();
@@ -2000,7 +2066,7 @@ bool TapScreenUp() {
 }
 
 bool TakeSettingsChange(float& renderScale, bool& showFps, int& aspect, bool& spinningCoins, bool& frameGraph,
-                        bool& vsync, int& frameGraphSize, int& touchControls) {
+                        bool& vsync, int& frameGraphSize, int& touchControls, int& renderer) {
     if (!g_settingsChanged.exchange(false)) {
         return false;
     }
@@ -2013,6 +2079,7 @@ bool TakeSettingsChange(float& renderScale, bool& showFps, int& aspect, bool& sp
     frameGraphSize = settings_overlay::FrameGraphSize();
     // Only a change made here: the app's own menu changes it too, and tells the game.
     touchControls = g_touchControlsToggled.exchange(false) ? (settings_overlay::TouchControls() ? 1 : 0) : -1;
+    renderer = g_rendererChanged.exchange(false) ? RendererIndex() : -1;
     return true;
 }
 

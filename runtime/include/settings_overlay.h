@@ -3,6 +3,8 @@
 #include <aurora/aurora.h>
 #include <aurora/event.h>
 
+#include <string>
+
 namespace settings_overlay {
 // Apply persistent controller settings once Aurora has discovered host devices.
 void InitializeRuntimeSettings() noexcept;
@@ -27,6 +29,11 @@ void SetFrameGraphSize(int percent, bool save) noexcept;
 void SetTouchControls(bool on) noexcept;
 bool TouchControls() noexcept;
 int FrameGraphSize() noexcept;
+// The renderer: [video] graphics_api as chosen for the next start ("auto", "vulkan", "d3d12", "d3d11",
+// "opengles"...), and the one this run uses ("Vulkan", "Direct3D 11"...).
+std::string GraphicsApiChoice();
+void SetGraphicsApiChoice(const std::string& name) noexcept;
+const char* RunningGraphicsApi() noexcept;
 // V-Sync: presents wait for the display, and the game's clock follows its refresh (hle/vi.cpp).
 // Off by default. Saved to Config.toml.
 void SetVSync(bool enabled) noexcept;

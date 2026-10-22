@@ -18,7 +18,9 @@ function(aurora_copy_runtime_dlls target)
     )
   endforeach ()
 
-  # Copy DXC DLLs that Dawn loads via LoadLibrary at runtime
+  # Copy the shader compiler DLLs that Dawn loads via LoadLibrary at runtime: DXC for D3D12, and
+  # FXC (d3dcompiler_47.dll, the Windows SDK's redistributable) for D3D11, which Dawn only looks
+  # for beside the executable.
   if (TARGET dawn::webgpu_dawn)
     get_target_property(_dawn_loc dawn::webgpu_dawn IMPORTED_LOCATION)
     if (NOT _dawn_loc)
@@ -26,7 +28,7 @@ function(aurora_copy_runtime_dlls target)
     endif ()
     if (_dawn_loc)
       cmake_path(GET _dawn_loc PARENT_PATH _dawn_bin_dir)
-      foreach (_dll IN ITEMS dxcompiler.dll dxil.dll)
+      foreach (_dll IN ITEMS dxcompiler.dll dxil.dll d3dcompiler_47.dll)
         if (EXISTS "${_dawn_bin_dir}/${_dll}")
           add_custom_command(TARGET ${target} POST_BUILD
               COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_dawn_bin_dir}/${_dll}" $<TARGET_FILE_DIR:${target}>

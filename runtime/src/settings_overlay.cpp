@@ -1871,6 +1871,21 @@ bool TouchControls() noexcept {
     return g_touchControls;
 }
 
+std::string GraphicsApiChoice() {
+    return RuntimeConfigFile::GraphicsApi("auto");
+}
+
+void SetGraphicsApiChoice(const std::string& name) noexcept {
+    try {
+        RuntimeConfigFile::SetGraphicsApi(name);
+    } catch (...) {
+    }
+}
+
+const char* RunningGraphicsApi() noexcept {
+    return GraphicsApiDisplayName();
+}
+
 bool FrameGraph() noexcept {
     return g_frameGraph;
 }

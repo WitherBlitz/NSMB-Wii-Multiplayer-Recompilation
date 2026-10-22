@@ -180,11 +180,13 @@ inline bool IsSupportedResolutionMultiplier(float value) {
 inline bool IsSupportedGraphicsApi(std::string_view value) {
 #if defined(__APPLE__)
     static constexpr std::array<std::string_view, 2> values{"auto", "metal"};
+#elif defined(__ANDROID__)
+    static constexpr std::array<std::string_view, 3> values{"auto", "vulkan", "opengles"};
 // only vulkan for linux
 #elif defined(__linux__)
     static constexpr std::array<std::string_view, 2> values{"auto", "vulkan"};
 #elif defined(_WIN32)
-    static constexpr std::array<std::string_view, 3> values{"auto", "d3d12", "vulkan"};
+    static constexpr std::array<std::string_view, 4> values{"auto", "d3d12", "vulkan", "d3d11"};
 #endif
     return std::find(values.begin(), values.end(), value) != values.end();
 }
@@ -1170,6 +1172,15 @@ inline uint32_t DisabledPostProcessingPaths(uint32_t fallback = 0) {
 
 inline std::string GraphicsApi(std::string fallback = "auto") {
     return Get().graphicsApi.value_or(std::move(fallback));
+}
+
+// Takes effect at the next start: the renderer is chosen once, before the window exists.
+inline bool SetGraphicsApi(const std::string& value) {
+    if (!IsSupportedGraphicsApi(value)) {
+        return false;
+    }
+    Mutable().graphicsApi = value;
+    return WriteSetting("video", "graphics_api", FormatString(value));
 }
 
 inline std::string DisplayMode(std::string fallback = "windowed") {

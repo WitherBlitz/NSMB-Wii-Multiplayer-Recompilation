@@ -14,6 +14,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(__ANDROID__)
+#include <dlfcn.h>
+#endif
+
 #include <aurora/aurora.h>
 #include <aurora/gfx.h>
 #include <aurora/render_size_limits.hpp>
@@ -636,7 +640,40 @@ static bool create_surface() {
   return true;
 }
 
-bool initialize(AuroraBackend auroraBackend) {
+void release_gl_context() {
+#if defined(__ANDROID__)
+  // Dawn's GL backend leaves its EGL context current on the thread that last used it; another thread
+  // (the frame worker, the presenter) then fails eglMakeCurrent with EGL_BAD_ACCESS. EGL comes from
+  // the libEGL.so Dawn already loaded.
+  if (g_backendType != wgpu::BackendType::OpenGLES) {
+    return;
+  }
+  static void* const egl = dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
+  if (egl == nullptr) {
+    return;
+  }
+  using GetCurrent = void* (*)();
+  using MakeCurrent = unsigned (*)(void*, void*, void*, void*);
+  static const auto getDisplay = reinterpret_cast<GetCurrent>(dlsym(egl, "eglGetCurrentDisplay"));
+  static const auto getContext = reinterpret_cast<GetCurrent>(dlsym(egl, "eglGetCurrentContext"));
+  static const auto makeCurrent = reinterpret_cast<MakeCurrent>(dlsym(egl, "eglMakeCurrent"));
+  if (getDisplay == nullptr || getContext == nullptr || makeCurrent == nullptr || getContext() == nullptr) {
+    return;
+  }
+  makeCurrent(getDisplay(), nullptr, nullptr, nullptr);  // EGL_NO_SURFACE, EGL_NO_CONTEXT
+#endif
+}
+
+// Backends Dawn runs in WebGPU compatibility mode (D3D11 feature level 11_0, OpenGL 4.4+, OpenGL ES
+// 3.1+): the GPUs that have nothing newer.
+static bool is_compat_backend(wgpu::BackendType backend) {
+  return backend == wgpu::BackendType::D3D11 || backend == wgpu::BackendType::OpenGL ||
+         backend == wgpu::BackendType::OpenGLES;
+}
+
+bool compat_mode() { return is_compat_backend(g_backendType); }
+
+bool initialize(AuroraBackend auroraBackend, bool allowSoftware) {
   if (!g_instance) {
     Log.info("Creating WebGPU instance");
     const std::array requiredInstanceFeatures{
@@ -677,6 +714,7 @@ bool initialize(AuroraBackend auroraBackend) {
   }
   {
     const wgpu::RequestAdapterOptions options{
+        .featureLevel = is_compat_backend(backend) ? wgpu::FeatureLevel::Compatibility : wgpu::FeatureLevel::Core,
         .powerPreference = wgpu::PowerPreference::HighPerformance,
         .backendType = backend,
         .compatibleSurface = g_surface,
@@ -706,6 +744,15 @@ bool initialize(AuroraBackend auroraBackend) {
     }
   }
   g_adapter.GetInfo(&g_adapterInfo);
+  if (!allowSoftware && g_adapterInfo.adapterType == wgpu::AdapterType::CPU) {
+    // A GPU without D3D12 still gets Windows' WARP rasterizer here: a few frames a second.
+    Log.warn("{} only offers a software adapter ({}); trying the next backend",
+             magic_enum::enum_name(backend), std::string_view{g_adapterInfo.device});
+    SDL_SetError("Only a software %.*s adapter is available", static_cast<int>(magic_enum::enum_name(backend).size()),
+                 magic_enum::enum_name(backend).data());
+    g_adapter = {};
+    return false;
+  }
   g_backendType = g_adapterInfo.backendType;
   const auto backendName = magic_enum::enum_name(g_backendType);
   auto adapterName = g_adapterInfo.device;
@@ -725,9 +772,29 @@ bool initialize(AuroraBackend auroraBackend) {
   uint32_t maxTextureDimension2D = 0;
   {
     wgpu::Limits supportedLimits{};
+    // Compatibility mode (D3D11, OpenGL ES) starts storage buffers in the vertex stage at 0, and the
+    // GX vertex pulling reads its vertices from storage buffers there: ask for what the adapter has.
+    const bool compat = is_compat_backend(g_backendType);
+    wgpu::CompatibilityModeLimits supportedCompatLimits{};
+    if (compat) {
+      supportedLimits.nextInChain = &supportedCompatLimits;
+    }
     g_adapter.GetLimits(&supportedLimits);
+    supportedLimits.nextInChain = nullptr;
     maxTextureDimension2D = supportedLimits.maxTextureDimension2D;
-    const wgpu::Limits requiredLimits{
+    wgpu::CompatibilityModeLimits requiredCompatLimits{};
+    requiredCompatLimits.maxStorageBuffersInVertexStage = supportedCompatLimits.maxStorageBuffersInVertexStage;
+    requiredCompatLimits.maxStorageTexturesInVertexStage = supportedCompatLimits.maxStorageTexturesInVertexStage;
+    requiredCompatLimits.maxStorageBuffersInFragmentStage = supportedCompatLimits.maxStorageBuffersInFragmentStage;
+    requiredCompatLimits.maxStorageTexturesInFragmentStage = supportedCompatLimits.maxStorageTexturesInFragmentStage;
+    if (compat) {
+      Log.info("Compatibility mode storage limits: {} buffers / {} textures in the vertex stage, {} / {} in the "
+               "fragment stage",
+               supportedCompatLimits.maxStorageBuffersInVertexStage, supportedCompatLimits.maxStorageTexturesInVertexStage,
+               supportedCompatLimits.maxStorageBuffersInFragmentStage,
+               supportedCompatLimits.maxStorageTexturesInFragmentStage);
+    }
+    wgpu::Limits requiredLimits{
         // Use "best" supported limits
         .maxTextureDimension1D = supportedLimits.maxTextureDimension1D == 0 ? WGPU_LIMIT_U32_UNDEFINED
                                                                             : supportedLimits.maxTextureDimension1D,
@@ -748,6 +815,9 @@ bool initialize(AuroraBackend auroraBackend) {
         .minStorageBufferOffsetAlignment =
             supportedLimits.minStorageBufferOffsetAlignment < 16 ? 16 : supportedLimits.minStorageBufferOffsetAlignment,
     };
+    if (compat) {
+      requiredLimits.nextInChain = &requiredCompatLimits;
+    }
     Log.info(
         "Using limits:"
         "\n  maxTextureDimension1D: {}"
@@ -825,6 +895,11 @@ bool initialize(AuroraBackend auroraBackend) {
 #endif
     if (g_backendType == wgpu::BackendType::Vulkan && !gfx_flag("nomono")) {
       enableToggles.push_back("vulkan_monolithic_pipeline_cache");
+    }
+    if (g_backendType == wgpu::BackendType::OpenGL || g_backendType == wgpu::BackendType::OpenGLES) {
+      // The frame worker, presenter and pipeline compilers all call into the device: without this a
+      // second thread's eglMakeCurrent fails with EGL_BAD_ACCESS while another holds the context.
+      enableToggles.push_back("gl_allow_context_on_multi_threads");
     }
     std::vector<const char*> disableToggles;
     for (const auto& flag : g_gfxFlags) {

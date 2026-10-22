@@ -99,8 +99,23 @@ fn sample_copy(uv: vec2f) -> vec4f {
 }
 )"sv;
 
-static const std::string DepthShaderPreamble = R"(
+// The depth source, which initialize() prepends: a texture_depth_2d, or in compatibility mode (no
+// textureLoad, no non-comparison sampler on depth textures) the depth texture bound as unfilterable
+// float.
+static constexpr std::string_view DepthSourceDecl = R"(
 @group(0) @binding(0) var src: texture_depth_2d;
+fn gx_load_depth(coord: vec2i) -> f32 {
+    return textureLoad(src, coord, 0);
+}
+)";
+static constexpr std::string_view DepthSourceDeclCompat = R"(
+@group(0) @binding(0) var src: texture_2d<f32>;
+fn gx_load_depth(coord: vec2i) -> f32 {
+    return textureLoad(src, coord, 0).x;
+}
+)";
+
+static const std::string DepthShaderPreamble = R"(
 
 struct UVTransform {
     offset: vec2f,
@@ -136,7 +151,7 @@ var<private> uvs: array<vec2f, 3> = array(
 fn gx_z24_at_coord(unclamped_coord: vec2i) -> u32 {
     let tex_size = vec2i(textureDimensions(src));
     let coord = clamp(unclamped_coord, vec2i(0), tex_size - vec2i(1));
-    let depth = textureLoad(src, coord, 0);
+    let depth = gx_load_depth(coord);
     return min(u32(clamp(1.0 - depth, 0.0, 1.0) * 16777215.0 + 0.5), 0x00ffffffu);
 }
 )"s
@@ -144,7 +159,7 @@ fn gx_z24_at_coord(unclamped_coord: vec2i) -> u32 {
 fn gx_z24_at_coord(unclamped_coord: vec2i) -> u32 {
     let tex_size = vec2i(textureDimensions(src));
     let coord = clamp(unclamped_coord, vec2i(0), tex_size - vec2i(1));
-    let depth = textureLoad(src, coord, 0);
+    let depth = gx_load_depth(coord);
     return min(u32(clamp(depth, 0.0, 1.0) * 16777215.0 + 0.5), 0x00ffffffu);
 }
 )"s) + R"(
@@ -461,13 +476,14 @@ void initialize() {
   };
   g_bindGroupLayout = g_device.CreateBindGroupLayout(&bindGroupLayoutDescriptor);
 
-  static constexpr std::array depthBindGroupLayoutEntries{
+  const std::array depthBindGroupLayoutEntries{
       wgpu::BindGroupLayoutEntry{
           .binding = 0,
           .visibility = wgpu::ShaderStage::Fragment,
           .texture =
               wgpu::TextureBindingLayout{
-                  .sampleType = wgpu::TextureSampleType::Depth,
+                  .sampleType = webgpu::compat_mode() ? wgpu::TextureSampleType::UnfilterableFloat
+                                                      : wgpu::TextureSampleType::Depth,
                   .viewDimension = wgpu::TextureViewDimension::e2D,
               },
       },
@@ -480,7 +496,7 @@ void initialize() {
               },
       },
   };
-  static constexpr wgpu::BindGroupLayoutDescriptor depthBindGroupLayoutDescriptor{
+  const wgpu::BindGroupLayoutDescriptor depthBindGroupLayoutDescriptor{
       .label = "TexCopyConv Depth Bind Group Layout",
       .entryCount = depthBindGroupLayoutEntries.size(),
       .entries = depthBindGroupLayoutEntries.data(),
@@ -499,8 +515,10 @@ void initialize() {
       Log.fatal("Output format mismatch for {}", conv.fmt);
     }
   }
+  const std::string depthPreamble =
+      std::string(webgpu::compat_mode() ? DepthSourceDeclCompat : DepthSourceDecl) + DepthShaderPreamble;
   for (const auto& conv : DepthConvPipelines) {
-    g_pipelines[conv.fmt] = create_pipeline(conv, DepthShaderPreamble, g_depthBindGroupLayout);
+    g_pipelines[conv.fmt] = create_pipeline(conv, depthPreamble, g_depthBindGroupLayout);
     if (conv.outputFormat != to_wgpu(conv.fmt)) {
       Log.fatal("Output format mismatch for {}", conv.fmt);
     }

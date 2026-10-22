@@ -259,6 +259,10 @@ struct FrameWorkerState {
 
 FrameWorkerState g_frameWorker;
 
+bool gl_single_thread() noexcept {
+  return webgpu::g_backendType == wgpu::BackendType::OpenGL || webgpu::g_backendType == wgpu::BackendType::OpenGLES;
+}
+
 bool frame_worker_requested() noexcept {
 #ifdef AURORA_ENABLE_GX
   static const bool enabled = [] {
@@ -277,6 +281,11 @@ bool frame_worker_requested() noexcept {
       return false;
     }
 #endif
+    // OpenGL (ES): one GL context, used from one thread (the pipeline cache already compiles on the
+    // caller for these backends).
+    if (gl_single_thread()) {
+      return false;
+    }
     return true;
   }();
 #if defined(_WIN32)
@@ -625,24 +634,23 @@ constexpr std::array PreferredBackendOrder{
 #ifdef DAWN_ENABLE_BACKEND_D3D12
     BACKEND_D3D12,
 #endif
-#if defined(_WIN32) && defined(DAWN_ENABLE_BACKEND_D3D11)
-    BACKEND_D3D11,
-#endif
 #ifdef DAWN_ENABLE_BACKEND_METAL
     BACKEND_METAL,
 #endif
 #ifdef DAWN_ENABLE_BACKEND_VULKAN
     BACKEND_VULKAN,
 #endif
-#if !defined(_WIN32) && defined(DAWN_ENABLE_BACKEND_D3D11)
+// The compatibility-mode backends, for GPUs with nothing newer: D3D11 (feature level 11_0), then
+// OpenGL 4.4+ / OpenGL ES 3.1+.
+#ifdef DAWN_ENABLE_BACKEND_D3D11
     BACKEND_D3D11,
 #endif
-// #ifdef DAWN_ENABLE_BACKEND_DESKTOP_GL
-//     BACKEND_OPENGL,
-// #endif
-// #ifdef DAWN_ENABLE_BACKEND_OPENGLES
-//     BACKEND_OPENGLES,
-// #endif
+#ifdef DAWN_ENABLE_BACKEND_DESKTOP_GL
+    BACKEND_OPENGL,
+#endif
+#ifdef DAWN_ENABLE_BACKEND_OPENGLES
+    BACKEND_OPENGLES,
+#endif
 #ifdef DAWN_ENABLE_BACKEND_NULL
     BACKEND_NULL,
 #endif
@@ -729,14 +737,20 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
     }
   }
 
-  if (!windowCreated) {
+  // Every backend on a real GPU first; a software rasterizer (WARP, SwiftShader) only when none
+  // works, and the null backend last of all.
+  for (int pass = 0; pass < 2 && !windowCreated; ++pass) {
+    const bool allowSoftware = pass == 1;
     for (const auto backendType : PreferredBackendOrder) {
+      if (backendType == BACKEND_NULL && !allowSoftware) {
+        continue;
+      }
       selectedBackend = backendType;
       if (!window::create_window(selectedBackend)) {
         rememberGraphicsError();
         continue;
       }
-      if (webgpu::initialize(selectedBackend)) {
+      if (webgpu::initialize(selectedBackend, allowSoftware)) {
         windowCreated = true;
         break;
       } else {
@@ -788,6 +802,7 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
     g_config.imGuiInitCallback(&size);
   }
   imgui::initialize();
+  webgpu::release_gl_context();  // OpenGL ES: the worker threads take Dawn's context from here on
 #endif
 
   g_initialFrame = true;
@@ -1027,6 +1042,7 @@ bool present_presentation_job(const PresentationJob& job) {
           {
             std::lock_guard submitLock(g_queueSubmitMutex);
             presentStatus = g_surface.Present();
+            webgpu::release_gl_context();  // OpenGL ES: the swap leaves Dawn's context current here
           }
           presentDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(
               PresentClock::now() - presentStarted);
@@ -1192,6 +1208,13 @@ void wait_for_presenter_idle() noexcept {
 }
 
 void enqueue_presentations(std::vector<PresentationJob>&& jobs) {
+  if (gl_single_thread()) {
+    // OpenGL (ES): present on this thread, which owns the GL context.
+    for (auto& job : jobs) {
+      present_presentation_job(job);
+    }
+    return;
+  }
   ensure_presenter_started();
   // Scale the bound with the group being handed over: a 240 Hz frame enqueues four jobs at once,
   // and a bound sized for two groups blocked the frame worker on a draining one.
