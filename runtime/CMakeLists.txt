@@ -202,12 +202,13 @@ set(MKW_TRANSLATED_PPC_FP_OPTIONS -fno-fast-math -ffp-contract=off)
 
 # kpad.cpp derives the accelerometer values the game reads (magnitude, speed, acc_vertical) in
 # native float math; network play needs them bit-identical on x86 and ARM, as the translated
-# code is.
+# code is. nsmbw_camera.cpp stands in for translated camera-limit functions, so the same holds.
 set(MKW_PPC_SEMANTIC_RUNTIME_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/src/ppc_helpers.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/fpu_helpers.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/ppc_quantized.cpp"
-    "${CMAKE_CURRENT_LIST_DIR}/src/hle/input/kpad.cpp")
+    "${CMAKE_CURRENT_LIST_DIR}/src/hle/input/kpad.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/hle/nsmbw_camera.cpp")
 set_source_files_properties(${MKW_PPC_SEMANTIC_RUNTIME_SOURCES} PROPERTIES
     SKIP_UNITY_BUILD_INCLUSION ON
     SKIP_PRECOMPILE_HEADERS ON

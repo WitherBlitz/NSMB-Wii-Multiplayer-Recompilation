@@ -2033,17 +2033,20 @@ void DumpProfiles() {
 // enemies' courses (5-32: World 5's giant Piranha Plant), 37 airship. Works by
 // rewriting dInfo_c::m_startGameInfo (0x80315B90; world/course shown at +0xC/+0xD and loaded at
 // +0xE/+0xF, all from 0)
-// while the map fades out to the course-in scene, which reads it.
+// while the map fades out to the course-in scene, which reads it. <world>-<course>:<area>:<entrance>
+// starts in that area (from 0) at that entrance id instead of the course's start.
 void Warp() {
-    static int world = -1, course = -1;
+    static int world = -1, course = -1, area = 0, entrance = 0;
     static bool parsed = false;
     if (!parsed) {
         parsed = true;
         if (const char* value = std::getenv("NSMBW_WARP"); value != nullptr && value[0] != 0) {
-            int w = 0, c = 0;
-            if (std::sscanf(value, "%d-%d", &w, &c) == 2 && w >= 1 && w <= 9 && c >= 1 && c <= 42) {
+            int w = 0, c = 0, a = 0, e = 0;
+            if (std::sscanf(value, "%d-%d:%d:%d", &w, &c, &a, &e) >= 2 && w >= 1 && w <= 9 && c >= 1 && c <= 42) {
                 world = w - 1;
                 course = c <= 9 ? c - 1 : c;  // 1-9 as shown, the rest as STAGE_e numbers
+                area = a;
+                entrance = e;
             }
         }
     }
@@ -2062,12 +2065,27 @@ void Warp() {
             Memory::Write8(0x80315B90u + 0xD, static_cast<uint8_t>(course));
             Memory::Write8(0x80315B90u + 0xE, static_cast<uint8_t>(world));  // the course loaded
             Memory::Write8(0x80315B90u + 0xF, static_cast<uint8_t>(course));
-            Memory::Write8(0x80315B90u + 0x5, 0);  // entrance
-            Memory::Write8(0x80315B90u + 0x6, 0);  // area
+            Memory::Write8(0x80315B90u + 0x5, static_cast<uint8_t>(entrance));
+            Memory::Write8(0x80315B90u + 0x6, static_cast<uint8_t>(area));
             RT_LOGF(RT_TAG_RUNTIME, "warp: course %d-%d\n", world + 1, course + 1);
             done = true;
         }
-    } else {
+    } else if ((now == 0x006 || next == 0x006) && (area != 0 || entrance != 0)) {
+        // RESTART_CRSIN (a save that boots back into its last course) starts from its own copy,
+        // dScRestartCrsin_c::m_startGameInfo: with an area given, boot straight into it.
+        constexpr uint32_t kRestart = 0x80373D60u;
+        Memory::Write8(kRestart + 0xC, static_cast<uint8_t>(world));
+        Memory::Write8(kRestart + 0xD, static_cast<uint8_t>(course));
+        Memory::Write8(kRestart + 0xE, static_cast<uint8_t>(world));
+        Memory::Write8(kRestart + 0xF, static_cast<uint8_t>(course));
+        Memory::Write8(kRestart + 0x5, static_cast<uint8_t>(entrance));
+        Memory::Write8(kRestart + 0x6, static_cast<uint8_t>(area));
+    } else if (now == 0x007 && done && (area != 0 || entrance != 0)) {
+        // The course-in scene can set its own start point after the map's: keep ours until the
+        // course loads.
+        Memory::Write8(0x80315B90u + 0x5, static_cast<uint8_t>(entrance));
+        Memory::Write8(0x80315B90u + 0x6, static_cast<uint8_t>(area));
+    } else if (now != 0x007) {
         done = false;
     }
 }
