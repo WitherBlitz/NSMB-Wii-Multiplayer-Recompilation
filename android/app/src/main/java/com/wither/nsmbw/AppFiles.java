@@ -136,6 +136,8 @@ final class AppFiles {
                 + "spinning_coins = " + settings.spinningCoins() + "\n"
                 + "frame_graph = " + settings.frameGraph() + "\n"
                 + "vsync = " + settings.vsync() + "\n"
+                + "frame_graph_size = " + settings.frameGraphSize() + "\n"
+                + "touch_controls = " + settings.touchControls() + "\n"
                 + "texture_replacements = false\n"
                 + "texture_dumps = false\n"
                 + (hasTable(config, "audio") ? "" : "\n[audio]\n"

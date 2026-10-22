@@ -49,6 +49,10 @@ final class AppSettings {
 
     /** V-Sync: frames go out in step with the display and the game's clock follows its vsync. */
     boolean vsync() { return prefs.getBoolean("vsync", true); }
+
+    /** The frametime graph's size in percent (5-200, 50 its original size), set in the game's Video tab. */
+    int frameGraphSize() { return prefs.getInt("frame_graph_size", 50); }
+    void setFrameGraphSize(int percent) { prefs.edit().putInt("frame_graph_size", percent).commit(); }
     void setVSync(boolean on) { prefs.edit().putBoolean("vsync", on).commit(); }
 
     boolean touchControls() { return prefs.getBoolean("touch_controls", true); }

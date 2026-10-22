@@ -28,6 +28,8 @@ public final class GameActivity extends SDLActivity
 
     /** Player 1's on-screen remote and motion (runtime/src/android/android_bridge.cpp). */
     static native void nativeSetTouchState(int buttons, boolean shake, float tilt);
+    /** The touch controls setting, for the game's Keybinds tab (which can switch it too). */
+    static native void nativeSetTouchControls(boolean on);
 
     /** The Display menu: aspect, render scale (480 lines per 1x), FPS counter (DisplaySettings). */
     static native void nativeApplyDisplaySettings(int aspect, float renderScale, boolean showFps);
@@ -51,9 +53,10 @@ public final class GameActivity extends SDLActivity
     /**
      * The app left the screen (true) or came back (false). Leaving, the game writes a backup Quick Save
      * of the progress so far (deleted again when the app comes back) and pauses; nativeGamePaused says
-     * when it has (runtime/src/host_suspend.h).
+     * when it has (runtime/src/host_suspend.h). With the screen just turned off (backup false) it only
+     * pauses: the game waits in memory, nothing runs or is written.
      */
-    static native void nativeSetBackground(boolean background);
+    static native void nativeSetBackground(boolean background, boolean backup);
     static native boolean nativeGamePaused();
 
     /** How long leaving the app waits for the backup save and the pause, before SDL's own pause. */
@@ -130,6 +133,11 @@ public final class GameActivity extends SDLActivity
                     if (changed.length > 3) settings.setSpinningCoins(changed[3] > 0.5f);
                     if (changed.length > 4) settings.setFrameGraph(changed[4] > 0.5f);
                     if (changed.length > 5) settings.setVSync(changed[5] > 0.5f);
+                    if (changed.length > 6) settings.setFrameGraphSize(Math.round(changed[6]));
+                    if (changed.length > 7 && changed[7] >= 0f) {
+                        settings.setTouchControls(changed[7] > 0.5f);  // the Keybinds tab's checkbox
+                        applyControlSettings();
+                    }
                 }
             }
             if (nativeReady && nativeTapScreen()) {
@@ -156,7 +164,7 @@ public final class GameActivity extends SDLActivity
     protected void onResume() {
         super.onResume();
         if (nativeReady) {
-            nativeSetBackground(false);  // the game carries on where it stopped
+            nativeSetBackground(false, false);  // the game carries on where it stopped
         }
         menuPoll.removeCallbacks(pollMenu);
         menuPoll.post(pollMenu);
@@ -172,7 +180,10 @@ public final class GameActivity extends SDLActivity
             // Before SDL's pause stops the game thread: let the game write its backup Quick Save (in
             // case Android ends the app while it is away) and pause itself. Bounded: a save that takes
             // longer is simply not published (the NAND only commits closed files).
-            nativeSetBackground(true);
+            // The screen turning off (sleep) only pauses: no backup Quick Save, the game waits in memory.
+            final android.os.PowerManager power = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+            final boolean screenOn = power == null || power.isInteractive();
+            nativeSetBackground(true, screenOn);
             final long until = android.os.SystemClock.uptimeMillis() + SUSPEND_WAIT_MS;
             while (!nativeGamePaused() && android.os.SystemClock.uptimeMillis() < until) {
                 try {
@@ -296,6 +307,11 @@ public final class GameActivity extends SDLActivity
 
     private void applyControlSettings() {
         touch.setControlsVisible(settings.touchControls());
+        try {
+            nativeSetTouchControls(settings.touchControls());  // what the game's Keybinds tab shows
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "touch controls bridge missing from libmain.so", e);
+        }
         touch.setOpacity(settings.touchOpacity());
         touch.setHaptics(settings.haptics());
     }
