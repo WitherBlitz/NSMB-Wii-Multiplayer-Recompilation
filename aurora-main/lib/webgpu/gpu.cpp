@@ -753,6 +753,20 @@ bool initialize(AuroraBackend auroraBackend, bool allowSoftware) {
     g_adapter = {};
     return false;
   }
+#if defined(__ANDROID__)
+  if (!allowSoftware && g_adapterInfo.backendType == wgpu::BackendType::Vulkan) {
+    // Arm Mali GPUs start on OpenGL ES in the automatic search; Vulkan stays their fallback (the
+    // second pass), and choosing Vulkan in the settings still uses it.
+    std::string device{std::string_view{g_adapterInfo.device}};
+    std::transform(device.begin(), device.end(), device.begin(), [](unsigned char ch) { return std::tolower(ch); });
+    if (device.find("mali") != std::string::npos) {
+      Log.info("Mali GPU ({}): trying OpenGL ES before Vulkan", std::string_view{g_adapterInfo.device});
+      SDL_SetError("Mali GPUs start on OpenGL ES");
+      g_adapter = {};
+      return false;
+    }
+  }
+#endif
   g_backendType = g_adapterInfo.backendType;
   const auto backendName = magic_enum::enum_name(g_backendType);
   auto adapterName = g_adapterInfo.device;
@@ -793,6 +807,18 @@ bool initialize(AuroraBackend auroraBackend, bool allowSoftware) {
                supportedCompatLimits.maxStorageBuffersInVertexStage, supportedCompatLimits.maxStorageTexturesInVertexStage,
                supportedCompatLimits.maxStorageBuffersInFragmentStage,
                supportedCompatLimits.maxStorageTexturesInFragmentStage);
+      // The GX pipelines pull their vertices from two storage buffers in the vertex stage. Some OpenGL ES
+      // drivers (many Mali ones) offer none there, and nothing would draw: take the next backend.
+      constexpr uint32_t kVertexStorageBuffersNeeded = 2;
+      if (supportedCompatLimits.maxStorageBuffersInVertexStage < kVertexStorageBuffersNeeded) {
+        Log.warn("{} allows {} storage buffers in the vertex stage, {} needed; trying the next backend", backendName,
+                 supportedCompatLimits.maxStorageBuffersInVertexStage, kVertexStorageBuffersNeeded);
+        SDL_SetError("The %.*s driver has no storage buffers in the vertex stage",
+                     static_cast<int>(backendName.size()), backendName.data());
+        g_adapter = {};
+        g_backendType = wgpu::BackendType::Undefined;
+        return false;
+      }
     }
     wgpu::Limits requiredLimits{
         // Use "best" supported limits

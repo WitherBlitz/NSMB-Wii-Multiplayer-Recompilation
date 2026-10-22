@@ -120,8 +120,9 @@ int g_displayMode = [] {
 }();
 bool g_skipUnreadyPipelines = RuntimeConfigFile::SkipUnreadyPipelines(true);
 bool g_disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
-bool g_showFps = RuntimeConfigFile::ShowFps(false);  // off unless turned on
-bool g_frameGraph = RuntimeConfigFile::FrameGraph(false);
+// The Performance Monitor (FPS counter and frametime graph in one), off unless turned on. Configs
+// from before it had the two apart; either one on turns it on.
+bool g_frameGraph = RuntimeConfigFile::FrameGraph(false) || RuntimeConfigFile::ShowFps(false);
 bool g_touchControls = RuntimeConfigFile::TouchControls(true);
 int g_frameGraphSize = std::clamp(static_cast<int>(RuntimeConfigFile::FrameGraphSize(50)), 5, 200);
 std::atomic<bool> g_vsync{RuntimeConfigFile::VSync(false)};
@@ -1222,8 +1223,8 @@ void DrawGraphicsSettings() {
         aurora_set_skip_unready_pipelines(g_skipUnreadyPipelines);
         RuntimeConfigFile::SetSkipUnreadyPipelines(g_skipUnreadyPipelines);
     }
-    if (ImGui::Checkbox("Show FPS", &g_showFps)) {
-        RuntimeConfigFile::SetShowFps(g_showFps);
+    if (bool monitor = g_frameGraph; ImGui::Checkbox("Performance Monitor", &monitor)) {
+        SetFrameGraph(monitor);
     }
     ImGui::Separator();
     ImGui::Text("Graphics API: %s", GraphicsApiDisplayName());
@@ -1233,6 +1234,12 @@ void DrawGraphicsSettings() {
 constexpr int kFrameTimeCount = 180;
 float g_frameTimes[kFrameTimeCount] = {};
 int g_frameTimeNext = 0;
+
+// The monitor's text follows its size too, down to 60% of the overlay's own text (smaller is
+// unreadable).
+float MonitorFontScale() {
+    return std::max(0.6f, static_cast<float>(g_frameGraphSize) / 50.0f);
+}
 
 void DrawFrameGraph() {
     float last = g_frameTimes[(g_frameTimeNext + kFrameTimeCount - 1) % kFrameTimeCount];
@@ -1244,10 +1251,9 @@ void DrawFrameGraph() {
         sum += t;
         ++samples;
     }
-    // The Video tab's Frametime Graph size: 50% is the graph's original size. Its text grows with
-    // a bigger graph but never shrinks below the overlay's own size.
+    // The Video tab's Performance Monitor size: 50% is the graph's original size.
     const float sizeScale = static_cast<float>(g_frameGraphSize) / 50.0f;
-    ImGui::SetWindowFontScale(std::max(1.0f, sizeScale));
+    ImGui::SetWindowFontScale(MonitorFontScale());
     ImGui::Text("Frame: %.1f ms", last);
     ImGui::TextDisabled("avg %.1f  max %.1f", samples > 0 ? sum / samples : 0.0f, peak);
     ImGui::SetWindowFontScale(1.0f);
@@ -1316,7 +1322,7 @@ void DrawFpsOverlay() {
             }
         }
     }
-    if (!g_showFps && !g_frameGraph) {
+    if (!g_frameGraph) {
         return;
     }
 
@@ -1333,8 +1339,8 @@ void DrawFpsOverlay() {
                                          ImGuiWindowFlags_NoNav |
                                          ImGuiWindowFlags_NoSavedSettings;
     if (ImGui::Begin("FPS Overlay", nullptr, kFlags)) {
-        if (!g_showFps) {
-        } else if (presentTiming.sampleCount == 0) {
+        ImGui::SetWindowFontScale(MonitorFontScale());
+        if (presentTiming.sampleCount == 0) {
             ImGui::TextUnformatted("FPS: --");
         } else {
             // Present timing includes the additional frames produced by
@@ -1349,9 +1355,8 @@ void DrawFpsOverlay() {
                                    presentTiming.effectiveFramesPerSecond);
             }
         }
-        if (g_frameGraph) {
-            DrawFrameGraph();
-        }
+        ImGui::SetWindowFontScale(1.0f);
+        DrawFrameGraph();
     }
     ImGui::End();
 }
@@ -1787,14 +1792,6 @@ bool SpinningCoins() noexcept {
     return g_spinningCoins;
 }
 
-void SetShowFps(bool show) noexcept {
-    g_showFps = show;
-    RuntimeConfigFile::SetShowFps(show);
-}
-
-bool ShowFps() noexcept {
-    return g_showFps;
-}
 
 void SetVSync(bool enabled) noexcept {
     g_vsync.store(enabled);
@@ -1850,6 +1847,7 @@ void FlushGameSound() noexcept {
 void SetFrameGraph(bool show) noexcept {
     g_frameGraph = show;
     RuntimeConfigFile::SetFrameGraph(show);
+    RuntimeConfigFile::SetShowFps(false);  // the old FPS-only switch would turn it back on
 }
 
 void SetFrameGraphSize(int percent, bool save) noexcept {

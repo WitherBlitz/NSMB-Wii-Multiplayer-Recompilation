@@ -8,6 +8,7 @@
 #include "../gx/gx_fmt.hpp"
 
 #include <absl/container/flat_hash_map.h>
+#include <array>
 
 #include "texture_convert.hpp"
 
@@ -550,6 +551,11 @@ void shutdown() {
 
 static void execute(const wgpu::CommandEncoder& cmd, const ConvRequest& req, const wgpu::RenderPipeline& pipeline) {
   wgpu::BindGroup bindGroup;
+  static std::array<bool, 64> s_loggedFormats{};
+  if (const auto fmt = static_cast<size_t>(req.fmt); fmt < s_loggedFormats.size() && !s_loggedFormats[fmt]) {
+    s_loggedFormats[fmt] = true;
+    Log.info("First EFB copy conversion to format 0x{:x}{}", fmt, gx::is_depth_format(req.fmt) ? " (depth)" : "");
+  }
   if (gx::is_depth_format(req.fmt)) {
     const std::array bindGroupEntries{
         wgpu::BindGroupEntry{

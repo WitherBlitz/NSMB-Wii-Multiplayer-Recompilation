@@ -16,14 +16,12 @@ void NotifyStrapInputAccepted() noexcept;
 void AdvancePresentedFrame() noexcept;
 // Put host controllers back to a neutral state before the process ends.
 void ReleaseControllers() noexcept;
-// FPS counter on or off (the Android menu sets it through JNI); saved to Config.toml.
-void SetShowFps(bool show) noexcept;
-bool ShowFps() noexcept;
-// A frame-time graph under the FPS counter, off by default. Saved to Config.toml.
+// The Performance Monitor: the FPS counter and a frame-time graph in the top right, off by
+// default. Saved to Config.toml ([video] frame_graph; the old show_fps also turns it on).
 void SetFrameGraph(bool show) noexcept;
 bool FrameGraph() noexcept;
-// The frametime graph's size in percent, 5-200 (50 is its original size). `save` writes Config.toml
-// (a slider being dragged saves when it is let go).
+// The Performance Monitor's size in percent, 5-200 (50 is the graph's original size), its text
+// included. `save` writes Config.toml (a slider being dragged saves when it is let go).
 void SetFrameGraphSize(int percent, bool save) noexcept;
 // Android's on-screen controls (the app shows or hides them; the Keybinds tab's checkbox asks it to).
 void SetTouchControls(bool on) noexcept;

@@ -189,6 +189,12 @@ void render_frame_data() noexcept {
   if (g_frameDataBuilt) {
     return;
   }
+  if (webgpu::g_backendType == wgpu::BackendType::OpenGL || webgpu::g_backendType == wgpu::BackendType::OpenGLES) {
+    // OpenGL: the overlay pass always draws something. On the Adreno 540 (LG V30+), a frame whose overlay
+    // pass drew nothing presented black: the snapshot the presentation copy samples kept only what a
+    // later pass with a draw made it write out. One pixel at 1/255 alpha is invisible.
+    ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(0.f, 0.f), ImVec2(1.f, 1.f), IM_COL32(0, 0, 0, 1));
+  }
   ImGui::Render();
   auto* data = ImGui::GetDrawData();
   data->FramebufferScale = ImGui::GetIO().DisplayFramebufferScale;

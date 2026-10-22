@@ -1008,8 +1008,9 @@ constexpr int kSettingsTabs = 4;
 float g_lastScale = 1.0f;                    // the multiplier Match Screen Resolution returns to
 bool g_lastWide = true;
 
-// Cursor rows. Video: 0 tabs, 1 resolution, 2 match screen, 3 fullscreen, then renderer, FPS,
-// frametime graph, spinning coins and V-Sync (one row, side by side) and OK. Keybinds: 0 tabs, 1-12
+// Cursor rows. Video: 0 tabs, 1 resolution, 2 match screen, 3 fullscreen, then renderer,
+// Performance Monitor (FPS counter and frametime graph), spinning coins and V-Sync (one row, side by
+// side) and OK. Keybinds: 0 tabs, 1-12
 // the controls (two columns of six), 13 Reset Defaults, 14 OK.
 // V-Sync is a Windows and Android row (both can lock the game's clock to the display; on Android the
 // app keeps the choice through TakeSettingsChange). Fullscreen is a desktop row: a phone is always
@@ -1026,10 +1027,9 @@ constexpr bool kFullscreenRow = true;
 #endif
 constexpr int kVideoFullscreen = kFullscreenRow ? 3 : -1;
 constexpr int kVideoRenderer = kFullscreenRow ? 4 : 3;
-constexpr int kVideoFps = kVideoRenderer + 1;
-constexpr int kVideoGraph = kVideoFps + 1, kVideoCoins = kVideoFps + 2;
-constexpr int kVideoVSync = kVSyncRow ? kVideoFps + 3 : -1;
-constexpr int kVideoOk = kVideoFps + (kVSyncRow ? 4 : 3);
+constexpr int kVideoGraph = kVideoRenderer + 1, kVideoCoins = kVideoGraph + 1;
+constexpr int kVideoVSync = kVSyncRow ? kVideoCoins + 1 : -1;
+constexpr int kVideoOk = (kVSyncRow ? kVideoVSync : kVideoCoins) + 1;
 constexpr const char* kFullscreenNames[] = {"Off", "Borderless", "Exclusive"};
 // The renderers to pick from ([video] graphics_api, the names main.cpp maps to aurora's backends);
 // Automatic tries them best first and falls back down the list.
@@ -1338,8 +1338,8 @@ void DrawVideoTab(const Canvas& c) {
     const bool match = scale <= 0.0f;
     const std::vector<VideoChoice> choices = VideoChoices();
     const VideoChoice shown = choices[CurrentChoice(choices)];
-    // Six or seven rows between the tabs and the hint line.
-    constexpr int kRows = 6 + (kFullscreenRow ? 1 : 0);
+    // Five or six rows between the tabs and the hint line.
+    constexpr int kRows = 5 + (kFullscreenRow ? 1 : 0);
     const float kRowH = kRows >= 7 ? 33.0f : kRows == 6 ? 37.0f : 42.0f;
     const float step = kRows >= 7 ? 37.0f : kRows == 6 ? 43.0f : 50.0f;
     const float top = kRows >= 7 ? 125.0f : kRows == 6 ? 123.0f : 118.0f;
@@ -1377,15 +1377,15 @@ void DrawVideoTab(const Canvas& c) {
         AddHit(105, y, 276, step - 2, kVideoRenderer);
     }
     const int first = kFullscreenRow ? 4 : 3;
-    row("Show FPS Counter", first, kVideoFps, settings_overlay::ShowFps());
     {
-        // Frametime Graph: the button turns it on and off; the slider beside it sets its size (a
-        // finger or the mouse drags it; left and right move it 5% at a time).
-        const float y = top - (first + 1) * step;
+        // Performance Monitor (the FPS counter and frametime graph): the button turns it on and off;
+        // the slider beside it sets its size (a finger or the mouse drags it; left and right move it
+        // 5% at a time).
+        const float y = top - first * step;
         const bool selected = g_ui.cursor == kVideoGraph;
-        Button(c, "Frametime Graph", -85, y, 300, selected, true, g_ui.frame, buttonSize, kRowH);
-        Checkbox(c, -209, y, settings_overlay::FrameGraph());
-        AddHit(-85, y, 304, step - 2, kVideoGraph);
+        Button(c, "Performance Monitor", -80, y, 320, selected, true, g_ui.frame, buttonSize * 0.9f, kRowH);
+        Checkbox(c, -214, y, settings_overlay::FrameGraph());
+        AddHit(-80, y, 324, step - 2, kVideoGraph);
         const ImVec2 start = ToScreen(c, kGraphSliderX0, y), end = ToScreen(c, kGraphSliderX1, y);
         const float reach = 24.0f * c.view.scale;
         if (g_pointerNow.pressed && g_pointerNow.x >= start.x - reach && g_pointerNow.x <= end.x + reach &&
@@ -1409,7 +1409,7 @@ void DrawVideoTab(const Canvas& c) {
     }
     if (kVSyncRow) {
         // Spinning Coins and V-Sync side by side, like the Keybinds tab's checkboxes.
-        const float y = top - (first + 2) * step;
+        const float y = top - (first + 1) * step;
         constexpr float kWidth = 330.0f, kGap = 340.0f;
         const auto half = [&](const char* label, float x, int cursor, bool on) {
             Button(c, label, x + 18, y, kWidth, g_ui.cursor == cursor, true, g_ui.frame, buttonSize, kRowH);
@@ -1419,7 +1419,7 @@ void DrawVideoTab(const Canvas& c) {
         half("Spinning Coins", -kGap / 2, kVideoCoins, settings_overlay::SpinningCoins());
         half("V-Sync", kGap / 2, kVideoVSync, settings_overlay::VSync());
     } else {
-        row("Spinning Coins", first + 2, kVideoCoins, settings_overlay::SpinningCoins());
+        row("Spinning Coins", first + 1, kVideoCoins, settings_overlay::SpinningCoins());
     }
     const char* hint = match ? "The screen's own resolution, filling the whole screen."
                        : !DisplaySettings::SurfaceWide() ? "Rendered at this many lines, then scaled to the screen."
@@ -1433,7 +1433,7 @@ void DrawVideoTab(const Canvas& c) {
                                      "Takes effect at the next start. Now: " + settings_overlay::RunningGraphicsApi() + ".";
     const char* note = g_ui.cursor == kVideoFullscreen ? fullscreenNote
                        : g_ui.cursor == kVideoRenderer ? rendererNote.c_str()
-                       : g_ui.cursor == kVideoGraph ? "Each frame's time, under the FPS counter. Left and right: its size."
+                       : g_ui.cursor == kVideoGraph ? "FPS and each frame's time, top right. Left and right: its size."
                        : g_ui.cursor == kVideoCoins ? "Animated coins and blocks. Off saves a little GPU work."
                        : g_ui.cursor == kVideoVSync ? "No tearing: frames wait for the display, the game keeps its pace."
                                                     : hint;
@@ -1550,9 +1550,6 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
             // Off -> Borderless -> Exclusive -> Off (left steps back), with the file select's sound.
             settings_overlay::SetFullscreen((settings_overlay::Fullscreen() + (left ? 2 : 1)) % 3);
             settings_overlay::PlayGameSound(settings_overlay::kGameSoundDecide);
-        } else if (confirm && cursor == kVideoFps) {
-            settings_overlay::SetShowFps(!settings_overlay::ShowFps());
-            g_settingsChanged = true;
         } else if (confirm && cursor == kVideoGraph) {
             settings_overlay::SetFrameGraph(!settings_overlay::FrameGraph());
             g_settingsChanged = true;
@@ -2071,7 +2068,7 @@ bool TakeSettingsChange(float& renderScale, bool& showFps, int& aspect, bool& sp
         return false;
     }
     renderScale = settings_overlay::RenderScale();
-    showFps = settings_overlay::ShowFps();
+    showFps = settings_overlay::FrameGraph();  // the FPS counter is part of the Performance Monitor
     aspect = settings_overlay::Aspect();
     spinningCoins = settings_overlay::SpinningCoins();
     frameGraph = settings_overlay::FrameGraph();

@@ -211,6 +211,11 @@ void schedule(void* dest, uint32_t width, uint32_t height, GXTexFmt format, Text
   if (!supports_format(format)) {
     Log.fatal("Unsupported CPU-visible EFB copy format 0x{:x}", static_cast<unsigned>(format));
   }
+  static std::array<bool, 64> s_loggedFormats{};
+  if (static_cast<size_t>(format) < s_loggedFormats.size() && !s_loggedFormats[format]) {
+    s_loggedFormats[format] = true;
+    Log.info("First CPU-visible EFB copy, format 0x{:x}, {}x{}", static_cast<unsigned>(format), width, height);
+  }
 
   PendingCopy request{
       .dest = dest,

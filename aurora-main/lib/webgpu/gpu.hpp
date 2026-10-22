@@ -75,8 +75,8 @@ const char* adapter_name() noexcept;
 void release_gl_context();
 // The device runs in WebGPU compatibility mode (D3D11, OpenGL ES): no textureLoad on depth textures.
 bool compat_mode();
-// allowSoftware: false turns down a CPU adapter (WARP, SwiftShader), so the automatic search can try
-// the next backend on the real GPU first.
+// allowSoftware: false (the automatic search's first pass) turns down a CPU adapter (WARP,
+// SwiftShader), and on Android a Mali GPU's Vulkan, so the next backend is tried first.
 bool initialize(AuroraBackend backend, bool allowSoftware = true);
 void shutdown();
 // Device-loss callbacks may run on a Dawn-managed thread and only publish loss state; frame

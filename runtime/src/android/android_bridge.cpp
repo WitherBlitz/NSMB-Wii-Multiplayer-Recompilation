@@ -58,15 +58,18 @@ JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeSetTouchState(
 
 // GameActivity.nativeApplyDisplaySettings: the Display menu. The aspect (0 original 4:3, 1 16:9,
 // 2 fill the screen) and the render scale (480 lines per 1x) apply at the next frame; 4:3 versus a
-// widescreen mode only at the next start, since the game reads it at boot.
+// widescreen mode only at the next start, since the game reads it at boot. performanceMonitor: the
+// FPS counter and frametime graph.
 JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeApplyDisplaySettings(
-    JNIEnv*, jclass, jint aspect, jfloat renderScale, jboolean showFps)
+    JNIEnv*, jclass, jint aspect, jfloat renderScale, jboolean performanceMonitor)
 {
     // Through the settings overlay, so the game's own settings window shows the same choice. A scale
     // of 0 is "match the screen".
     settings_overlay::SetAspect(aspect < 0 || aspect > 2 ? DisplaySettings::kAspectFill : static_cast<int32_t>(aspect));
     settings_overlay::SetRenderScale(renderScale >= 0.0f ? renderScale : 1.0f);
-    settings_overlay::SetShowFps(showFps == JNI_TRUE);
+    if (settings_overlay::FrameGraph() != (performanceMonitor == JNI_TRUE)) {
+        settings_overlay::SetFrameGraph(performanceMonitor == JNI_TRUE);
+    }
 }
 
 // GameActivity.nativeGraphicsInfo: the GPU the game is drawing with and whether the GPU
