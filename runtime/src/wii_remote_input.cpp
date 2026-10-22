@@ -76,6 +76,7 @@ constexpr uint32_t kWpadLeft = 0x0001, kWpadRight = 0x0002, kWpadDown = 0x0004, 
 // variable is set, channel 1 (and channels up to NSMBW_SCRIPT_REMOTES, default 1) report a connected
 // Wii Remote at rest. Buttons: A B ONE TWO PLUS MINUS HOME UP DOWN LEFT RIGHT (also 1 and 2); the
 // D-pad names are the remote's own, so held sideways RIGHT is screen up and DOWN is screen right.
+// A duration of "<ms>/<period>x<count>" repeats the press: "47000:TWO:300/700x80" jumps every 0.7 s.
 struct ScriptEvent {
     uint64_t startMs = 0;
     uint64_t endMs = 0;
@@ -145,8 +146,21 @@ const InputScript& Script() {
                     if (plus == std::string::npos) break;
                     b = plus + 1;
                 }
-                if (event.bits != 0) {
-                    parsed.events.push_back(event);
+                // "<duration>/<period>x<count>": the press repeated <count> times, <period> ms apart.
+                uint64_t period = 0, count = 1;
+                if (c2 != std::string::npos) {
+                    const std::string timing = item.substr(c2 + 1, c3 == std::string::npos ? std::string::npos : c3 - c2 - 1);
+                    if (const size_t slash = timing.find('/'), x = timing.find('x');
+                        slash != std::string::npos && x != std::string::npos && x > slash) {
+                        period = std::strtoull(timing.substr(slash + 1, x - slash - 1).c_str(), nullptr, 10);
+                        count = std::clamp<uint64_t>(std::strtoull(timing.substr(x + 1).c_str(), nullptr, 10), 1, 1000);
+                    }
+                }
+                for (uint64_t i = 0; event.bits != 0 && i < count; ++i) {
+                    ScriptEvent repeat = event;
+                    repeat.startMs += i * period;
+                    repeat.endMs += i * period;
+                    parsed.events.push_back(repeat);
                 }
             }
             if (comma == std::string::npos) break;

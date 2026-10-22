@@ -27,9 +27,11 @@ bool Paused();
 // in nanoseconds (0 when it wasn't).
 uint64_t OnRetrace();
 
-// The game thread reading the remote (KPADReadEx, channel 0): a backup Quick Save is started from
-// here, where the game itself saves - a guest thread that may wait (the scheduler's idle loop, where
-// OnRetrace runs, may not: a save that had to wait there resumed the boot thread, and the game exited).
+// The game thread reading the remote (KPADReadEx, channel 0), once a frame: a backup Quick Save is
+// started from here, where the game itself saves - a guest thread that may wait (the scheduler's idle
+// loop, where OnRetrace runs, may not: a save that had to wait there resumed the boot thread, and the
+// game exited). So is the autosave: back on the world map after a course's goal, the game's own Save
+// (SaveGame(_, false)) runs with no prompt once the map has recorded the clear.
 void OnGameThread();
 
 // Total time the game has spent paused: subtracted from the guest's time base.
