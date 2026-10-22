@@ -33,7 +33,7 @@ public final class GameActivity extends SDLActivity
     static native void nativeSetTouchControls(boolean on);
 
     /** The Display menu: aspect, render scale (480 lines per 1x), FPS counter (DisplaySettings). */
-    static native void nativeApplyDisplaySettings(int aspect, float renderScale, boolean showFps);
+    static native void nativeApplyDisplaySettings(int aspect, float renderScale, boolean performanceMonitor);
 
     /** "GPU name\n1|0": the GPU the game draws with and whether its compatibility fixes are on. */
     static native String nativeGraphicsInfo();
@@ -129,10 +129,9 @@ public final class GameActivity extends SDLActivity
                 final float[] changed = nativeTakeSettings();
                 if (changed != null) {
                     settings.setResolutionScale(changed[0]);
-                    settings.setShowFps(changed[1] > 0.5f);
                     if (changed.length > 2) settings.setAspectMode(Math.round(changed[2]));
                     if (changed.length > 3) settings.setSpinningCoins(changed[3] > 0.5f);
-                    if (changed.length > 4) settings.setFrameGraph(changed[4] > 0.5f);
+                    if (changed.length > 4) settings.setPerformanceMonitor(changed[4] > 0.5f);
                     if (changed.length > 5) settings.setVSync(changed[5] > 0.5f);
                     if (changed.length > 6) settings.setFrameGraphSize(Math.round(changed[6]));
                     if (changed.length > 7 && changed[7] >= 0f) {

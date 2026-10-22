@@ -39,13 +39,16 @@ final class AppSettings {
     boolean autoUpdate() { return prefs.getBoolean("auto_update", false); }
     void setAutoUpdate(boolean on) { prefs.edit().putBoolean("auto_update", on).commit(); }
 
-    boolean showFps() { return prefs.getBoolean("show_fps", false); }
-    void setShowFps(boolean show) { prefs.edit().putBoolean("show_fps", show).commit(); }
     boolean spinningCoins() { return prefs.getBoolean("spinning_coins", true); }
     void setSpinningCoins(boolean on) { prefs.edit().putBoolean("spinning_coins", on).commit(); }
 
-    boolean frameGraph() { return prefs.getBoolean("frame_graph", false); }
-    void setFrameGraph(boolean on) { prefs.edit().putBoolean("frame_graph", on).commit(); }
+    /** The Performance Monitor: FPS counter and frametime graph (the old FPS Counter switch turns it on). */
+    boolean performanceMonitor() {
+        return prefs.getBoolean("frame_graph", false) || prefs.getBoolean("show_fps", false);
+    }
+    void setPerformanceMonitor(boolean on) {
+        prefs.edit().putBoolean("frame_graph", on).putBoolean("show_fps", false).commit();
+    }
 
     /** V-Sync: frames go out in step with the display and the game's clock follows its vsync. */
     boolean vsync() { return prefs.getBoolean("vsync", true); }

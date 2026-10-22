@@ -50,8 +50,7 @@ final class SettingsMenu {
         final String[] items = {
             "Aspect Ratio: " + aspectLabel(settings.aspectMode()),
             "Render Resolution: " + AppSettings.resolutionLabel(settings.resolutionScale()),
-            "FPS Counter: " + (settings.showFps() ? "On" : "Off"),
-            "Frametime Graph: " + (settings.frameGraph() ? "On" : "Off"),
+            "Performance Monitor: " + (settings.performanceMonitor() ? "On" : "Off"),
             "Spinning Coins: " + (settings.spinningCoins() ? "On" : "Off"),
             "V-Sync: " + (settings.vsync() ? "On" : "Off"),
             "Graphics Compatibility: " + gpuCompatLabel(settings.gpuCompat()),
@@ -62,11 +61,14 @@ final class SettingsMenu {
                 .setItems(items, (dialog, which) -> {
                     if (which == 0) showAspectChoice();
                     else if (which == 1) showResolutionChoice();
-                    else if (which == 2) { settings.setShowFps(!settings.showFps()); save(); showDisplayMenu(); }
-                    else if (which == 3) { settings.setFrameGraph(!settings.frameGraph()); save(); showDisplayMenu(); }
-                    else if (which == 4) { settings.setSpinningCoins(!settings.spinningCoins()); save(); showDisplayMenu(); }
-                    else if (which == 5) { settings.setVSync(!settings.vsync()); save(); showDisplayMenu(); }
-                    else if (which == 6) showGpuCompatChoice();
+                    else if (which == 2) {
+                        settings.setPerformanceMonitor(!settings.performanceMonitor());
+                        save();
+                        showDisplayMenu();
+                    }
+                    else if (which == 3) { settings.setSpinningCoins(!settings.spinningCoins()); save(); showDisplayMenu(); }
+                    else if (which == 4) { settings.setVSync(!settings.vsync()); save(); showDisplayMenu(); }
+                    else if (which == 5) showGpuCompatChoice();
                     else showRendererChoice();
                 })
                 .setNegativeButton("Back", (dialog, which) -> showMain())
@@ -79,7 +81,7 @@ final class SettingsMenu {
      */
     private void showRendererChoice() {
         final String[] labels = {
-            "Automatic (recommended): Vulkan, else OpenGL ES",
+            "Automatic (recommended): Vulkan, else OpenGL ES (Mali GPUs: OpenGL ES first)",
             "Vulkan",
             "OpenGL ES 3.1+",
         };
