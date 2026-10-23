@@ -1,3 +1,6 @@
+**This is irrelevant to the recompilation, but I'm currently trying to find testers that're willing to test my new Android app out, it's multi-use and turns your phone into a PC once connected to a Monitor, or an Android TV when connected to a TV. If you're willing to test it, message me on friend at "WitherBlltz". This is a Google Play Store Exclusive and doesn't work on IOS (yet)!**
+
+
 # NSMB Wii Multiplayer Recompilation
 
 <p align="center">
