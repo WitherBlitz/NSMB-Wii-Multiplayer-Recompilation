@@ -75,11 +75,14 @@ void render(const DrawData& data, const wgpu::RenderPassEncoder& pass, DrawEncod
   const gfx::Range& uniformRange = uniformRangeOverride != nullptr ? *uniformRangeOverride : data.uniformRange;
   const std::array offsets{uniformRange.offset};
   pass.SetBindGroup(1, gfx::g_uniformBindGroup, offsets.size(), offsets.data());
-  // Resolved when the draw was recorded; see GXBindGroups.
-  if (data.bindGroups.resolvedTextureBindGroup != nullptr &&
-      data.bindGroups.resolvedTextureBindGroup != state.boundTextureBindGroup) {
-    wgpuRenderPassEncoderSetBindGroup(pass.Get(), 2, data.bindGroups.resolvedTextureBindGroup, 0, nullptr);
-    state.boundTextureBindGroup = data.bindGroups.resolvedTextureBindGroup;
+  // Resolved when the draw was recorded, or made here the first time; see GXBindGroups.
+  WGPUBindGroup textureBindGroup = data.bindGroups.resolvedTextureBindGroup;
+  if (textureBindGroup == nullptr && data.bindGroups.textureBindGroup != 0) {
+    textureBindGroup = resolve_texture_bind_group(data.bindGroups.textureBindGroup);
+  }
+  if (textureBindGroup != nullptr && textureBindGroup != state.boundTextureBindGroup) {
+    wgpuRenderPassEncoderSetBindGroup(pass.Get(), 2, textureBindGroup, 0, nullptr);
+    state.boundTextureBindGroup = textureBindGroup;
   }
   if (data.dstAlpha != UINT32_MAX) {
     const wgpu::Color color{0.f, 0.f, 0.f, data.dstAlpha / 255.f};

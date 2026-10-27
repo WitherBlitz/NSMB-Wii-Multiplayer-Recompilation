@@ -1034,6 +1034,7 @@ void shutdown() {
   gx::shutdown();
 
   g_textureUploads.clear();
+  g_deferredTextureWrites.clear();
   g_cachedBindGroups.clear();
   g_retiredBindGroups.clear();
   g_cachedSamplers.clear();
@@ -1225,6 +1226,7 @@ static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
   g_stats.lastUniformSize = writeBuffer(g_uniforms, g_uniformBuffer, UniformBufferSize, "Uniform");
   g_stats.lastIndexSize = writeBuffer(g_indices, g_indexBuffer, IndexBufferSize, "Index");
   g_stats.lastStorageSize = writeBuffer(g_storage, g_storageBuffer, StorageBufferSize, "Storage");
+  flush_deferred_texture_writes();  // the static textures this frame loaded (TextureRef::lazy)
   if constexpr (UseTextureBuffer) {
     g_stats.lastTextureUploadSize = g_textureUpload.size();
     {
@@ -1323,7 +1325,11 @@ uint32_t current_frame() noexcept { return g_frameIndex; }
 // The only place that erases from g_cachedBindGroups, whose handles the frame being encoded still
 // holds, so it runs in the seal prologue with the renderer mutex held and the producer excluded.
 void expire_bind_group_cache() noexcept {
-  if (g_cachedBindGroups.empty() || g_frameIndex == UINT32_MAX || g_frameIndex % BindGroupCacheSweepPeriod != 0) {
+  if (g_frameIndex == UINT32_MAX || g_frameIndex % BindGroupCacheSweepPeriod != 0) {
+    return;
+  }
+  gx::expire_texture_bind_groups(g_frameIndex, BindGroupCacheRetainFrames);
+  if (g_cachedBindGroups.empty()) {
     return;
   }
 
@@ -1485,6 +1491,7 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
                                      .dst = patch.native,
                                      .sampleFilter = tex_copy_conv::SampleFilter::Linear,
                                  });
+        patch.dst->materialize();  // a static texture (TextureRef::lazy)
         const wgpu::TexelCopyTextureInfo src{.texture = patch.native->texture};
         const wgpu::TexelCopyTextureInfo dst{
             .texture = patch.dst->texture,

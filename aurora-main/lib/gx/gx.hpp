@@ -725,8 +725,14 @@ struct PipelineConfig;
 struct GXBindGroups {
   gfx::BindGroupRef textureBindGroup;
   // Bind group resolved at draw-build time so that gx::render does not have to hash-map the ref again for every draw.
+  // Null for a group the frame worker hasn't made yet: it resolves textureBindGroup when it encodes the draw.
   WGPUBindGroup resolvedTextureBindGroup = nullptr;
 };
+// The frame worker, encoding a draw whose texture bind group it hasn't made yet: makes it (see
+// DeferredTextureBindGroup in gx.cpp). Null if the group is gone.
+WGPUBindGroup resolve_texture_bind_group(gfx::BindGroupRef id) noexcept;
+// The seal's cache sweep: drops the groups no draw has used for `retainFrames` frames.
+void expire_texture_bind_groups(uint32_t frame, uint32_t retainFrames) noexcept;
 // Which matrix-memory slots a generated shader can actually read, and where each one lives in the compacted uniform arrays.
 struct UniformMatrixLayout {
   // `postexSlots`/`nrmSlots` entry meaning "the matrix selected by the current matrix index", which is only known per draw.

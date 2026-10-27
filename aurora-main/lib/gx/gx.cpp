@@ -2058,8 +2058,8 @@ static TextureBindGroupCacheKey make_texture_bind_group_cache_key(const ShaderIn
     }
     const u32 refState = (tex.ref->isReplacement ? 1u : 0u) | (tex.ref->hasArbitraryMips ? 2u : 0u) |
                          (tex.ref->mipCount << 8);
-    set_texture_bind_group_cache_slot(key, i, tex.ref->sampleTextureView.Get(), tex.texObj.mode0,
-                                      tex.texObj.mode1, refState);
+    // The texture itself, not its view: a static texture's view is made later, by the frame worker.
+    set_texture_bind_group_cache_slot(key, i, tex.ref.get(), tex.texObj.mode0, tex.texObj.mode1, refState);
   }
   return key;
 }
@@ -2070,7 +2070,22 @@ static HashType hash_texture_bind_group_cache_key(const TextureBindGroupCacheKey
   return xxh3_hash(key);
 }
 
-static GXBindGroups build_bind_groups_uncached(const ShaderInfo& info) noexcept {
+// Texture bind groups are made by the frame worker, not by the game thread that records the draws:
+// Dawn's device lock is held by the worker through each frame's submit, and a new group (a new texture,
+// or a new texture and sampler combination) waited that out, 3-10 ms on a Snapdragon 6 Gen 1 whenever
+// an effect or HUD item first showed: a dropped frame (issue #13). A draw records the group's key;
+// the worker makes the group when it first encodes a draw with it (resolve_texture_bind_group).
+struct DeferredTextureBindGroup {
+  std::array<gfx::TextureHandle, MaxTextures> textures{};
+  std::array<wgpu::SamplerDescriptor, MaxTextures> samplers{};
+  wgpu::BindGroup bindGroup;
+  u32 lastUsedFrame = 0;
+};
+static std::mutex s_textureBindGroupMutex;
+static absl::flat_hash_map<gfx::BindGroupRef, DeferredTextureBindGroup> s_textureBindGroups;
+static std::mutex s_textureBindGroupSamplerMutex;  // gfx::sampler_ref's cache, from the worker's encoders
+
+static GXBindGroups build_bind_groups_uncached(const ShaderInfo& info, HashType keyHash) noexcept {
   ZoneScoped;
 
   if (!info.sampledTextures.any() && !info.sampledIndTextures.any()) {
@@ -2078,17 +2093,60 @@ static GXBindGroups build_bind_groups_uncached(const ShaderInfo& info) noexcept 
     return {};
   }
 
+  std::lock_guard lock{s_textureBindGroupMutex};
+  auto [it, inserted] = s_textureBindGroups.try_emplace(keyHash);
+  auto& entry = it->second;
+  entry.lastUsedFrame = gfx::current_frame();
+  if (inserted) {
+    for (u32 i = 0; i < MaxTextures; ++i) {
+      const auto& tex = g_gxState.textures[i];
+      if (tex && (info.sampledTextures[i] || info.sampledIndTextures[i])) {
+        entry.textures[i] = tex.ref;
+        entry.samplers[i] = tex.get_descriptor();
+      }
+    }
+  }
+  return {
+      .textureBindGroup = keyHash,
+      .resolvedTextureBindGroup = entry.bindGroup.Get(),
+  };
+}
+
+WGPUBindGroup resolve_texture_bind_group(gfx::BindGroupRef id) noexcept {
+  DeferredTextureBindGroup inputs;
+  {
+    std::lock_guard lock{s_textureBindGroupMutex};
+    const auto it = s_textureBindGroups.find(id);
+    if (it == s_textureBindGroups.end()) {
+      return nullptr;
+    }
+    if (it->second.bindGroup) {
+      return it->second.bindGroup.Get();
+    }
+    inputs.textures = it->second.textures;
+    inputs.samplers = it->second.samplers;
+  }
+  // Made outside the lock, which the game thread takes for every new group it records.
+  std::array<wgpu::Sampler, MaxTextures> samplers;
+  {
+    std::lock_guard lock{s_textureBindGroupSamplerMutex};
+    for (u32 i = 0; i < MaxTextures; ++i) {
+      if (inputs.textures[i]) {
+        samplers[i] = gfx::sampler_ref(inputs.samplers[i]);
+      }
+    }
+  }
   // Using C WGPU types instead of C++ wrappers to avoid destructor overhead
   std::array<WGPUBindGroupEntry, MaxTextures * 2> textureEntries{};
   for (u32 i = 0; i < MaxTextures; ++i) {
-    const auto& tex = g_gxState.textures[i];
     WGPUBindGroupEntry& textureEntry = textureEntries[i * 2];
     WGPUBindGroupEntry& samplerEntry = textureEntries[i * 2 + 1];
     textureEntry.binding = i * 2;
     samplerEntry.binding = i * 2 + 1;
-    if (tex && (info.sampledTextures[i] || info.sampledIndTextures[i])) {
-      textureEntry.textureView = tex.ref->sampleTextureView.Get();
-      samplerEntry.sampler = gfx::sampler_ref(tex.get_descriptor()).Get();
+    if (inputs.textures[i]) {
+      inputs.textures[i]->materialize();
+      textureEntry.textureView = inputs.textures[i]->sampleTextureView.Get();
+      samplerEntry.sampler = samplers[i].Get();
     } else {
       textureEntry.textureView = sEmptyTextureView.Get();
       samplerEntry.sampler = sEmptySampler.Get();
@@ -2100,11 +2158,22 @@ static GXBindGroups build_bind_groups_uncached(const ShaderInfo& info) noexcept 
       .entryCount = textureEntries.size(),
       .entries = textureEntries.data(),
   };
-  const auto ref = gfx::bind_group_ref(textureBindGroupDescriptor);
-  return {
-      .textureBindGroup = ref,
-      .resolvedTextureBindGroup = gfx::find_bind_group(ref).Get(),
-  };
+  auto bindGroup = wgpu::BindGroup::Acquire(wgpuDeviceCreateBindGroup(g_device.Get(), &textureBindGroupDescriptor));
+  std::lock_guard lock{s_textureBindGroupMutex};
+  const auto it = s_textureBindGroups.find(id);
+  if (it == s_textureBindGroups.end()) {
+    return nullptr;
+  }
+  if (!it->second.bindGroup) {  // two encoders can race to make it: the first one's stays
+    it->second.bindGroup = std::move(bindGroup);
+  }
+  return it->second.bindGroup.Get();
+}
+
+void expire_texture_bind_groups(uint32_t frame, uint32_t retainFrames) noexcept {
+  std::lock_guard lock{s_textureBindGroupMutex};
+  absl::erase_if(s_textureBindGroups,
+                 [&](const auto& item) { return frame - item.second.lastUsedFrame > retainFrames; });
 }
 
 GXBindGroups build_bind_groups(const ShaderInfo& info) noexcept {
@@ -2128,11 +2197,13 @@ GXBindGroups build_bind_groups(const ShaderInfo& info) noexcept {
   const HashType hash = hash_texture_bind_group_cache_key(key);
   const u32 frame = gfx::current_frame();
   auto& entry = cache[hash & (CacheSize - 1)];
-  if (entry.valid && entry.frame == frame && entry.hash == hash && entry.key == key) {
+  // Not while its group is still to be made: the group may be ready by the next draw.
+  if (entry.valid && entry.frame == frame && entry.hash == hash && entry.key == key &&
+      entry.bindGroups.resolvedTextureBindGroup != nullptr) {
     return entry.bindGroups;
   }
 
-  const auto bindGroups = build_bind_groups_uncached(info);
+  const auto bindGroups = build_bind_groups_uncached(info, hash);
   entry.valid = true;
   entry.frame = frame;
   entry.hash = hash;
@@ -2227,6 +2298,10 @@ void shutdown() noexcept {
   }
   for (auto& item : g_gxState.textures) {
     item.ref.reset();
+  }
+  {
+    std::lock_guard lock{s_textureBindGroupMutex};
+    s_textureBindGroups.clear();
   }
   s_textureObjectCaches.clear();
   s_tlutObjectCaches.clear();
@@ -2333,3 +2408,4 @@ wgpu::SamplerDescriptor aurora::gfx::TextureBind::get_descriptor() const noexcep
       .maxAnisotropy = maxAnisotropy,
   };
 } // namespace aurora::gx
+

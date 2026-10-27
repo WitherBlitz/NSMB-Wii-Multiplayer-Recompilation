@@ -215,6 +215,8 @@ void shutdown() {
 
 void run(const wgpu::CommandEncoder& cmd, const ConvRequest& req) {
   const auto& [pipeline, bindGroupLayout] = pipeline_for_variant(req.variant);
+  req.src->materialize();  // static textures (TextureRef::lazy)
+  req.tlut->materialize();
 
   const std::array bindGroupEntries{
       wgpu::BindGroupEntry{

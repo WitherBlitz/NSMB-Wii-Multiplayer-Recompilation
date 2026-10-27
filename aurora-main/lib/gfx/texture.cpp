@@ -77,12 +77,54 @@ uint64_t calc_texture_size(wgpu::TextureFormat format, u32 width, u32 height, u3
   return total;
 }
 
+std::vector<DeferredTextureWrite> g_deferredTextureWrites;
+
+void TextureRef::materialize() noexcept {
+  if (!lazy) {
+    return;
+  }
+  std::call_once(materialized, [this] {
+    const wgpu::TextureDescriptor textureDescriptor{
+        .label = lazy->c_str(),
+        .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst,
+        .dimension = wgpu::TextureDimension::e2D,
+        .size = size,
+        .format = format,
+        .mipLevelCount = mipCount,
+        .sampleCount = 1,
+    };
+    texture = g_device.CreateTexture(&textureDescriptor);
+    const wgpu::TextureViewDescriptor viewDescriptor{
+        .format = format,
+        .dimension = wgpu::TextureViewDimension::e2D,
+        .mipLevelCount = mipCount,
+    };
+    sampleTextureView = texture.CreateView(&viewDescriptor);
+  });
+}
+
+void flush_deferred_texture_writes() noexcept {
+  for (auto& write : g_deferredTextureWrites) {
+    write.texture->materialize();
+    const wgpu::TexelCopyTextureInfo dst{
+        .texture = write.texture->texture,
+        .mipLevel = write.mip,
+    };
+    g_queue.WriteTexture(&dst, write.data.data(), write.data.size(), &write.layout, &write.size);
+  }
+  g_deferredTextureWrites.clear();
+}
+
 TextureHandle new_static_texture_2d(uint32_t width, uint32_t height, uint32_t mips, u32 format, ArrayRef<uint8_t> data,
                                     bool tlut, const char* label) noexcept {
   ZoneScoped;
 
   mips = clamp_mip_count(width, height, mips, label);
-  auto handle = new_dynamic_texture_2d(width, height, mips, format, label);
+  // Described only: the frame worker makes it (TextureRef::lazy).
+  auto handle = std::make_shared<TextureRef>(wgpu::Texture{}, wgpu::TextureView{}, wgpu::TextureView{},
+                                             wgpu::Extent3D{.width = width, .height = height, .depthOrArrayLayers = 1},
+                                             to_wgpu(format), mips, format);
+  handle->lazy = std::make_unique<std::string>(label != nullptr ? label : "");
   auto& ref = *handle;
 
   ConvertedTexture converted;
@@ -118,25 +160,13 @@ TextureHandle new_static_texture_2d(uint32_t width, uint32_t height, uint32_t mi
                static_cast<size_t>(offset) + dataSize, data.size());
       return handle;
     }
-    const wgpu::TexelCopyTextureInfo dstView{
-        .texture = ref.texture,
-        .mipLevel = mip,
-    };
-    if constexpr (UseTextureBuffer) {
-      const auto range = push_texture_data(data.data() + offset, dataSize, bytesPerRow, heightBlocks);
-      const wgpu::TexelCopyBufferLayout dataLayout{
-          .offset = range.offset,
-          .bytesPerRow = bytesPerRow,
-          .rowsPerImage = heightBlocks,
-      };
-      g_textureUploads.emplace_back(dataLayout, std::move(dstView), physicalSize);
-    } else {
-      const wgpu::TexelCopyBufferLayout dataLayout{
-          .bytesPerRow = bytesPerRow,
-          .rowsPerImage = heightBlocks,
-      };
-      g_queue.WriteTexture(&dstView, data.data() + offset, dataSize, &dataLayout, &physicalSize);
-    }
+    g_deferredTextureWrites.push_back(DeferredTextureWrite{
+        .texture = handle,
+        .mip = mip,
+        .data = std::vector<uint8_t>(data.data() + offset, data.data() + offset + dataSize),
+        .layout = {.bytesPerRow = bytesPerRow, .rowsPerImage = heightBlocks},
+        .size = physicalSize,
+    });
     offset += dataSize;
   }
   if (data.size() != UINT32_MAX && offset < data.size()) {
