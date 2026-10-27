@@ -70,6 +70,7 @@ public final class LauncherActivity extends Activity {
     private TextView autoUpdate;
     /** Skip Start Menu with Auto Update on: open the game once the update check finds nothing. */
     private boolean skipAfterCheck;
+    private TextView mainProcess;
     private boolean updating;
     /** An update waiting for the player to allow installs from this app. */
     private Updater.Release waitingUpdate;
@@ -91,7 +92,7 @@ public final class LauncherActivity extends Activity {
         final boolean opened = savedInstanceState == null && !asked;
         if (opened && settings.skipStartMenu() && AppFiles.gameReady(this)) {
             if (!settings.autoUpdate()) {
-                startActivity(new Intent(this, GameActivity.class));
+                startActivity(GameActivity.intent(this));
                 overridePendingTransition(0, 0);
                 finish();
                 return;
@@ -132,7 +133,7 @@ public final class LauncherActivity extends Activity {
         intro.addView(status, matchWidth(dp(20)));
 
         play = button("Play", true);
-        play.setOnClickListener(v -> startActivity(new Intent(this, GameActivity.class)));
+        play.setOnClickListener(v -> startActivity(GameActivity.intent(this)));
         intro.addView(play, matchWidth(dp(14)));
 
         final LinearLayout updates = card("Updates");
@@ -159,6 +160,13 @@ public final class LauncherActivity extends Activity {
                     updateSkipButton();
                 });
         updateSkipButton();
+        mainProcess = toggle(options, "Xiaomi Mode", "On: the game runs in the app's main process. For "
+                + "Xiaomi, Redmi and POCO phones (on by default there), whose system closes the game's own "
+                + "process and leaves a black screen.", v -> {
+                    settings.setGameInMainProcess(!settings.gameInMainProcess());
+                    showToggle(mainProcess, settings.gameInMainProcess());
+                });
+        showToggle(mainProcess, settings.gameInMainProcess());
 
         final LinearLayout gameData = card("Game Data");
         // How to get the game files, the same steps KartPad gives, until a game is imported.
@@ -258,7 +266,7 @@ public final class LauncherActivity extends Activity {
         }
         intent.removeExtra(EXTRA_RESTART_GAME);
         status.setText("Starting the LAN game...");
-        main.postDelayed(() -> startActivity(new Intent(this, GameActivity.class)), 700);
+        main.postDelayed(() -> startActivity(GameActivity.intent(this)), 700);
     }
 
     @Override
@@ -381,7 +389,7 @@ public final class LauncherActivity extends Activity {
         if (!AppFiles.gameReady(this)) {
             return;
         }
-        startActivity(new Intent(this, GameActivity.class));
+        startActivity(GameActivity.intent(this));
         overridePendingTransition(0, 0);
         finish();
     }

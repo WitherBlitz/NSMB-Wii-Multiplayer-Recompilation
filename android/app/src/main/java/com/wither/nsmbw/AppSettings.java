@@ -2,6 +2,9 @@ package com.wither.nsmbw;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Build;
+
+import java.util.Locale;
 
 /** Player settings, kept in one SharedPreferences file shared by the launcher and the game. */
 final class AppSettings {
@@ -38,6 +41,18 @@ final class AppSettings {
     /** Auto Update: opening the app installs the latest GitHub release (off by default). */
     boolean autoUpdate() { return prefs.getBoolean("auto_update", false); }
     void setAutoUpdate(boolean on) { prefs.edit().putBoolean("auto_update", on).commit(); }
+
+    /**
+     * Xiaomi Mode: the game in the app's main process (MainProcessGameActivity). Xiaomi's system closes
+     * an app's extra processes, the game's ":game" one included; on by default on its phones.
+     */
+    boolean gameInMainProcess() { return prefs.getBoolean("game_in_main_process", isXiaomi()); }
+    void setGameInMainProcess(boolean on) { prefs.edit().putBoolean("game_in_main_process", on).commit(); }
+
+    static boolean isXiaomi() {
+        final String maker = (Build.MANUFACTURER + " " + Build.BRAND).toLowerCase(Locale.ROOT);
+        return maker.contains("xiaomi") || maker.contains("redmi") || maker.contains("poco");
+    }
 
     /** The game's Update button started an install: open the game again once it is done (UpdateReceiver). */
     boolean reopenGameAfterUpdate() { return prefs.getBoolean("reopen_after_update", false); }

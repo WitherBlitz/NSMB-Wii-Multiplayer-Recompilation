@@ -23,7 +23,7 @@ import org.libsdl.app.SDLActivity;
  * The game: SDL's activity running libmain.so (the translated game, its runtime, SDL and Dawn,
  * linked into one library), with the on-screen remote and the phone's motion on top.
  */
-public final class GameActivity extends SDLActivity
+public class GameActivity extends SDLActivity
         implements TouchControlsView.Listener, MotionInput.Listener {
     private static final String TAG = "NSMBW";
 
@@ -353,15 +353,33 @@ public final class GameActivity extends SDLActivity
         return super.dispatchKeyEvent(event);
     }
 
+    /** The game, in the process AppSettings picks for this phone (Xiaomi Mode: the main one). */
+    static Intent intent(Context context) {
+        return new Intent(context, new AppSettings(context).gameInMainProcess()
+                ? MainProcessGameActivity.class : GameActivity.class);
+    }
+
+    /**
+     * Leaves the game for `next`. The game's process ends with it (onDestroy); when that is the app's
+     * main process (Xiaomi Mode), `next` opens in a fresh one (RestartActivity).
+     */
+    private void leaveFor(Intent next) {
+        if (this instanceof MainProcessGameActivity) {
+            RestartActivity.restart(this, next);
+        } else {
+            startActivity(next);
+        }
+        finish();
+    }
+
     /** "Start Menu": back to the launcher (its settings, Skip Start Menu); the game's process ends. */
     private void openStartMenu(boolean inSession) {
         if (inSession) {
             nativePrepareToLeave();  // the host keeps the session's progress
         }
-        startActivity(new Intent(this, LauncherActivity.class)
+        leaveFor(new Intent(this, LauncherActivity.class)
                 .putExtra(LauncherActivity.EXTRA_SHOW_START_MENU, true)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP));
-        finish();
     }
 
     /** "Leave LAN Game": keep the host's progress, then start the game again on its own. */
@@ -385,13 +403,9 @@ public final class GameActivity extends SDLActivity
      * session and boots into it. Called from the game thread.
      */
     void restartForSession() {
-        runOnUiThread(() -> {
-            final Intent intent = new Intent(this, LauncherActivity.class)
-                    .putExtra(LauncherActivity.EXTRA_RESTART_GAME, true)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            startActivity(intent);
-            finish();
-        });
+        runOnUiThread(() -> leaveFor(new Intent(this, LauncherActivity.class)
+                .putExtra(LauncherActivity.EXTRA_RESTART_GAME, true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP)));
     }
 
     @Override
