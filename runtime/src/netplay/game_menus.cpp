@@ -20,6 +20,8 @@ constexpr uint16_t kProfileSelectPlayer = 0x2BC;
 constexpr uint16_t kProfileFileSelect = 0x2D5;
 constexpr uint16_t kProfileCourseSelectMenu = 0x2B5;  // the world map's + menu
 constexpr uint16_t kProfilePauseWindow = 0x2C6;       // a level's pause window
+constexpr uint16_t kProfileCollectionCoin = 0x2B4;    // the world map's Star Coins screen
+constexpr uint16_t kProfileYesNoWindow = 0x2C0;        // the game's yes/no prompts
 
 // Current state IDs (sStateMgr's current pointer) and the fields read from each object.
 constexpr uint32_t kSelectPlayerState = 0x9C;
@@ -38,6 +40,8 @@ constexpr uint32_t kSpButtonAnime = 0x80995540u;
 constexpr uint32_t kSpExit = 0x80995580u;
 // dCourseSelectMenu_c's and Pausewindow_c's current StateID (it names itself at +4).
 constexpr uint32_t kPauseMenuState = 0x234;
+constexpr uint32_t kCollectionCoinState = 0x434;
+constexpr uint32_t kYesNoState = 0x234;
 // dFileSelect_c::StateID_SelectWait.
 constexpr uint32_t kFsSelectWait = 0x80992050u;
 
@@ -80,19 +84,24 @@ bool HasProfile(uint16_t profile) {
     return Find(profile) != 0;
 }
 
-bool PlayerInSpinnableAir(int player, float* verticalSpeed) {
+bool PlayerInSpinnableAir(int player, float* verticalSpeed, bool* onSpringboard) {
     // dBaseActor_c's last frame's movement (position minus the one before, set in postExecute).
     constexpr uint32_t kActorMoveY = 0xC8u;
     // daPyMng_c::m_playerID[player]: the player's fBaseID, also the first word of its object.
     constexpr uint32_t kPlayerIds = 0x80354E10u;
     // The player's sStateMgr is at +0x1464; its method's current StateID (method +0x18, +0x1C).
     constexpr uint32_t kPlayerStateId = 0x1464u + 0x18u + 0x1Cu;
-    // dAcPy_c's and daPlBase_c's StateID_Jump, _Fall, _SitJump, plus JumpDai (springboards),
-    // WallJump (kicked off a wall) and Propel (the propeller suit's flight).
+    // dAcPy_c's and daPlBase_c's StateID_Jump, _Fall, _SitJump, plus WallJump (kicked off a wall)
+    // and Propel (the propeller suit's flight). Not JumpDai (on a springboard): 2 held there bounces
+    // him higher, and a spin would throw that away.
     static constexpr uint32_t kSpinnable[] = {
         0x80375C6Cu, 0x80375CACu, 0x80375D6Cu, 0x803761B0u, 0x80376230u,
-        0x8035429Cu, 0x8035431Cu, 0x803542DCu, 0x803544DCu,
+        0x8035429Cu, 0x8035431Cu, 0x803542DCu,
     };
+    constexpr uint32_t kStateJumpDai = 0x803544DCu;  // daPlBase_c::StateID_JumpDai
+    if (onSpringboard != nullptr) {
+        *onSpringboard = false;
+    }
     uint32_t id = 0;
     if (player < 0 || player > 3 || !Memory::TryRead32(kPlayerIds + 4u * static_cast<uint32_t>(player), id) ||
         id == 0) {
@@ -111,6 +120,9 @@ bool PlayerInSpinnableAir(int player, float* verticalSpeed) {
                 return false;
             }
             const bool spinnable = std::find(std::begin(kSpinnable), std::end(kSpinnable), state) != std::end(kSpinnable);
+            if (onSpringboard != nullptr) {
+                *onSpringboard = state == kStateJumpDai;
+            }
             if (verticalSpeed != nullptr) {
                 *verticalSpeed = Memory::ReadFloat32(owner + kActorMoveY);
             }
@@ -386,6 +398,22 @@ uint32_t PauseWindowObject() {
     return Find(kProfilePauseWindow);
 }
 
+// A StateID's name ("dCollectionCoin_c::StateID_KeyWait"), through its string pointer at +4.
+static std::string StateName(uint32_t id) {
+    uint32_t namePtr = 0;
+    std::string name;
+    if (Memory::TryRead32(id + 4, namePtr) && namePtr >= 0x80000000u && namePtr < 0x81800000u) {
+        for (uint32_t n = 0; n < 96; ++n) {
+            uint32_t word = 0;
+            if (!Memory::TryRead32((namePtr + n) & ~3u, word)) break;
+            const char ch = static_cast<char>(word >> (24 - 8 * ((namePtr + n) & 3u)));
+            if (ch == 0) break;
+            name += ch;
+        }
+    }
+    return name;
+}
+
 bool PauseWindowShowing() {
     // The window object lives as long as the course; between pauses it idles in StateID_InitWait
     // (its panes keep their visible flags, the game just doesn't draw the layout then).
@@ -395,23 +423,36 @@ bool PauseWindowShowing() {
     if (object == 0 || !Memory::TryRead32(object + kPauseMenuState, id) || id == 0) {
         return false;
     }
-    if (idleState == 0) {
-        uint32_t namePtr = 0;
-        std::string name;
-        if (Memory::TryRead32(id + 4, namePtr) && namePtr >= 0x80000000u && namePtr < 0x81800000u) {
-            for (uint32_t n = 0; n < 96; ++n) {
-                uint32_t word = 0;
-                if (!Memory::TryRead32((namePtr + n) & ~3u, word)) break;
-                const char ch = static_cast<char>(word >> (24 - 8 * ((namePtr + n) & 3u)));
-                if (ch == 0) break;
-                name += ch;
-            }
-        }
-        if (name.find("StateID_InitWait") != std::string::npos) {
-            idleState = id;
-        }
+    if (idleState == 0 && StateName(id).find("StateID_InitWait") != std::string::npos) {
+        idleState = id;
     }
     return id != idleState;
+}
+
+// The object of `profile` is in the state named `state` (its StateID is remembered in `cached` the
+// first time it is seen, so later calls only compare pointers).
+static bool InState(uint16_t profile, uint32_t stateOffset, const char* state, uint32_t& cached) {
+    const uint32_t object = Find(profile);
+    uint32_t id = 0;
+    if (object == 0 || !Memory::TryRead32(object + stateOffset, id) || id == 0) {
+        return false;
+    }
+    if (cached == 0 && StateName(id).find(state) != std::string::npos) {
+        cached = id;
+    }
+    return id == cached;
+}
+
+bool StarCoinsWaiting() {
+    // The screen's object lives as long as the world map; StateID_KeyWait is the screen up and
+    // waiting for a button (it opens through OpenAnimeEndWait and closes through ExitAnimeEndWait).
+    static uint32_t keyWait = 0;
+    return InState(kProfileCollectionCoin, kCollectionCoinState, "dCollectionCoin_c::StateID_KeyWait", keyWait);
+}
+
+bool YesNoWaiting() {
+    static uint32_t selectWait = 0;
+    return InState(kProfileYesNoWindow, kYesNoState, "dYesNoWindow_c::StateID_SelectWait", selectWait);
 }
 
 int CourseMenuCursor() {

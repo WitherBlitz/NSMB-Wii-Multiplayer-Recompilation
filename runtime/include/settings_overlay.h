@@ -23,6 +23,16 @@ bool FrameGraph() noexcept;
 // The Performance Monitor's size in percent, 5-200 (50 is the graph's original size), its text
 // included. `save` writes Config.toml (a slider being dragged saves when it is let go).
 void SetFrameGraphSize(int percent, bool save) noexcept;
+// The Keybinds tab with a controller connected (Controller Bindings): its rows are the keyboard's
+// actions (Keybinds::Action), bound to that controller's buttons through the [controller] mapping.
+bool ControllerConnected() noexcept;
+std::string ControllerBindingLabel(int action);
+bool ControllerActionRebindable(int action) noexcept;  // not the tilt rows (the right stick)
+// Waits for the next controller button pressed and binds it to `action`; Escape or 10 s cancel.
+void BeginControllerCapture(int action) noexcept;
+int ControllerCapturing() noexcept;  // the action waiting for a button, or -1
+bool PollControllerCapture() noexcept;  // true once the capture has ended
+void ResetControllerBindings() noexcept;
 // Android's on-screen controls (the app shows or hides them; the Keybinds tab's checkbox asks it to).
 void SetTouchControls(bool on) noexcept;
 bool TouchControls() noexcept;

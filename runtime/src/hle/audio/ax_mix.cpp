@@ -1342,8 +1342,11 @@ private:
     }
 
 public:
-    // The speaker version of the AI block at [addr, addr + bytes), when every frame in it was
-    // recorded and the guest memory there still holds exactly what the mix wrote.
+    // The speaker version of the AI block at [addr, addr + bytes): each frame the mix recorded and
+    // the guest memory there still holds exactly. A frame it can't match (played later than the
+    // recorded frames reach, after a hitch) is the guest's own frame at the lower of the Music and
+    // Sound Effects volumes, a short dip, where playing the whole block unscaled put the music
+    // back at 100% for a moment.
     const uint8_t* SpeakerBlock(uint32_t addr, uint32_t bytes) {
         constexpr uint32_t kFrameBytes = kAxSamplesPerFrame * 4;
         if (bytes == 0 || bytes % kFrameBytes != 0 || bytes > m_speakerBlock.size()) {
@@ -1359,11 +1362,25 @@ public:
                     found = &frame;
                 }
             }
-            const uint8_t* guest = found != nullptr ? MixResolveRange(addr + offset, kFrameBytes) : nullptr;
-            if (guest == nullptr || std::memcmp(guest, found->guest.data(), kFrameBytes) != 0) {
+            const uint8_t* guest = MixResolveRange(addr + offset, kFrameBytes);
+            if (guest == nullptr) {
                 return nullptr;
             }
-            std::memcpy(m_speakerBlock.data() + offset, found->speaker.data(), kFrameBytes);
+            if (found != nullptr && std::memcmp(guest, found->guest.data(), kFrameBytes) == 0) {
+                std::memcpy(m_speakerBlock.data() + offset, found->speaker.data(), kFrameBytes);
+                continue;
+            }
+            const float scale = std::min(m_musicVolume, m_effectsVolume);
+            for (uint32_t i = 0; i < kFrameBytes; i += 2) {
+                const auto sample = static_cast<int16_t>(BigEndian::Read16(guest + i));
+                BigEndian::Write16(m_speakerBlock.data() + offset + i,
+                                   static_cast<uint16_t>(ClampS16(static_cast<int64_t>(sample * scale))));
+            }
+            static uint32_t s_unmatched = 0;
+            if ((++s_unmatched & 255) == 1) {
+                RT_LOGF(RT_TAG_AUDIO, "speaker frames: %u played from the guest frame (not recorded or changed)\n",
+                        s_unmatched);
+            }
         }
         return m_speakerBlock.data();
     }
@@ -1539,7 +1556,8 @@ private:
     float m_effectsVolume = 1.0f;
     std::array<int, kAxSamplesPerFrame> m_musicL{};
     std::array<int, kAxSamplesPerFrame> m_musicR{};
-    std::array<SpeakerFrame, 8> m_speakerFrames{};
+    // About 200 ms of AX frames: the AI can play a block well after it was mixed when a frame hitches.
+    std::array<SpeakerFrame, 64> m_speakerFrames{};
     size_t m_nextSpeakerFrame = 0;
     std::array<uint8_t, kAxSamplesPerFrame * 4 * 8> m_speakerBlock{};
 

@@ -1100,6 +1100,8 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
         tint = t->second;
     }
     const Rgba tintColor = FromRgba8(tint);
+    const auto matrixIt = params.colorMatrix.find(pane.name);
+    const std::array<float, 9>* matrix = matrixIt != params.colorMatrix.end() ? &matrixIt->second : nullptr;
 
     const auto quad = [&](const Material* mat, const uint32_t vtx[4], float ax0, float ay0, float ax1, float ay1,
                           const float uvIn[4][2], uint8_t flip) {
@@ -1127,6 +1129,13 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
                 c = mat->matColor;
             }
             c = Mul(c, tintColor);
+            if (matrix != nullptr) {
+                const auto& m = *matrix;
+                const Rgba in = c;
+                c.r = std::min(1.0f, m[0] * in.r + m[1] * in.g + m[2] * in.b);
+                c.g = std::min(1.0f, m[3] * in.r + m[4] * in.g + m[5] * in.b);
+                c.b = std::min(1.0f, m[6] * in.r + m[7] * in.g + m[8] * in.b);
+            }
             c.a *= alpha;
             colors[i] = c;
         }

@@ -737,9 +737,8 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
     }
   }
 
-  // Every backend on a real GPU first (on Android, a Mali GPU skips Vulkan here so OpenGL ES comes
-  // first); a software rasterizer (WARP, SwiftShader) or Mali's Vulkan only when none of those works,
-  // and the null backend last of all.
+  // Every backend on a real GPU first; a software rasterizer (WARP, SwiftShader) only when none
+  // works, and the null backend last of all.
   for (int pass = 0; pass < 2 && !windowCreated; ++pass) {
     const bool allowSoftware = pass == 1;
     for (const auto backendType : PreferredBackendOrder) {

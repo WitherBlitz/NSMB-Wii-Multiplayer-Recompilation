@@ -119,8 +119,9 @@ Intent KeyboardIntent() {
     // falling is a shake, a spin, rather than 2; Space then counts as no button until it is let go.
     // Falling, a press within a small Mario's height (16 units) of the ground is meant as the next
     // jump: the press waits that long at the current fall speed (2 to 7 frames), and becomes 2 if
-    // the player lands meanwhile, else the spin. The player's state is looked at on a press and
-    // during that wait only, never otherwise.
+    // the player lands meanwhile, else the spin. On a springboard a press is always 2, and a spin's
+    // Space still held when he lands on one becomes 2 held. The player's state is looked at on a
+    // press, during that wait and while a spin's Space is held, never otherwise.
     enum class SpaceIs { Two, Spin, Waiting };
     static bool spaceWasDown = false;
     static SpaceIs spaceIs = SpaceIs::Two;
@@ -146,6 +147,15 @@ Intent KeyboardIntent() {
                 waitUntilNs = now + static_cast<uint64_t>(frames * kFrameNs);
                 SmartSpinLog("falling: waiting to see if he lands");
             }
+        }
+    } else if (spaceIs == SpaceIs::Spin && spaceDown) {
+        // Space held through the spin onto a springboard: it is 2 held there again, for the high
+        // bounce holding the jump button gives.
+        bool onSpringboard = false;
+        GameMenus::PlayerInSpinnableAir(player(), nullptr, &onSpringboard);
+        if (onSpringboard) {
+            spaceIs = SpaceIs::Two;
+            SmartSpinLog("held onto a springboard: 2 (the high bounce)");
         }
     } else if (spaceIs == SpaceIs::Waiting) {
         if (!GameMenus::PlayerInSpinnableAir(player())) {

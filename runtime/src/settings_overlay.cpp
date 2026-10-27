@@ -7,6 +7,7 @@
 #include "controller_button_names.h"
 #include "controller_mapping_wizard.h"
 #include "input_bindings.h"
+#include "keybinds.h"
 #include "game_graphics_options.h"
 #include "music_attenuation.h"
 #include "runtime_config.h"
@@ -494,6 +495,7 @@ struct RebindState {
     uint32_t mouse = 0;
     std::array<bool, SDL_GAMEPAD_BUTTON_COUNT> buttons{};
     std::array<bool, SDL_GAMEPAD_AXIS_COUNT> axesReady{};
+    bool inGame = false;  // from the game's settings window (Controller tab): no ImGui popup
 } g_rebind;
 
 void BeginRebind(RebindKind kind, uint16_t target, const char* label, bool secondary = false) {
@@ -560,6 +562,9 @@ void CompleteRebind(uint32_t value) {
 }
 
 void DrawRebindPrompt() {
+    if (g_rebind.inGame) {
+        return;  // the game's settings window polls it (PollControllerCapture)
+    }
     if (g_rebind.openPopup) {
         ImGui::OpenPopup("Rebind input");
         g_rebind.openPopup = false;
@@ -1859,6 +1864,126 @@ void SetFrameGraphSize(int percent, bool save) noexcept {
 
 int FrameGraphSize() noexcept {
     return g_frameGraphSize;
+}
+
+namespace {
+// The Keybinds tab's rows (Keybinds::Action order) on a controller: the GameCube pad button the
+// virtual remote turns into each (virtual_remote.cpp PadIntent). Tilt is the right stick, fixed.
+constexpr std::array<uint16_t, 12> kActionPadButton = {
+    PAD_BUTTON_UP, PAD_BUTTON_DOWN, PAD_BUTTON_LEFT, PAD_BUTTON_RIGHT, PAD_BUTTON_A, PAD_BUTTON_B,
+    PAD_BUTTON_Y, PAD_TRIGGER_Z, 0, 0, PAD_BUTTON_START, PAD_TRIGGER_L,
+};
+constexpr int kActionTiltLeft = 8, kActionTiltRight = 9;
+
+// The first port with a gamepad on it, or -1. Wii Remotes (with or without an extension) reach the
+// game directly, not through these bindings.
+int GamepadPort() {
+    for (uint32_t port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
+        const auto kind = WiiRemoteInput::KindForPort(port);
+        if (PADGetIndexForPort(port) >= 0 &&
+            (kind == WiiRemoteInput::Kind::NotWii || kind == WiiRemoteInput::Kind::WiiUPro)) {
+            return static_cast<int>(port);
+        }
+    }
+    return -1;
+}
+
+// "South (A / Cross)" -> "A / Cross": the part in brackets, for the game window's small buttons.
+std::string ShortButtonLabel(const char* label) {
+    const std::string text = label;
+    const size_t open = text.find('('), close = text.rfind(')');
+    return open != std::string::npos && close != std::string::npos && close > open + 1
+               ? text.substr(open + 1, close - open - 1)
+               : text;
+}
+} // namespace
+
+bool ControllerConnected() noexcept {
+    return GamepadPort() >= 0;
+}
+
+std::string ControllerBindingLabel(int action) {
+    if (action == kActionTiltLeft) return "Right stick left";
+    if (action == kActionTiltRight) return "Right stick right";
+    const int port = GamepadPort();
+    if (port < 0 || action < 0 || action >= static_cast<int>(kActionPadButton.size())) return "None";
+    uint32_t count = 0;
+    const PADButtonMapping* mappings = PADGetButtonMappings(static_cast<uint32_t>(port), &count);
+    for (uint32_t i = 0; mappings != nullptr && i < count; ++i) {
+        if (mappings[i].padButton == kActionPadButton[action]) {
+            if (mappings[i].nativeButton == PAD_NATIVE_BUTTON_DISABLED) return "None";
+            return ShortButtonLabel(NativeButtonForValue(mappings[i].nativeButton).label);
+        }
+    }
+    return "None";
+}
+
+bool ControllerActionRebindable(int action) noexcept {
+    return action >= 0 && action < static_cast<int>(kActionPadButton.size()) && kActionPadButton[action] != 0;
+}
+
+void BeginControllerCapture(int action) noexcept {
+    const int port = GamepadPort();
+    if (port < 0 || !ControllerActionRebindable(action)) return;
+    g_controllerPort = port;
+    BeginRebind(RebindKind::Controller, kActionPadButton[action], Keybinds::ActionName(action));
+    g_rebind.openPopup = false;
+    g_rebind.inGame = true;
+}
+
+int ControllerCapturing() noexcept {
+    if (!g_rebind.active || !g_rebind.inGame) return -1;
+    for (size_t i = 0; i < kActionPadButton.size(); ++i) {
+        if (kActionPadButton[i] == g_rebind.target) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+bool PollControllerCapture() noexcept {
+    if (!g_rebind.active || !g_rebind.inGame) return true;
+    int keyCount = 0;
+    const bool* keys = SDL_GetKeyboardState(&keyCount);
+    // Escape or 10 seconds without a press leave the binding as it was.
+    if ((keys != nullptr && SDL_SCANCODE_ESCAPE < keyCount && keys[SDL_SCANCODE_ESCAPE]) || Clock::now() >= g_rebind.deadline) {
+        g_rebind.active = false;
+        return true;
+    }
+    auto* pad = SDL_GetGamepadFromID(g_rebind.instance);
+    if (pad == nullptr) {
+        g_rebind.active = false;  // unplugged meanwhile
+        return true;
+    }
+    for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT && g_rebind.active; ++i) {
+        const bool pressed = SDL_GetGamepadButton(pad, static_cast<SDL_GamepadButton>(i));
+        if (pressed && !g_rebind.buttons[i]) CompleteRebind(static_cast<uint32_t>(i));
+        g_rebind.buttons[i] = pressed;
+    }
+    for (int i = 0; i < SDL_GAMEPAD_AXIS_COUNT && g_rebind.active; ++i) {
+        const int value = SDL_GetGamepadAxis(pad, static_cast<SDL_GamepadAxis>(i));
+        if (std::abs(value) < 8000) g_rebind.axesReady[i] = true;
+        if (g_rebind.axesReady[i] && std::abs(value) >= 16384) CompleteRebind(PADEncodeAxisButton(i, value < 0));
+    }
+    return !g_rebind.active;
+}
+
+void ResetControllerBindings() noexcept {
+    const int port = GamepadPort();
+    if (port < 0) return;
+    PADRestoreDefaultMapping(static_cast<uint32_t>(port));
+    uint32_t count = 0;
+    if (PADButtonMapping* restored = PADGetButtonMappings(static_cast<uint32_t>(port), &count)) {
+        for (size_t i = 0; i < kControllerButtons.size(); ++i) {
+            const auto it = std::find_if(restored, restored + count, [&](const PADButtonMapping& mapping) {
+                return mapping.padButton == kControllerButtons[i].padButton;
+            });
+            if (it != restored + count) {
+                RuntimeConfigFile::SetControllerButton(i, NativeButtonForValue(it->nativeButton).configName);
+            }
+            PADSetAltButtonMapping(static_cast<uint32_t>(port),
+                                   PADButtonMapping{PAD_NATIVE_BUTTON_INVALID, kControllerButtons[i].padButton});
+        }
+    }
+    PADSerializeMappings();
 }
 
 void SetTouchControls(bool on) noexcept {

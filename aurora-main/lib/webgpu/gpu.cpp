@@ -753,20 +753,6 @@ bool initialize(AuroraBackend auroraBackend, bool allowSoftware) {
     g_adapter = {};
     return false;
   }
-#if defined(__ANDROID__)
-  if (!allowSoftware && g_adapterInfo.backendType == wgpu::BackendType::Vulkan) {
-    // Arm Mali GPUs start on OpenGL ES in the automatic search; Vulkan stays their fallback (the
-    // second pass), and choosing Vulkan in the settings still uses it.
-    std::string device{std::string_view{g_adapterInfo.device}};
-    std::transform(device.begin(), device.end(), device.begin(), [](unsigned char ch) { return std::tolower(ch); });
-    if (device.find("mali") != std::string::npos) {
-      Log.info("Mali GPU ({}): trying OpenGL ES before Vulkan", std::string_view{g_adapterInfo.device});
-      SDL_SetError("Mali GPUs start on OpenGL ES");
-      g_adapter = {};
-      return false;
-    }
-  }
-#endif
   g_backendType = g_adapterInfo.backendType;
   const auto backendName = magic_enum::enum_name(g_backendType);
   auto adapterName = g_adapterInfo.device;

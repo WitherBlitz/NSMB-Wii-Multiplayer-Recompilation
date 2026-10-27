@@ -13,10 +13,12 @@
 #include "display_settings.h"
 #include "keybinds.h"
 #include "settings_overlay.h"
+#include "updater.h"
 
 #include <imgui.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <map>
 #include <functional>
@@ -68,6 +70,7 @@ struct Ui {
     uint32_t events = 0;         // menu events since the last frame
     bool swallowConfirm = false; // keep a confirm press from the game until it is released
     uint32_t heldFromMenu = 0;   // buttons held when a menu handed the remote back: hidden till released
+    bool plusIsBack = false;     // + pressed on the Star Coins screen or a yes/no prompt: 1 till released
     bool countPicked = false;    // Create Room: the player confirmed a number on the game's screen
     std::string message;
     Screen afterMessage = Screen::Lan;
@@ -366,7 +369,8 @@ void Cursor(const Canvas& c, float x, float y, float w, float h, int frame) {
 // A green-to-yellow button pill like the game's yes/no buttons, w x 53 units, centred on (x, y).
 // fixedScale > 0 draws it at that scale instead of the menus' own (a gentle pulse when selected).
 void Button(const Canvas& c, const std::string& label, float x, float y, float w, bool selected, bool enabled,
-            int frame, float textSize = 30.0f, float h = 53.0f, float fixedScale = 0.0f) {
+            int frame, float textSize = 30.0f, float h = 53.0f, float fixedScale = 0.0f,
+            const std::array<float, 9>* recolor = nullptr) {
     Assets& a = GetAssets();
     GameLayout::DrawParams p;
     p.alpha = c.alpha * (enabled ? 1.0f : 0.55f);
@@ -381,6 +385,9 @@ void Button(const Canvas& c, const std::string& label, float x, float y, float w
     p.visible["T_center_01"] = false;
     if (!enabled) {
         p.vertexTint["P_centerBase_00"] = 0xB0B0B0FFu;
+    }
+    if (recolor != nullptr) {
+        p.colorMatrix["P_centerBase_00"] = *recolor;
     }
     a.yesNo.Draw(c.list, c.view, "P_centerBase_00", p);
     const float scale = p.scale;
@@ -414,6 +421,10 @@ constexpr float kToggleX = 214.0f, kToggleY = 192.0f, kToggleW = 166.0f;
 constexpr float kGearY = kToggleY;
 
 constexpr float kGearX = kToggleX + kToggleW / 2 + 46.0f, kGearW = 62.0f;
+// The Update button, in the middle of the title bar when a newer release is out (updater.h).
+constexpr float kUpdateX = -15.0f, kUpdateW = 140.0f;
+// The game's green button turned orange: red takes most of the green, green drops to amber.
+constexpr std::array<float, 9> kOrange = {0.15f, 1.0f, 0.0f, 0.25f, 0.6f, 0.0f, 0.0f, 0.15f, 0.35f};
 
 ImVec2 ToScreen(const Canvas& c, float x, float y) {
     return ImVec2(c.view.centerX + x * c.view.scale, c.view.centerY - y * c.view.scale);
@@ -838,7 +849,7 @@ bool CursorStep(Nav& n, uint32_t& button) {
     }
     const CursorRect r = GameCursorRect();
     if (!r.valid) {
-        return false;
+        return n.steps <= 3;  // a cursor Settings had hidden shows again a frame later
     }
     const float cx = (r.x0 + r.x1) / 2, cy = (r.y0 + r.y1) / 2;
     const bool first = n.lastCx > 1e8f;
@@ -985,8 +996,45 @@ int PauseGameCursor() {
     return (r.y0 + r.y1) / 2 > cy + kPauseSettingsY * scale ? 0 : 1;
 }
 
+bool UpdateShown() {
+    return g_ui.screen == Screen::None && Updater::Get().state != Updater::State::Idle;
+}
+
+void DrawUpdate(const Canvas& c) {
+    if (!UpdateShown()) {
+        return;
+    }
+    const Updater::Status update = Updater::Get();
+    std::string label = "Update";
+    bool busy = true;
+    switch (update.state) {
+    case Updater::State::Downloading:
+        label = update.progress >= 0 ? "Updating " + std::to_string(static_cast<int>(update.progress * 100)) + "%"
+                                     : "Updating...";
+        break;
+    case Updater::State::Installing: label = "Installing..."; break;
+    case Updater::State::Restarting: label = "Restarting..."; break;
+    case Updater::State::Failed: label = "Retry Update"; busy = false; break;
+    default: busy = false; break;
+    }
+    // Busy, it stays orange (greyed out it reads as broken) and only pulses when the cursor is on it.
+    Button(c, label, kUpdateX, kToggleY, kUpdateW, g_ui.toggleFocus && g_ui.topItem == 2, true, g_ui.frame,
+           label.size() > 7 ? 22.0f : 30.0f, 53.0f, busy ? 0.94f : 0.0f, &kOrange);
+}
+
+// The Update button pressed (by the remote or a tap): installs the newer release, or tries again.
+void PressUpdate() {
+    const Updater::State state = Updater::Get().state;
+    if (state == Updater::State::Available || state == Updater::State::Failed) {
+        Updater::Install();
+    }
+}
+
 void DrawToggle(const Canvas& c) {
-    const bool lan = g_ui.screen != Screen::None;
+    DrawUpdate(c);
+    // Under a message that returns to Couch (a failed update), the toggle still says Couch.
+    const bool lan = g_ui.screen != Screen::None &&
+                     !(g_ui.screen == Screen::Message && g_ui.afterMessage == Screen::None);
     Text(c, "Play:", kToggleX - kToggleW / 2 - 12, kToggleY, 24, 2, 0xFFFFFFFFu);
     Button(c, lan ? "LAN" : "Couch", kToggleX, kToggleY, kToggleW, g_ui.toggleFocus && g_ui.topItem == 0, true,
            g_ui.frame);
@@ -1188,7 +1236,8 @@ constexpr float kSettingsHeight = 440.0f, kSettingsWidth = 720.0f;
 
 void DrawSettingsTabs(const Canvas& c) {
     const float y = kSettingsHeight / 2 - 42.0f;
-    const char* names[kSettingsTabs] = {"Video", "Audio", "Keybinds", "Language"};
+    const char* names[kSettingsTabs] = {"Video", "Audio",
+                                        settings_overlay::ControllerConnected() ? "Controller" : "Keybinds", "Language"};
     for (int tab = 0; tab < kSettingsTabs; ++tab) {
         const float x = (tab - 1.5f) * 168.0f;
         Button(c, names[tab], x, y, 156, g_ui.cursor == 0 && g_settingsTab == tab, g_settingsTab == tab, g_ui.frame,
@@ -1443,19 +1492,24 @@ void DrawVideoTab(const Canvas& c) {
 }
 
 void DrawKeybindsTab(const Canvas& c) {
-    const int capturing = Keybinds::Capturing();
+    // With a controller connected, the tab is its Controller Bindings: the same controls, on its buttons.
+    const bool pad = settings_overlay::ControllerConnected();
+    const int capturing = pad ? settings_overlay::ControllerCapturing() : Keybinds::Capturing();
     for (int action = 0; action < Keybinds::kActionCount; ++action) {
         const int column = action / kKeyRows, row = action % kKeyRows;
         const float x0 = column == 0 ? -178.0f : 178.0f;
         const float y = 126.0f - 40.0f * row;
         Text(c, Keybinds::ActionName(action), x0 - 168, y, 21, 0);
-        const std::string label = capturing == action ? "Press a key..." : Keybinds::KeyLabel(action);
+        const std::string label = capturing == action ? (pad ? "Press a button..." : "Press a key...")
+                                  : pad              ? settings_overlay::ControllerBindingLabel(action)
+                                                     : Keybinds::KeyLabel(action);
         const float size = label.size() > 16 ? 17.0f : label.size() > 11 ? 19.0f : 22.0f;
-        Button(c, label, x0 + 78, y, 172, g_ui.cursor == 1 + action, true, g_ui.frame, size, 35.0f);
+        const bool enabled = !pad || settings_overlay::ControllerActionRebindable(action);
+        Button(c, label, x0 + 78, y, 172, g_ui.cursor == 1 + action, enabled, g_ui.frame, size, 35.0f);
         AddHit(x0 + 78, y, 178, 38, 1 + action);
     }
     if (capturing >= 0) {
-        Text(c, "Press the new key (Esc cancels).", 0, -122, 22);
+        Text(c, pad ? "Press the new button (Esc cancels)." : "Press the new key (Esc cancels).", 0, -122, 22);
     } else {
         // The QoL switches side by side.
         const char* labels[] = {"Space Smart Spin", "Reverse Tilt", "Touch Controls"};
@@ -1503,6 +1557,10 @@ void CloseSettings() {
 void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, bool back) {
     if (Keybinds::Capturing() >= 0) {
         Keybinds::PollCapture();  // the keyboard is the capture's until a key is picked
+        return;
+    }
+    if (settings_overlay::ControllerCapturing() >= 0) {
+        settings_overlay::PollControllerCapture();  // likewise the controller's buttons
         return;
     }
     int& cursor = g_ui.cursor;
@@ -1611,7 +1669,10 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
     if (cursor >= kKeyReset) {
         if (left || right) cursor = cursor == kKeyReset ? kKeyOk : kKeyReset;
         if (up) cursor = kKeySmartSpin;
-        if (confirm && cursor == kKeyReset) Keybinds::ResetDefaults();
+        if (confirm && cursor == kKeyReset) {
+            if (settings_overlay::ControllerConnected()) settings_overlay::ResetControllerBindings();
+            else Keybinds::ResetDefaults();
+        }
         if (confirm && cursor == kKeyOk) CloseSettings();
         return;
     }
@@ -1619,7 +1680,10 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
     if (up) cursor = row == 0 ? 0 : cursor - 1;
     if (down) cursor = row == kKeyRows - 1 ? (column == 0 ? kKeySmartSpin : kKeyReverseTilt) : cursor + 1;
     if ((left && column == 1) || (right && column == 0)) cursor = 1 + (1 - column) * kKeyRows + row;
-    if (confirm) Keybinds::BeginCapture(action);
+    if (confirm) {
+        if (settings_overlay::ControllerConnected()) settings_overlay::BeginControllerCapture(action);
+        else Keybinds::BeginCapture(action);
+    }
 }
 
 void DrawLan(const Canvas& c) {
@@ -1926,6 +1990,11 @@ void TapAt(float lx, float ly, float gx, uint16_t scene, bool title) {
         PressToggle();
         return;
     }
+    if (g_ui.toggleShown && UpdateShown() && in(kUpdateX, kToggleY, kUpdateW + 16, 66)) {
+        g_ui.toggleFocus = false;
+        PressUpdate();
+        return;
+    }
     if (g_ui.toggleShown && g_ui.screen == Screen::None && in(kGearX, kGearY, kGearW + 16, 66)) {
         g_ui.toggleFocus = false;
         Show(Screen::Settings);
@@ -1944,6 +2013,12 @@ void TapAt(float lx, float ly, float gx, uint16_t scene, bool title) {
         StartNav(NavKind::Press, static_cast<int>(kTwo | kA));  // the strap screen, "Press 2 to Start"
         return;
     }
+    if (scene == kSceneWorldMap && GameMenus::StarCoinsWaiting()) {
+        if (lx > 0 && ly < -170) {
+            StartNav(NavKind::Press, static_cast<int>(kOne));  // Back (1), below the panel on the right
+        }
+        return;  // nothing else on the Star Coins screen takes a tap
+    }
     if (scene == kSceneWorldMap && g_ui.menuSettingsShown) {
         if (in(0, kMenuSettingsY, 345, 64)) {
             g_menuFocus = true;
@@ -1953,6 +2028,7 @@ void TapAt(float lx, float ly, float gx, uint16_t scene, bool title) {
         } else if (in(kMenuBackX, kMenuBackY, 210, 40)) {
             StartNav(NavKind::Press, static_cast<int>(kOne));  // Back (1)
         } else {
+            g_menuFocus = false;  // the game's own cursor (hidden while Settings has it) takes the tap
             StartCursorNav(lx, ly);  // one of the game's own buttons
         }
         return;
@@ -2331,6 +2407,14 @@ void Draw() {
     if (!g_ui.toggleShown) {
         g_ui.toggleFocus = false;
     }
+    // A failed update says why, once, on the file select (the button then offers to try again).
+    static bool updateFailureShown = false;
+    if (const Updater::Status update = Updater::Get(); update.state != Updater::State::Failed) {
+        updateFailureShown = false;
+    } else if (!updateFailureShown && g_ui.toggleShown && g_ui.screen == Screen::None) {
+        updateFailureShown = true;
+        ShowMessage(update.message, Screen::None);
+    }
     if (g_ui.toggleFocus && !Modal()) {
         const uint32_t ev = g_ui.events;
         g_ui.events = 0;
@@ -2339,12 +2423,14 @@ void Draw() {
             g_ui.toggleFocus = false;
             g_ui.heldFromMenu = g_ui.prevHold;
         } else if (ev & kEvRight) {
-            g_ui.topItem = 1;
+            g_ui.topItem = g_ui.topItem == 2 ? 0 : 1;  // Update -> Couch -> gear
         } else if (ev & kEvLeft) {
-            g_ui.topItem = 0;
+            g_ui.topItem = g_ui.topItem == 1 || !UpdateShown() ? 0 : 2;
         } else if ((ev & kEvConfirm) && g_ui.topItem == 1) {
             g_ui.toggleFocus = false;
             Show(Screen::Settings);
+        } else if ((ev & kEvConfirm) && g_ui.topItem == 2) {
+            PressUpdate();
         } else if (ev & kEvConfirm) {
             PressToggle();
         }
@@ -2518,7 +2604,9 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
         return;
     }
     if (chan == 0) {
-        // A tap on the game's own screens plays back as presses of the first remote.
+        // A tap on the game's own screens plays back as presses of the first remote. Those steer the
+        // game's cursor straight to the tapped button, so the Settings rows below leave them alone.
+        const bool tapping = g_nav.kind == NavKind::Cursor;
         if (!Modal()) {
             sample.hold |= NavButtons();
         }
@@ -2538,7 +2626,7 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
 
         // The world map's + menu: Settings sits between Quick Save and Title Screen. The game never
         // sees the presses that move onto or off it, and its own cursor is moved to match.
-        if (g_ui.menuSettingsShown && !Modal()) {
+        if (g_ui.menuSettingsShown && !Modal() && !tapping) {
             const uint32_t down = upright ? kDown : kLeft, up = upright ? kUp : kRight;
             const int cursor = GameMenus::CourseMenuCursor();
             if (!g_menuFocus) {
@@ -2579,7 +2667,7 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
         }
 
         // A level's pause window: Settings sits between Continue and Exit Course, the same way.
-        if (g_ui.pauseSettingsShown && !Modal()) {
+        if (g_ui.pauseSettingsShown && !Modal() && !tapping) {
             const uint32_t down = upright ? kDown : kLeft, up = upright ? kUp : kRight;
             if (!g_pauseFocus) {
                 const int cursor = PauseGameCursor();
@@ -2621,6 +2709,19 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
             }
         }
 
+        // The Star Coins screen only leaves on 1, and the yes/no prompts cancel on it: + (Esc on a
+        // keyboard) does the same there. The game never sees that +, so it doesn't open the + menu
+        // again once the screen has closed.
+        if ((pressed & kPlus) != 0 && !Modal() && (GameMenus::StarCoinsWaiting() || GameMenus::YesNoWaiting())) {
+            g_ui.plusIsBack = true;
+        }
+        if ((hold & kPlus) == 0) {
+            g_ui.plusIsBack = false;
+        }
+        if (g_ui.plusIsBack) {
+            g_ui.heldFromMenu |= kPlus;
+        }
+
         // Up from any of the three files (also in Create Room's file pick) moves onto the LAN /
         // Couch toggle above them; the game never sees that press, so its cursor stays put.
         const uint32_t screenUp = upright ? kUp : kRight;
@@ -2646,6 +2747,9 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
         }
         g_ui.heldFromMenu &= hold;
         sample.hold &= ~g_ui.heldFromMenu;
+        if (g_ui.plusIsBack) {
+            sample.hold |= kOne;
+        }
         if (g_ui.injectReads > 0 && !Modal()) {
             --g_ui.injectReads;
             sample.hold |= g_ui.injectButtons;

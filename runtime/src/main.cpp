@@ -84,6 +84,7 @@
 #include "hle_stubs.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
+#include "updater.h"
 #include "runtime_product.h"
 #include "recomp_mod_loader.h"
 #include <aurora/aurora.h>
@@ -1661,6 +1662,7 @@ int RuntimeMain(int argc, char** argv) {
         DisplaySettings::OnFrameBoundary(auroraInfo.windowSize.native_fb_width,
                                          auroraInfo.windowSize.native_fb_height);
         settings_overlay::InitializeRuntimeSettings();
+        Updater::Start();  // the file select's Update button: checks GitHub in the background
         static constexpr const char* kAspectNames[] = {"original 4:3", "16:9", "fill"};
         RT_LOG(RT_TAG_CONFIG) << "display aspect=" << kAspectNames[displaySettings.aspect]
                   << " SCGetAspectRatio=" << (configWidescreen ? 1 : 0)

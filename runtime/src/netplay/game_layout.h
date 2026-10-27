@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -53,6 +54,8 @@ struct DrawParams {
     std::unordered_map<std::string, float> paneScale;     // replaces the pane's scale (both axes)
     std::unordered_map<std::string, uint32_t> vertexTint; // multiplies the pane's vertex colours (0xRRGGBBAA)
     std::unordered_map<std::string, std::pair<float, float>> paneSize;  // replaces the pane's width and height
+    // Recolours the pane's vertex colours: rgb' = m * rgb, row-major (after the tint; a green button made orange).
+    std::unordered_map<std::string, std::array<float, 9>> colorMatrix;
 };
 
 class Layout {

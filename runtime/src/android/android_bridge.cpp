@@ -6,6 +6,7 @@
 #include "graphics_info.h"
 #include "runtime_config.h"
 #include "settings_overlay.h"
+#include "updater.h"
 #include "virtual_remote.h"
 
 #include "netplay/net_socket.h"
@@ -42,6 +43,26 @@ bool RestartGame() {
     for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
+}
+
+// The file select's Update button: GameActivity.startGameUpdate runs the app's updater (Updater.java),
+// which reports back through nativeUpdateStatus.
+bool StartAppUpdate() {
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (env == nullptr || activity == nullptr) {
+        return false;
+    }
+    jclass type = env->GetObjectClass(activity);
+    jmethodID start = type != nullptr ? env->GetMethodID(type, "startGameUpdate", "()V") : nullptr;
+    if (start == nullptr) {
+        env->ExceptionClear();
+        env->DeleteLocalRef(activity);
+        return false;
+    }
+    env->CallVoidMethod(activity, start);
+    env->DeleteLocalRef(activity);
+    return true;
 }
 
 } // namespace AndroidBridge
@@ -107,6 +128,27 @@ JNIEXPORT jboolean JNICALL Java_com_wither_nsmbw_GameActivity_nativeSessionActiv
 JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativePrepareToLeave(JNIEnv*, jclass)
 {
     NetplayStart::PrepareToLeave();
+}
+
+// GameActivity.nativeUpdateStatus: what the app's updater found or is doing (Updater::State as a
+// number; progress 0..1, or -1 unknown).
+JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeUpdateStatus(
+    JNIEnv* env, jclass, jint state, jstring version, jfloat progress, jstring message)
+{
+    const auto text = [env](jstring s) {
+        std::string out;
+        if (s != nullptr) {
+            if (const char* utf8 = env->GetStringUTFChars(s, nullptr)) {
+                out = utf8;
+                env->ReleaseStringUTFChars(s, utf8);
+            }
+        }
+        return out;
+    };
+    if (state < 0 || state > static_cast<jint>(Updater::State::Failed)) {
+        return;
+    }
+    Updater::SetFromApp(static_cast<Updater::State>(state), text(version), progress, text(message));
 }
 
 // GameActivity.nativeTap: a tap on the game's menus, as fractions of the screen (netplay_ui.h).

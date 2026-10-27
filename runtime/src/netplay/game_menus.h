@@ -49,12 +49,18 @@ int CourseMenuCursor();
 uint32_t PauseWindowObject();
 // The pause window is on screen (opening, waiting for a choice, or closing), not idling between pauses.
 bool PauseWindowShowing();
+// The world map's Star Coins screen (dCollectionCoin_c, from the + menu) is up, waiting for a button;
+// only 1 leaves it.
+bool StarCoinsWaiting();
+// One of the game's yes/no prompts (dYesNoWindow_c) is up, waiting for a choice; 1 picks the No / Cancel side.
+bool YesNoWaiting();
 // The SELECT_CURSOR object (the menus' corner brackets), 0 without one.
 uint32_t SelectCursorObject();
 // Player `player` (0-3) is jumping or falling, where a shake spins him (Space Smart Spin QoL): not
-// on the ground, and not wall-sliding, swimming, on Yoshi or already spinning. Walks the object
-// tree: call it on a key press, not every frame.
-bool PlayerInSpinnableAir(int player, float* verticalSpeed = nullptr);
+// on the ground, and not wall-sliding, swimming, on Yoshi, on a springboard or already spinning.
+// onSpringboard: he is on a springboard (StateID_JumpDai), where 2 held bounces him higher. Walks
+// the object tree: call it on a key press, not every frame.
+bool PlayerInSpinnableAir(int player, float* verticalSpeed = nullptr, bool* onSpringboard = nullptr);
 // NSMBW_DUMP_STATES debugging: the StateIDs held by the listed profiles' objects.
 std::string DumpStates();
 
