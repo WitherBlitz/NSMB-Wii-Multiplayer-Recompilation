@@ -39,6 +39,10 @@ final class AppSettings {
     boolean autoUpdate() { return prefs.getBoolean("auto_update", false); }
     void setAutoUpdate(boolean on) { prefs.edit().putBoolean("auto_update", on).commit(); }
 
+    /** The game's Update button started an install: open the game again once it is done (UpdateReceiver). */
+    boolean reopenGameAfterUpdate() { return prefs.getBoolean("reopen_after_update", false); }
+    void setReopenGameAfterUpdate(boolean on) { prefs.edit().putBoolean("reopen_after_update", on).commit(); }
+
     boolean spinningCoins() { return prefs.getBoolean("spinning_coins", true); }
     void setSpinningCoins(boolean on) { prefs.edit().putBoolean("spinning_coins", on).commit(); }
 

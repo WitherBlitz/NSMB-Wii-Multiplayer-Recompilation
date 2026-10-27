@@ -81,7 +81,7 @@ final class SettingsMenu {
      */
     private void showRendererChoice() {
         final String[] labels = {
-            "Automatic (recommended): Vulkan, else OpenGL ES (Mali GPUs: OpenGL ES first)",
+            "Automatic (recommended): Vulkan, else OpenGL ES",
             "Vulkan",
             "OpenGL ES 3.1+",
         };

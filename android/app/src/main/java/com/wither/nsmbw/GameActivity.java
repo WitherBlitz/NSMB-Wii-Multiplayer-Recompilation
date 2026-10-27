@@ -59,6 +59,12 @@ public final class GameActivity extends SDLActivity
      */
     static native void nativeSetBackground(boolean background, boolean backup);
     static native boolean nativeGamePaused();
+    /**
+     * The file select's Update button (runtime/src/updater.cpp): what this app's updater found or is
+     * doing, as Updater::State (1 available, 2 downloading, 3 installing, 5 failed); progress 0..1 or -1.
+     */
+    static native void nativeUpdateStatus(int state, String version, float progress, String message);
+    private static final int UPDATE_AVAILABLE = 1, UPDATE_DOWNLOADING = 2, UPDATE_INSTALLING = 3, UPDATE_FAILED = 5;
 
     /** How long leaving the app waits for the backup save and the pause, before SDL's own pause. */
     private static final long SUSPEND_WAIT_MS = 1500;
@@ -73,6 +79,9 @@ public final class GameActivity extends SDLActivity
     private int touchButtons;
     private boolean touchShake, motionShake;
     private float motionTilt;
+    private Updater.Release update;            // the newer release the Update button installs
+    private boolean updateWaitsForPermission;  // sent to "Allow from this source" for it
+    private android.content.BroadcastReceiver updateResult;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -108,6 +117,111 @@ public final class GameActivity extends SDLActivity
         addContentView(touch, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         motion = new MotionInput(this, this);
+        if (nativeReady) {
+            listenForUpdateResult();
+            checkForUpdate();
+        }
+    }
+
+    // --- the file select's Update button --------------------------------------------------------
+
+    /** Once per start: a newer GitHub release shows the game's Update button. */
+    private void checkForUpdate() {
+        new Thread(() -> {
+            try {
+                final Updater.Release release = Updater.latest();
+                // debug.nsmbw.update_test_version stands in for the installed version (testing).
+                String installed = systemProperty("debug.nsmbw.update_test_version");
+                if (installed.isEmpty()) {
+                    installed = Updater.installedVersion(this);
+                }
+                if (release != null && Updater.isNewer(release.version, installed)) {
+                    Log.i(TAG, "update: " + release.version + " is out (this is " + installed + ")");
+                    runOnUiThread(() -> {
+                        update = release;
+                        nativeUpdateStatus(UPDATE_AVAILABLE, release.version, -1f, "");
+                    });
+                }
+            } catch (Exception e) {
+                Log.i(TAG, "update: couldn't check for a newer release: " + e.getMessage());
+            }
+        }, "update-check").start();
+    }
+
+    /** The Update button, pressed (called from the game thread). */
+    void startGameUpdate() {
+        runOnUiThread(() -> {
+            final Updater.Release release = update;
+            if (release == null) {
+                nativeUpdateStatus(UPDATE_FAILED, "", -1f, "Update from the app's start screen instead.");
+                return;
+            }
+            if (!Updater.canInstall(this)) {
+                new AlertDialog.Builder(this)
+                        .setTitle("NSMBW " + release.version + " is available")
+                        .setMessage("To install updates, let NSMBW install apps: turn on Allow from this source "
+                                + "on the next screen, then come back to the game.")
+                        .setPositiveButton("Open Settings", (d, w) -> {
+                            updateWaitsForPermission = true;
+                            startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                    android.net.Uri.parse("package:" + getPackageName())));
+                        })
+                        .setNegativeButton("Not Now",
+                                (d, w) -> nativeUpdateStatus(UPDATE_AVAILABLE, release.version, -1f, ""))
+                        .setCancelable(false)
+                        .show();
+                return;
+            }
+            downloadUpdate(release);
+        });
+    }
+
+    /** Streams the release into the system's installer; Android replaces the app (ending this process). */
+    private void downloadUpdate(Updater.Release release) {
+        nativeUpdateStatus(UPDATE_DOWNLOADING, release.version, 0f, "");
+        settings.setReopenGameAfterUpdate(true);
+        new Thread(() -> {
+            try {
+                Updater.downloadAndInstall(getApplicationContext(), release, (done, total) ->
+                        nativeUpdateStatus(UPDATE_DOWNLOADING, "", total > 0 ? (float) done / total : -1f, ""));
+                nativeUpdateStatus(UPDATE_INSTALLING, "", -1f, "");
+            } catch (Exception e) {
+                settings.setReopenGameAfterUpdate(false);
+                nativeUpdateStatus(UPDATE_FAILED, "", -1f, "The update failed: " + e.getMessage());
+            }
+        }, "update-download").start();
+    }
+
+    /** UpdateReceiver (the app's main process) says an install the button started didn't happen. */
+    private void listenForUpdateResult() {
+        updateResult = new android.content.BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                final String message = intent.getStringExtra(UpdateReceiver.EXTRA_MESSAGE);
+                if (message != null) {
+                    nativeUpdateStatus(UPDATE_FAILED, "", -1f, message);
+                } else if (update != null) {
+                    nativeUpdateStatus(UPDATE_AVAILABLE, update.version, -1f, "");  // cancelled: offer it again
+                }
+            }
+        };
+        final android.content.IntentFilter filter =
+                new android.content.IntentFilter(UpdateReceiver.ACTION_GAME_UPDATE_RESULT);
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(updateResult, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(updateResult, filter);
+        }
+    }
+
+    private static String systemProperty(String name) {
+        try {
+            final Object value = Class.forName("android.os.SystemProperties")
+                    .getMethod("get", String.class).invoke(null, name);
+            return value != null ? value.toString().trim() : "";
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     /** SDL is linked into libmain.so, so that one library is all there is to load. */
@@ -173,6 +287,15 @@ public final class GameActivity extends SDLActivity
         menuPoll.removeCallbacks(pollMenu);
         menuPoll.post(pollMenu);
         hideSystemBars();
+        // Back from "Allow from this source": carry on with the update that was waiting for it.
+        if (updateWaitsForPermission && update != null) {
+            updateWaitsForPermission = false;
+            if (Updater.canInstall(this)) {
+                downloadUpdate(update);
+            } else {
+                nativeUpdateStatus(UPDATE_AVAILABLE, update.version, -1f, "");
+            }
+        }
         if (motion != null) {
             motion.start(settings.motionTilt(), settings.motionShake());
         }
@@ -275,6 +398,10 @@ public final class GameActivity extends SDLActivity
     protected void onDestroy() {
         if (multicastLock != null && multicastLock.isHeld()) {
             multicastLock.release();
+        }
+        if (updateResult != null) {
+            unregisterReceiver(updateResult);
+            updateResult = null;
         }
         super.onDestroy();
         if (isFinishing()) {

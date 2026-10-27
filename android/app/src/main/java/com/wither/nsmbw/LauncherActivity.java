@@ -49,6 +49,7 @@ import java.util.zip.ZipInputStream;
 public final class LauncherActivity extends Activity {
     private static final int REQUEST_IMPORT = 1;
     private static final int REQUEST_ZIP = 2;
+    private static final int REQUEST_LOGS = 3;
     /** Set by GameActivity.restartForSession: open the game again once its old process is gone. */
     static final String EXTRA_RESTART_GAME = "restartGame";
     /** Set by the game's "Start Menu": show this screen even with Skip Start Menu on. */
@@ -193,6 +194,9 @@ public final class LauncherActivity extends Activity {
         importZip.setOnClickListener(v -> pickZip());
         gameData.addView(importZip, matchWidth(dp(10)));
 
+        final Button downloadLogs = button("Download Logs (For Github Reports)", false);
+        downloadLogs.setOnClickListener(v -> LogExport.pickDestination(this, REQUEST_LOGS));
+
         final TextView version = text("NSMBW " + versionText(), 13);
         version.setTextColor(FAINT);
 
@@ -211,6 +215,7 @@ public final class LauncherActivity extends Activity {
             cards.addView(updates, matchWidth(0));
             cards.addView(options, matchWidth(dp(14)));
             cards.addView(gameData, matchWidth(dp(14)));
+            cards.addView(downloadLogs, matchWidth(dp(14)));
             final LinearLayout.LayoutParams cardsParams =
                     new LinearLayout.LayoutParams(right, LinearLayout.LayoutParams.WRAP_CONTENT);
             cardsParams.leftMargin = dp(24);
@@ -225,6 +230,7 @@ public final class LauncherActivity extends Activity {
             column.addView(updates, matchWidth(dp(20)));
             column.addView(options, matchWidth(dp(14)));
             column.addView(gameData, matchWidth(dp(14)));
+            column.addView(downloadLogs, matchWidth(dp(14)));
             column.addView(version, matchWidth(dp(18)));
             page.addView(column, new LinearLayout.LayoutParams(width, LinearLayout.LayoutParams.WRAP_CONTENT));
         }
@@ -469,7 +475,28 @@ public final class LauncherActivity extends Activity {
             runImport(progress -> copyGame(uri, progress));
         } else if (requestCode == REQUEST_ZIP) {
             runImport(progress -> copyZip(uri, progress));
+        } else if (requestCode == REQUEST_LOGS) {
+            saveLogs(uri);
         }
+    }
+
+    private void saveLogs(Uri destination) {
+        final String appVersion = versionText();
+        new Thread(() -> {
+            String message;
+            try {
+                final int sessions = LogExport.write(this, destination, appVersion);
+                message = sessions == 0
+                        ? "Saved, but there are no game logs yet: play once, then download them again."
+                        : "Saved the logs of the last " + sessions + " game session" + (sessions == 1 ? "" : "s")
+                        + ". Attach the zip to your GitHub issue.";
+            } catch (IOException | RuntimeException e) {
+                message = "Could not save the logs: " + e.getMessage();
+            }
+            final String text = message;
+            runOnUiThread(() -> new AlertDialog.Builder(this).setMessage(text)
+                    .setPositiveButton("OK", null).show());
+        }, "LogExport").start();
     }
 
     // --- import --------------------------------------------------------------------------------
