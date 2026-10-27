@@ -127,6 +127,7 @@ PPC_NATIVE_OVERRIDE_VOID(801c3fe0, GX__GetVtxDescv_8016dba4, (uint32_t la), (la)
 
 extern "C" void GX__SetVtxAttrFmt_8016dc68(uint32_t vf, uint32_t a, uint32_t c, uint32_t t, uint32_t fr) {
     const uint32_t attr = CanonicalVtxAttr(a);
+    bool unchanged = false;
     if(vf<8&&attr<26){
         const VtxAttrFmt oldFmt = g_hleGxState.vtxAttrFmt[vf][attr];
         g_hleGxState.vtxAttrFmt[vf][attr].cnt=(GXCompCnt)c;
@@ -136,11 +137,17 @@ extern "C" void GX__SetVtxAttrFmt_8016dc68(uint32_t vf, uint32_t a, uint32_t c, 
             g_hleGxState.vtxAttrFmt[vf][GX_VA_NBT] = {};
         }
         const auto& newFmt = g_hleGxState.vtxAttrFmt[vf][attr];
-        if (oldFmt.cnt != newFmt.cnt || oldFmt.type != newFmt.type || oldFmt.frac != newFmt.frac) {
+        const bool fmtChanged =
+            oldFmt.cnt != newFmt.cnt || oldFmt.type != newFmt.type || oldFmt.frac != newFmt.frac;
+        unchanged = a != GX_VA_NBT && !fmtChanged;
+        if (fmtChanged) {
             g_hleGxState.InvalidateVtxLayoutHash();
         }
     }
     if (vf >= GX_MAX_VTXFMT || a < GX_VA_POS || a >= GX_VA_MAX_ATTR) {
+        return;
+    }
+    if (unchanged) {
         return;
     }
     GXSetVtxAttrFmt((GXVtxFmt)vf, (GXAttr)a, (GXCompCnt)c, (GXCompType)t, (u8)fr);

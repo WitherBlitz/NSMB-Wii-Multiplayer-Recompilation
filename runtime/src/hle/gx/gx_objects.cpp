@@ -2,6 +2,7 @@
 #include "runtime_log.h"
 
 #include <cstddef>
+#include <cstring>
 #include <limits>
 
 // --- Texture and TLUT Objects ---
@@ -74,6 +75,18 @@ uint32_t g_texObjSlotMemoAddr = 0;
 TexObjSlot* g_texObjSlotMemo = nullptr;
 
 constexpr size_t kTexObjTableReserve = 1024;
+constexpr size_t kTexObjSlotCacheEntries = 256;
+
+struct TexObjSlotCacheEntry {
+    uint32_t addr = 0;
+    TexObjSlot* slot = nullptr;
+};
+
+std::array<TexObjSlotCacheEntry, kTexObjSlotCacheEntries> g_texObjSlotCache{};
+
+TexObjSlotCacheEntry& TexObjSlotCacheSlot(uint32_t addr) {
+    return g_texObjSlotCache[(addr >> 5) & (kTexObjSlotCacheEntries - 1)];
+}
 
 } // namespace
 
@@ -230,12 +243,19 @@ TexObjSlot* FindTexObjSlot(uint32_t addr) {
     if (g_texObjSlotMemo != nullptr && g_texObjSlotMemoAddr == addr) {
         return g_texObjSlotMemo;
     }
+    auto& cached = TexObjSlotCacheSlot(addr);
+    if (cached.slot != nullptr && cached.addr == addr) {
+        g_texObjSlotMemoAddr = addr;
+        g_texObjSlotMemo = cached.slot;
+        return cached.slot;
+    }
     const auto it = g_TexObjMeta.find(addr);
     if (it == g_TexObjMeta.end()) {
         return nullptr;
     }
     g_texObjSlotMemoAddr = addr;
     g_texObjSlotMemo = &it->second;
+    cached = {addr, g_texObjSlotMemo};
     return g_texObjSlotMemo;
 }
 
@@ -250,6 +270,7 @@ TexObjSlot& FindOrCreateTexObjSlot(uint32_t addr) {
     slot.objAddr = addr;
     g_texObjSlotMemoAddr = addr;
     g_texObjSlotMemo = &slot;
+    TexObjSlotCacheSlot(addr) = {addr, &slot};
     return slot;
 }
 
@@ -453,6 +474,10 @@ TexObjMeta MergeGuestTexObjMeta(const TexObjMeta& cached, const TexObjMeta& gues
 // Reads the raw 32 guest bytes of a GXTexObj struct. Returns false (and the
 // caller must treat the shadow as absent) when the address is unreadable.
 bool ReadTexObjShadow(uint32_t addr, uint64_t (&out)[4]) noexcept {
+    if (const uint8_t* ptr = MemoryInline::GetPointerFast(addr, sizeof(out))) {
+        std::memcpy(out, ptr, sizeof(out));
+        return true;
+    }
     try {
         out[0] = Memory::Read64(addr + 0x00);
         out[1] = Memory::Read64(addr + 0x08);
