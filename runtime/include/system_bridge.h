@@ -37,6 +37,9 @@ extern thread_local uint32_t g_sehLastAccessType;
 void WriteFatalLog(std::string_view reason);
 void SetRuntimeExitCode(int code);
 void MarkFatalErrorReported();
+// Gives stdout and stderr back from the run log's pipes (main.cpp), e.g. before replacing the
+// process with exec: the new program would write into a pipe nobody reads.
+void EndProcessTranscript();
 
 // Centralized crash reporting (defined in main.cpp). Every fatal path funnels
 // through these so the per-run log folder always receives the same artifact

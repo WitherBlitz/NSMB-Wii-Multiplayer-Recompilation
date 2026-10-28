@@ -19,6 +19,7 @@
 #endif
 #include <windows.h>
 #elif defined(__linux__) && !defined(__ANDROID__)
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -67,10 +68,25 @@ std::filesystem::path SaveFile() {
 #elif defined(__ANDROID__)
     AndroidBridge::RestartGame();
 #elif defined(__linux__)
-    // Desktop Linux: the same program again, in this process's place.
+    // Desktop Linux: the same program again, in this process's place. execv keeps open descriptors,
+    // so the lobby's socket would still hold the LAN play port the session needs: none survives.
     char exe[4096] = {};
     const ssize_t length = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
     if (length > 0) {
+        // stdout and stderr go into the run log's pipes, whose reading ends close with the rest:
+        // give them back first, or the new program dies of SIGPIPE at its first line of output.
+        EndProcessTranscript();
+        std::vector<int> descriptors;
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it("/proc/self/fd", ec), end; !ec && it != end; it.increment(ec)) {
+            const int fd = std::atoi(it->path().filename().c_str());
+            if (fd > 2) {
+                descriptors.push_back(fd);
+            }
+        }
+        for (const int fd : descriptors) {
+            fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+        }
         char* const argv[] = {exe, nullptr};
         execv(exe, argv);
     }

@@ -842,6 +842,10 @@ void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) 
     }
 }
 
+void EndProcessTranscript() {
+    ShutdownProcessTranscript();
+}
+
 namespace RuntimeCrash {
 
 void WriteCrashArtifacts(std::string_view reason, std::string_view extraDetails,
