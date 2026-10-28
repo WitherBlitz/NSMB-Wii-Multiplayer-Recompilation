@@ -130,9 +130,14 @@ TexObjMeta ExtractTexObjMetaFromGuest(uint32_t addr) {
         meta.userData = word4;
         meta.mipmap = (flags & 1) != 0;
 
+        // The hardware takes the format from image0 (word2 bits 20-23); +0x14 is the SDK's full
+        // GXTexFmt (Z and copy formats carry bits above those four). A texture object built
+        // offline, like Newer's world map tilesets, leaves +0x14 zero, which reads as I4: trust
+        // it only when its low four bits agree with image0.
         const uint32_t formatFromWord2 = (word2 >> 20) & 0xF;
         uint32_t resolvedFormat = word5;
-        if (!IsKnownTexFormat(resolvedFormat) && IsKnownTexFormat(formatFromWord2)) {
+        if (IsKnownTexFormat(formatFromWord2) &&
+            (!IsKnownTexFormat(resolvedFormat) || (resolvedFormat & 0xF) != formatFromWord2)) {
             resolvedFormat = formatFromWord2;
         }
         meta.format = resolvedFormat;
