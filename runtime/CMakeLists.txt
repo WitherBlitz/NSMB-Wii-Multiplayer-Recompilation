@@ -337,9 +337,10 @@ endif()
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 
 # The disc ID the game folder must carry: the translated code is baked in, so a build made from a
-# mod's patched code (projects/nsmbw/recomp-newer.yml, Newer is SNME03) accepts that mod's disc.
+# mod's patched code (projects/nsmbw/recomp-newer.yml, Newer is SMNE03) accepts that mod's disc;
+# src/product/base_product.cpp names the game and the disc it needs from it.
 set(NSMBW_GAME_ID "SMNE01" CACHE STRING "Disc ID (boot.bin) of the game this build was translated for")
-set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/game_folder.cpp" PROPERTIES
+set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/product/base_product.cpp" PROPERTIES
     COMPILE_DEFINITIONS "NSMBW_GAME_ID=\"${NSMBW_GAME_ID}\"")
 if(MKW_PLATFORM_MACOS)
     list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory.cpp")

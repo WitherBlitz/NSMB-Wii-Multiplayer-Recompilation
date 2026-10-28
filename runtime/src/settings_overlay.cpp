@@ -2,6 +2,7 @@
 #include "netplay_lobby.h"
 #include "netplay_ui.h"
 #include "settings_overlay.h"
+#include "runtime_product.h"
 #include "audio_backend.h"
 #include "aurora_events.h"
 #include "controller_button_names.h"
@@ -1524,7 +1525,7 @@ void DrawTopBar() {
     ImGui::End();
     if (!ImGui::BeginMainMenuBar()) return;
 
-    ImGui::TextUnformatted("New Super Mario Bros. Wii");
+    ImGui::TextUnformatted(RuntimeProduct::Active().displayName.data());
     ImGui::Separator();
     const auto resolutionIt = std::find_if(kResolutions.begin(), kResolutions.end(), [](const ResolutionItem& item) {
         return std::fabs(item.scale - g_resolutionScale) < 0.001f;

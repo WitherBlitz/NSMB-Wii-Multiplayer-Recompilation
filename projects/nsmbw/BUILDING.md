@@ -133,6 +133,9 @@ Things that are specific to Newer:
   `b` by `newer_prelink.py` (`rewritten_hooks` in `../game-newer/nsmbw_rel_layout.json`).
 - Newer v1.30 is the version this was made with. Another version needs a new `DLCODE_ADDR` and may hook
   functions the runtime replaces natively; `newer_prelink.py` checks the files it expects.
+- With `NSMBW_GAME_ID=SMNE03` the game calls itself Newer Super Mario Bros. Wii and accepts only Newer
+  v1.30 for the USA (NTSC). Every Newer version keeps the disc ID, so the version is told by the size of
+  `files/NewerRes/DLCodeUS_1.bin`, Newer's code (`src/product/base_product.cpp`).
 
 ## Other tools
 

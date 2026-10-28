@@ -1498,7 +1498,8 @@ int RuntimeMain(int argc, char** argv) {
             NetplaySession::SetStallHandler(&NetplayUi::OnSessionStall);
         }
         if (RuntimeConfigFile::DiscordPresenceEnabled()) {
-            DiscordPresence::Initialize(RuntimeConfigFile::DiscordClientId(), "New Super Mario Bros. Wii");
+            DiscordPresence::Initialize(RuntimeConfigFile::DiscordClientId(),
+                                        RuntimeProduct::Active().displayName.data());
         }
         SystemBridge::Initialize();
         TranslatedFunctionRegistry::Finalize();
