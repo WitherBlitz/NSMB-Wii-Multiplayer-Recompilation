@@ -1942,22 +1942,19 @@ public sealed partial class PpcLifter
                     new IrCall(string.Empty, TargetLabel(ins, validAddresses, preferFallthrough: false), blArgs) 
                 };
 
+            // Conditional branch-and-link (bc with LK=1). CodeWarrior only emits it as "bcl 20,31,$+4"
+            // to read the PC; GCC-built code (Newer's Kamek blob) also makes real conditional calls,
+            // which must return to the fallthrough like bl instead of continuing as a tail call.
             case "bltl":
-                {
-                    var crField = "cr0";
-                    if (ops.Count > 0 && ops[0] is PpcConditionRegisterOperand crOp)
-                    {
-                        crField = NormalizeRegister(crOp.Name);
-                    }
-
-                    return new IrInstruction[]
-                    {
-                        new IrAssign("lr", IrValue.Imm((int)ins.EndAddress)),
-                        new IrBranch("blt", TargetLabel(ins, validAddresses, preferFallthrough: false),
-                            $"0x{ins.EndAddress:X8}", crField)
-                    };
-                }
-
+            case "bgtl":
+            case "beql":
+            case "bsol":
+            case "bgel":
+            case "blel":
+            case "bnel":
+            case "bnsl":
+            case "bdnzl":
+            case "bdzl":
             case "bcl":
                 {
                     var rawInstr = ReadRawInstruction(ins);
@@ -1965,12 +1962,17 @@ public sealed partial class PpcLifter
                     var bi = (int)((rawInstr >> 16) & 0x1F);
                     var fallthrough = $"0x{ins.EndAddress:X8}";
                     var targetAddr = ins.BranchTargets.FirstOrDefault();
-                    var linkedTarget = $"link_branch_{ins.EndAddress:X8}_{targetAddr:X8}";
+                    // LK=1 updates LR whether or not the branch is taken. A target inside this
+                    // function stays a local jump; anything else is a call that resumes here.
+                    var linkedTarget = validAddresses.Contains(targetAddr)
+                        ? $"0x{targetAddr:X8}"
+                        : $"call_direct_{ins.EndAddress:X8}_{targetAddr:X8}";
                     var instructions = new List<IrInstruction>();
                     if ((bo & 0x04) == 0)
                     {
                         instructions.Add(new IrBinary("ctr", IrValue.Register("ctr"), IrValue.Imm(-1), "add"));
                     }
+                    instructions.Add(new IrAssign("lr", IrValue.Imm((int)ins.EndAddress)));
                     instructions.Add(new IrBranch("raw", linkedTarget, fallthrough, BuildBoConditionExpression(bo, bi, allowCtr: true)));
                     return instructions;
                 }

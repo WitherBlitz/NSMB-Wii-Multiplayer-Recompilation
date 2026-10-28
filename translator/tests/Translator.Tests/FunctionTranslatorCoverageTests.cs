@@ -407,6 +407,25 @@ public class FunctionTranslatorCoverageTests
             },
             ins => Assert.Equal("0x80002004", Assert.IsType<IrJump>(ins).TargetLabel));
 
+        var callDirectArgs = new object?[] { "call_direct_80003004_80B8E360", null! };
+        Assert.True(InvokePrivate<bool>("TryBuildSyntheticBlock", callDirectArgs));
+        var callDirect = Assert.IsType<IrBasicBlock>(callDirectArgs[1]);
+        Assert.Collection(
+            callDirect.Instructions,
+            ins =>
+            {
+                var assign = Assert.IsType<IrAssign>(ins);
+                Assert.Equal("lr", assign.Destination);
+                Assert.Equal(unchecked((int)0x80003004u), assign.Value.Constant);
+            },
+            ins =>
+            {
+                var call = Assert.IsType<IrCall>(ins);
+                Assert.Equal("0x80B8E360", call.Target);
+                Assert.Equal(21, call.Arguments.Count);
+            },
+            ins => Assert.Equal("0x80003004", Assert.IsType<IrJump>(ins).TargetLabel));
+
         var absoluteArgs = new object?[] { "0x800D7FCC", null! };
         Assert.True(InvokePrivate<bool>("TryBuildSyntheticBlock", absoluteArgs));
         var absolute = Assert.IsType<IrBasicBlock>(absoluteArgs[1]);
