@@ -1038,6 +1038,33 @@ bool Layout::PaneWorldRect(const std::string& paneName, float& x, float& y, floa
     return true;
 }
 
+bool Layout::StretchSlices(DrawParams& params, const std::string& left, const std::string& middle,
+                           const std::string& right, float dw, float dh) const {
+    const auto mid = m_byName.find(middle);
+    if (!m_loaded || mid == m_byName.end()) {
+        return false;
+    }
+    // A pane grows away from its origin: shift it back so the row grows about its centre.
+    const auto keepCentred = [](const Pane& pane, float grownW, float grownH) {
+        const int posH = pane.origin % 3, posV = pane.origin / 3;
+        return std::pair{posH == 0 ? -grownW / 2 : posH == 2 ? grownW / 2 : 0.0f,
+                         posV == 0 ? grownH / 2 : posV == 2 ? -grownH / 2 : 0.0f};
+    };
+    const Pane& m = *mid->second;
+    params.paneSize[middle] = {m.w + dw, m.h + dh};
+    params.paneOffset[middle] = keepCentred(m, dw, dh);
+    for (const auto& [name, side] : {std::pair{left, -1.0f}, std::pair{right, 1.0f}}) {
+        const auto cap = m_byName.find(name);
+        if (cap == m_byName.end()) {
+            continue;
+        }
+        auto [ox, oy] = keepCentred(*cap->second, 0.0f, dh);
+        params.paneSize[name] = {cap->second->w, cap->second->h + dh};
+        params.paneOffset[name] = {ox + side * dw / 2, oy};
+    }
+    return true;
+}
+
 std::vector<std::string> Layout::PaneNames() const {
     std::vector<std::string> names;
     for (const auto& pane : m_panes) {
@@ -1082,6 +1109,10 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
         ty += params.offsetY;
         sx *= params.scale;
         sy *= params.scale;
+    }
+    if (const auto o = params.paneOffset.find(pane.name); o != params.paneOffset.end()) {
+        tx += o->second.first;
+        ty += o->second.second;
     }
     const Mtx parent{parentMtx[0], parentMtx[1], parentMtx[2], parentMtx[3], parentMtx[4], parentMtx[5]};
     const Mtx m = Compose(parent, tx, ty, pane.rot, sx, sy);

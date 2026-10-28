@@ -318,6 +318,7 @@ void Window(const Canvas& c, float height, float width = 528.0f) {
     p.paneSize["P_bg_00"] = {width, height};
     p.paneSize["P_stripe_00"] = {width + 2, height};
     p.paneSize["W_yesnoWindow_00"] = {width + 14, height + 8};
+    a.yesNo.StretchSlices(p, "WindowLeft", "WindowCentre", "WindowRight", width - 528.0f, height - 322.0f);
     a.yesNo.Draw(c.list, c.view, "N_yesnoWindow_00", p);
 }
 
@@ -370,13 +371,16 @@ void Button(const Canvas& c, const std::string& label, float x, float y, float w
     Assets& a = GetAssets();
     GameLayout::DrawParams p;
     p.alpha = c.alpha * (enabled ? 1.0f : 0.55f);
-    p.offsetX = x;
-    p.offsetY = y + 118.0f;  // the pane is authored at (0, -118)
+    float authoredX = 0.0f, authoredY = -118.0f, authoredW = 240.0f, authoredH = 53.0f;
+    a.yesNo.PaneRect("P_centerBase_00", authoredX, authoredY, authoredW, authoredH);
+    p.offsetX = x - authoredX;
+    p.offsetY = y - authoredY;
     p.scale = fixedScale > 0.0f ? fixedScale : selected ? 1.0f + 0.04f * Pulse(frame) : 0.94f;
     p.paneScale["P_centerBase_00"] = 1.0f;  // authored at 0: it grows in through an animation
     p.paneSize["P_centerBase_00"] = {w, h};
     p.paneSize["W_button_02"] = {w + 5.0f, h + 10.0f};
     p.paneSize["P_shadow_02"] = {w, h};
+    a.yesNo.StretchSlices(p, "SingleBtnLeft", "SingleBtnMiddle", "SingleBtnRight", w - authoredW, h - authoredH);
     p.visible["T_center_00"] = false;
     p.visible["T_center_01"] = false;
     if (!enabled) {
@@ -640,7 +644,7 @@ void ApplyMenuLayout() {
 // course can't be left yet (Exit Course greyed out, its P_shadowBlack shown), the controller stops on
 // Settings, as the game's own cursor stops on Continue.
 constexpr float kPauseGrow = 70.0f, kPauseRaise = 35.0f, kPauseLower = -35.0f;
-constexpr float kPauseSettingsY = -24.0f;  // window space: one pitch (70) under Continue at 11 + 35
+constexpr float kPauseSettingsY = -24.0f;  // window space: one pitch (70) under Continue at 11 + 35 (PauseSettingsY)
 MenuLayout g_pauseLayout;
 std::atomic<bool> g_pauseFocus{false};  // "Settings" holds the pause window's cursor
 int g_pauseFocusFrom = 0;               // the game's own cursor meanwhile: 0 Continue, 1 Exit Course
@@ -677,10 +681,12 @@ bool AttachPauseLayout() {
 }
 
 bool PauseShift(const std::string& name, float& dy) {
+    // LevelNumShadow and LevelNameShadow are Newer's own course title lines.
     static const std::map<std::string, float> kShifts = {
         {"N_worldText_00", kPauseRaise}, {"N_osusumeText_00", kPauseRaise}, {"N_multiText_00", kPauseRaise},
         {"P_SBBase_00", kPauseRaise},    {"N_posMulti_UP", kPauseRaise},
         {"P_SBBase_02", kPauseLower},    {"N_posMulti_Down", kPauseLower},
+        {"LevelNumShadow", kPauseRaise}, {"LevelNameShadow", kPauseRaise},
     };
     const auto it = kShifts.find(name);
     if (it == kShifts.end()) {
@@ -727,8 +733,22 @@ void HoldPauseButtonScale(bool hold) {
 
 void ApplyPauseLayout() {
     if (AttachPauseLayout()) {
-        ApplyLayoutEdit(g_pauseLayout, PauseShift, {"W_N_pauseMenu_00", "P_bg_00"}, kPauseGrow);
+        // Newer draws the window's background as three slices (BG_Left/Middle/Right) instead of P_bg_00.
+        ApplyLayoutEdit(g_pauseLayout, PauseShift, {"W_N_pauseMenu_00", "P_bg_00", "BG_Left", "BG_Middle", "BG_Right"},
+                        kPauseGrow);
     }
+}
+
+// Window space, halfway between Continue and Exit Course once they have moved apart: -24 on the
+// base game's window (Continue at -22 + 33 + 35), -31 on Newer's, whose buttons sit further apart.
+float PauseSettingsY() {
+    const auto& panes = g_pauseLayout.panes;
+    const auto first = panes.find("P_SBBase_00"), second = panes.find("P_SBBase_02");
+    const auto row = panes.find("N_pauseMenu_01");
+    if (first == panes.end() || second == panes.end() || row == panes.end()) {
+        return kPauseSettingsY;
+    }
+    return row->second.y + (first->second.y + kPauseRaise + second->second.y + kPauseLower) / 2;
 }
 
 // Exit Course can't be chosen in a course not yet cleared: the game shades it (P_shadowBlack).
@@ -971,7 +991,7 @@ void DrawMenuSettings(ImDrawList* list) {
 
 void DrawPauseSettings(ImDrawList* list) {
     static const MatchButtons kPauseButtons{&g_pauseLayout, "P_SBBase_00", "P_SBBase_02", &g_pauseOnScale[0]};
-    DrawWindowSettings(list, PauseWindowTransform, kPauseSettingsY, g_pauseFocus.load(), &kPauseButtons);
+    DrawWindowSettings(list, PauseWindowTransform, PauseSettingsY(), g_pauseFocus.load(), &kPauseButtons);
 }
 
 // Which of the pause window's buttons the game's own cursor is on (0 Continue, 1 Exit Course), from
@@ -982,7 +1002,7 @@ int PauseGameCursor() {
     if (!r.valid || !PauseWindowTransform(cx, cy, scale, alpha)) {
         return -1;
     }
-    return (r.y0 + r.y1) / 2 > cy + kPauseSettingsY * scale ? 0 : 1;
+    return (r.y0 + r.y1) / 2 > cy + PauseSettingsY() * scale ? 0 : 1;
 }
 
 void DrawToggle(const Canvas& c) {
@@ -1824,7 +1844,7 @@ void TapAt(float lx, float ly, float gx, uint16_t scene, bool title) {
     if (scene == kSceneStage && g_ui.pauseSettingsShown) {
         float cx = 0, cy = 0, scale = 1, alpha = 1;
         if (PauseWindowTransform(cx, cy, scale, alpha) &&
-            in(cx, cy + kPauseSettingsY * scale, 345 * scale, 62 * scale)) {
+            in(cx, cy + PauseSettingsY() * scale, 345 * scale, 62 * scale)) {
             const int cursor = PauseGameCursor();
             g_pauseFocus = true;
             g_pauseFocusFrom = cursor >= 0 ? cursor : g_pauseFocusFrom;
