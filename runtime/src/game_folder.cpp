@@ -21,6 +21,10 @@
 #include <unistd.h>
 #endif
 
+#ifndef NSMBW_GAME_ID
+#define NSMBW_GAME_ID "SMNE01"  // set by runtime/CMakeLists.txt
+#endif
+
 namespace GameFolder {
 namespace {
 
@@ -171,7 +175,10 @@ std::string Problem(const fs::path& root) {
     }
     const std::string id(header, 6);
     const int revision = static_cast<unsigned char>(header[7]);
-    if (id != "SMNE01") {
+    if (id != NSMBW_GAME_ID && std::string(NSMBW_GAME_ID) != "SMNE01") {
+        return "That is " + id + ", not " NSMBW_GAME_ID ", the game this build was translated from.";
+    }
+    if (id != NSMBW_GAME_ID) {
         return "That is " + id + ", not New Super Mario Bros. Wii for the USA (SMNE01). This port runs "
                "only the USA disc, revision 1.";
     }
