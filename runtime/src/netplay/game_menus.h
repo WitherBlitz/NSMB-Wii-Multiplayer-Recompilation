@@ -28,6 +28,8 @@ bool FileSelectWaiting();
 int FileSelectCursor();
 // The file select's cursor as the game keeps it (0-2 the files, higher the buttons below), -1 if unknown.
 int FileSelectRawCursor();
+// The file select object (dFileSelect_c), 0 without one.
+uint32_t FileSelectObject();
 
 // Whether an object of this profile exists (0x2BB EVENT_OPENING_TITLE: the title screen is up).
 bool HasProfile(uint16_t profile);

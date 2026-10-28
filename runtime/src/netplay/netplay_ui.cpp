@@ -137,6 +137,39 @@ void WalkPanes(uint32_t pane, int depth, const std::function<void(uint32_t)>& vi
 struct CursorRect;
 CursorRect GameCursorRect();
 bool CursorStep(Nav& n, uint32_t& button);
+uint32_t FindRootPane(uint32_t object);
+
+// Whether the file select's layout stacks the three files (Newer's fileSelectBase: up and down move
+// between them) instead of putting them in a row (the game's own: left and right do). Read from
+// where the layout puts its first two files' anchors, N_posFile1_00 and N_posFile2_00.
+bool FilesStacked() {
+    static uint32_t s_object = 0;
+    static bool s_stacked = false;
+    const uint32_t object = GameMenus::FileSelectObject();
+    if (object == 0 || object == s_object) {
+        return s_stacked;
+    }
+    const uint32_t root = FindRootPane(object);
+    float x[2] = {}, y[2] = {};
+    int found = 0;
+    if (root != 0) {
+        WalkPanes(root, 0, [&](uint32_t pane) {
+            const std::string name = LivePaneName(pane);
+            const int i = name == "N_posFile1_00" ? 0 : name == "N_posFile2_00" ? 1 : -1;
+            if (i >= 0) {
+                x[i] = Memory::ReadFloat32(pane + 0x2C);
+                y[i] = Memory::ReadFloat32(pane + 0x30);
+                found |= 1 << i;
+            }
+        });
+    }
+    if (found != 3) {
+        return false;  // not built yet: look again next time
+    }
+    s_object = object;
+    s_stacked = std::fabs(y[1] - y[0]) > std::fabs(x[1] - x[0]);
+    return s_stacked;
+}
 
 
 void StartNav(NavKind kind, int target) {
@@ -181,12 +214,14 @@ uint32_t NextNavButton(Nav& n) {
         if (!GameMenus::FileSelectWaiting()) {
             return 0;  // still moving: wait
         }
-        // 0-2 the files in a row, 3 and 4 Free-for-All and Coin Battle below them.
+        // 0-2 the files in a row, 3 and 4 Free-for-All and Coin Battle below them; on a layout
+        // that stacks the files, one file per row.
         cursor = GameMenus::FileSelectRawCursor();
-        row = cursor <= 2 ? 0 : 1;
-        col = cursor <= 2 ? cursor : cursor - 3;
-        targetRow = n.target <= 2 ? 0 : 1;
-        targetCol = n.target <= 2 ? n.target : n.target - 3;
+        const int fileRows = FilesStacked() ? 3 : 1;
+        row = cursor <= 2 ? (fileRows == 3 ? cursor : 0) : fileRows;
+        col = cursor <= 2 ? (fileRows == 3 ? 0 : cursor) : cursor - 3;
+        targetRow = n.target <= 2 ? (fileRows == 3 ? n.target : 0) : fileRows;
+        targetCol = n.target <= 2 ? (fileRows == 3 ? 0 : n.target) : n.target - 3;
     } else {
         if (!GameMenus::SelectPlayersSettled()) {
             return 0;
@@ -2524,11 +2559,12 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
         }
 
         // Up from any of the three files (also in Create Room's file pick) moves onto the LAN /
-        // Couch toggle above them; the game never sees that press, so its cursor stays put.
+        // Couch toggle above them; the game never sees that press, so its cursor stays put. Where
+        // the layout stacks the files, only from the top one: up from the others is the game's.
         const uint32_t screenUp = upright ? kUp : kRight;
         const int fileCursor = GameMenus::FileSelectRawCursor();
         if (g_ui.toggleShown && !g_ui.toggleFocus && !Modal() && (pressed & screenUp) != 0 && fileCursor >= 0 &&
-            fileCursor <= 2) {
+            fileCursor <= (FilesStacked() ? 0 : 2)) {
             g_ui.toggleFocus = true;
             g_ui.topItem = 0;
             g_ui.events &= ~kEvUp;
