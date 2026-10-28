@@ -1962,9 +1962,11 @@ public sealed partial class PpcLifter
                     var bi = (int)((rawInstr >> 16) & 0x1F);
                     var fallthrough = $"0x{ins.EndAddress:X8}";
                     var targetAddr = ins.BranchTargets.FirstOrDefault();
-                    // LK=1 updates LR whether or not the branch is taken. A target inside this
-                    // function stays a local jump; anything else is a call that resumes here.
-                    var linkedTarget = validAddresses.Contains(targetAddr)
+                    // LK=1 updates LR whether or not the branch is taken. Only the get-PC idiom
+                    // (target = fallthrough) stays a local jump; anything else is a call that
+                    // resumes here, also into this function's own body: GCC places small
+                    // subroutines ending in blr there, and a jump would return from the whole function.
+                    var linkedTarget = targetAddr == ins.EndAddress && validAddresses.Contains(targetAddr)
                         ? $"0x{targetAddr:X8}"
                         : $"call_direct_{ins.EndAddress:X8}_{targetAddr:X8}";
                     var instructions = new List<IrInstruction>();
