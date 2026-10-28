@@ -2047,6 +2047,45 @@ void DumpProfiles() {
     last = profiles;
 }
 
+// NSMBW_DUMP_EF=1: twice a second, the particle effects alive per nw4r::ef::EffectSystem group
+// (active/closing), to tell effects that are never created from effects that are not drawn.
+// The system is at 0x804170D4: group count at +0xC014, its ActivityList array (0x1C each) at +0xC018.
+void DumpEffects() {
+    static const bool on = std::getenv("NSMBW_DUMP_EF") != nullptr;
+    static int frame = 0;
+    if (!on || ++frame % 30 != 0) {
+        return;
+    }
+    constexpr uint32_t kEffectSystem = 0x804170D4u;
+    uint32_t groups = 0, lists = 0;
+    if (!Memory::TryRead32(kEffectSystem + 0xC014u, groups) || !Memory::TryRead32(kEffectSystem + 0xC018u, lists) ||
+        groups > 64) {
+        return;
+    }
+    std::string text;
+    for (uint32_t g = 0; g < groups; ++g) {
+        uint32_t active = 0, closing = 0;
+        Memory::TryRead32(lists + g * 0x1Cu + 0x08u, active);
+        Memory::TryRead32(lists + g * 0x1Cu + 0x14u, closing);
+        if ((active >> 16) != 0 || (closing >> 16) != 0) {
+            char item[32];
+            std::snprintf(item, sizeof(item), "g%u=%u/%u ", g, active >> 16, closing >> 16);
+            text += item;
+        }
+    }
+    // nw4r::ef::Resource (0x80423170): effect projects (ut::List) with their emitter total at +0xC,
+    // texture projects at +0x10 with their texture total at +0x1C.
+    constexpr uint32_t kResource = 0x80423170u;
+    uint32_t projects = 0, emitters = 0, texProjects = 0, textures = 0;
+    Memory::TryRead32(kResource + 0x08u, projects);
+    Memory::TryRead32(kResource + 0x0Cu, emitters);
+    Memory::TryRead32(kResource + 0x18u, texProjects);
+    Memory::TryRead32(kResource + 0x1Cu, textures);
+    RT_LOGF(RT_TAG_RUNTIME, "ef (scene %03X, %u groups, lists %08X, %u breff/%u emitters, %u breft/%u textures): %s\n",
+            GameMenus::CurrentScene(), groups, lists, projects >> 16, emitters, texProjects >> 16, textures,
+            text.c_str());
+}
+
 // NSMBW_WARP=<world>-<course> (debug.nsmbw.warp on Android): entering any course from the world map
 // enters that one instead (testing a level without a save that reaches it). Courses 1-9 are the
 // numbered ones; others are STAGE_e numbers: 20 ghost house, 21 tower, 23 castle, 32-34 the map
@@ -2157,6 +2196,7 @@ void ScriptedTaps() {
 
 void Draw() {
     DumpProfiles();
+    DumpEffects();
     Warp();
     if (std::getenv("NSMBW_DUMP_STATES") != nullptr) {
         static std::string lastStates;
