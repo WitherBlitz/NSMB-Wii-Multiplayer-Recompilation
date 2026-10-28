@@ -1,10 +1,10 @@
 # Re-run the NSMBW translation pipeline after runtime natives changed, then rebuild WiiCompiled.
 # Mirrors Launcher/LocalBuild.ps1: translate-recursive -> emit-base-manifest -> generate-data-init ->
-# emit-build-shards -> cmake --build. Ninja only recompiles shards whose content changed.
+# emit-build-shards -> cmake --build. Ninja only recompiles shards whose content changed. A build
+# folder that is not configured yet is configured (configure-native.ps1) after translating.
 # -Newer <extracted Newer folder>: Newer Super Mario Bros. Wii instead (BUILDING.md section 7):
-# newer_prelink.py writes ..\game-newer, recomp-newer.yml is translated, native-build-newer is built
-# (configure it once with configure-native.ps1 -Newer). Both share generated\, so switching between
-# them retranslates.
+# newer_prelink.py writes ..\game-newer, recomp-newer.yml is translated, native-build-newer is built.
+# Both share generated\, so switching between them retranslates.
 [CmdletBinding()]
 param([int]$Threads = 10, [int]$Jobs = 10, [string]$Newer)
 
@@ -12,7 +12,8 @@ $ErrorActionPreference = 'Stop'
 if ($Newer) { $Newer = (Resolve-Path -LiteralPath $Newer).Path }  # before Push-Location below
 . (Join-Path $PSScriptRoot 'paths.ps1')
 $ws = $NsmbwRepo
-$logs = Get-NsmbwLogDirectory (Get-NsmbwBuildDirectory $(if ($Newer) { 'native-build-newer' } else { 'native-build' }))
+$build = Get-NsmbwBuildDirectory $(if ($Newer) { 'native-build-newer' } else { 'native-build' })
+$logs = Get-NsmbwLogDirectory $build
 # The toolchain's own .NET SDK if it has one (dotnet\), else the one on PATH.
 $dotnetRoot = Join-Path (Get-NsmbwToolchain) 'dotnet'
 if (Test-Path -LiteralPath (Join-Path $dotnetRoot 'dotnet.exe')) {
@@ -37,13 +38,13 @@ function Invoke-Step([string]$Name, [string[]]$Arguments) {
 
 Push-Location $ws
 try {
-    # Stop any test instance so the link can replace WiiCompiled.exe.
-    Get-Process WiiCompiled -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$ws\*" } |
+    # Stop a test instance of this build's WiiCompiled.exe so the link can replace it.
+    $exe = Join-Path $build 'WiiCompiled.exe'
+    Get-Process WiiCompiled -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } |
         ForEach-Object { Stop-Process -Id $_.Id -Force }
-    if (-not (Test-Path -LiteralPath $translator)) {
-        & dotnet build translator/Translator.sln -c Release -v quiet -nologo
-        if ($LASTEXITCODE -ne 0) { throw "building the translator failed ($LASTEXITCODE)" }
-    }
+    # Incremental: quick when the translator is unchanged, and a translator fix is never left out.
+    & dotnet build translator/Translator.sln -c Release -v quiet -nologo
+    if ($LASTEXITCODE -ne 0) { throw "building the translator failed ($LASTEXITCODE)" }
     if ($Newer) {
         # Newer's loader, done offline: its patches and its code linked into ..\game-newer.
         $log = Join-Path $logs 'rebuild-newer-prelink.log'
@@ -68,6 +69,15 @@ try {
         '--native-source-dir', 'runtime/src', '--out', 'generated/build_shards')
 } finally {
     Pop-Location
+}
+# The first build configures: CMake needs generated\build_shards, which only the steps above write.
+if (-not (Test-Path -LiteralPath (Join-Path $build 'build.ninja'))) {
+    & (Join-Path $PSScriptRoot 'configure-native.ps1') -Newer:([bool]$Newer)
+    if ($LASTEXITCODE -ne 0) {
+        Get-Content (Join-Path $logs 'configure.log') -Tail 20
+        throw "configure failed ($LASTEXITCODE); see $(Join-Path $logs 'configure.log')"
+    }
+    'configure ok'
 }
 & (Join-Path $PSScriptRoot 'build-native.ps1') -Target WiiCompiled -Jobs $Jobs -LogPath (Join-Path $logs 'rebuild-build.log') `
     -Newer:([bool]$Newer)

@@ -22,7 +22,8 @@ The PowerShell build scripts in [`tools/`](tools) find everything from the repos
   [`Launcher/Prepare-PortableTools.ps1`](../../Launcher/Prepare-PortableTools.ps1) downloads the
   pinned versions.
 - The pinned third-party sources in `Dependencies/`:
-  [`Launcher/Prepare-Dependencies.ps1`](../../Launcher/Prepare-Dependencies.ps1). Android also needs
+  [`Launcher/Prepare-Dependencies.ps1`](../../Launcher/Prepare-Dependencies.ps1) `-Destination Dependencies`
+  (without it they go to `Launcher\artifacts\dependencies`, for the installer). Android also needs
   `Dependencies/dawn_prebuilt_android` (Dawn `v20260603.191052`, `dawn-android-aarch64`).
 - Python 3 for the scripts in `tools/` (standard library only).
 - Android only: Android SDK (platform 34, build-tools 34), NDK 29.0.14206865, JDK 17, Gradle 8.7.
@@ -119,16 +120,16 @@ with Newer's code appended, and `MAP.txt` with Newer's function starts), transla
 [`recomp-newer.yml`](recomp-newer.yml) and builds `native-build-newer` with `-DNSMBW_GAME_ID=SMNE03`,
 so the game accepts the Newer disc. The game is `../nsmbw-newer-build/WiiCompiled`.
 
-On Windows, with the step 4 scripts (configure once, then rebuild whenever something changed):
+On Windows, with the step 4 scripts (the same command the first time and whenever something changed):
 
 ```
-projects/nsmbw/tools/configure-native.ps1 -Newer
 projects/nsmbw/tools/rebuild-all.ps1 -Newer <extracted Newer folder>
 ```
 
-`configure-native.ps1 -Newer` sets up `native-build-newer` with `-DNSMBW_GAME_ID=SMNE03`;
-`rebuild-all.ps1 -Newer` runs `newer_prelink.py`, translates `recomp-newer.yml` and builds that folder
-(`build-native.ps1 -Newer` only builds it). The game is `native-build-newer/WiiCompiled.exe`.
+`rebuild-all.ps1 -Newer` runs `newer_prelink.py`, translates `recomp-newer.yml` and builds
+`native-build-newer`. The first time it also configures that folder (`configure-native.ps1 -Newer`,
+with `-DNSMBW_GAME_ID=SMNE03`), which CMake can only do once the translation is there;
+`build-native.ps1 -Newer` only builds it. The game is `native-build-newer/WiiCompiled.exe`.
 
 By hand, on any platform: run `newer_prelink.py <extracted Newer folder>`, then the step 3 commands
 with `--project projects/nsmbw/recomp-newer.yml`, and configure with `-DNSMBW_GAME_ID=SMNE03`.

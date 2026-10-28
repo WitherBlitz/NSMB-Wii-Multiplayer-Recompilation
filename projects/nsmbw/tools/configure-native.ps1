@@ -18,6 +18,9 @@ if (-not $LogPath) { $LogPath = Join-Path (Get-NsmbwLogDirectory $BuildDirectory
 $gameId = if ($Newer) { 'SMNE03' } else { 'SMNE01' }
 $workspace = $NsmbwRepo
 $toolchain = Get-NsmbwToolchain
+if (-not (Test-Path -LiteralPath (Join-Path $workspace 'Dependencies\SDL'))) {
+    throw "No pinned sources in $workspace\Dependencies: run Launcher\Prepare-Dependencies.ps1 -Destination Dependencies"
+}
 . (Join-Path $workspace 'Launcher\NativeBuildFlags.ps1')
 
 $bin = Join-Path $toolchain 'llvm-mingw\bin'
