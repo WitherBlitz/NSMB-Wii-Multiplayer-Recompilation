@@ -366,6 +366,18 @@ def main():
         struct.pack_into(">I", tramps, addr - tramp_base, w)
     print(f"{len(rewritten)} bl hook(s) that return for the hooked function rewritten as b")
 
+    # The title demo loads each player's replay into a unit of a 4-unit heap (dSys_c::create).
+    # Newer's replays are LZ-compressed, and decompressing takes a second unit for the read chunk
+    # while the replay holds its own, so the fourth player of a 4-player demo gets no chunk and
+    # keeps raw compressed data: garbage header, garbage power-up, crash. Five units of 0x60000
+    # (the biggest replay, otehon/08-24_N_1.bin, is 0x5EC24) instead of four of 0x70800.
+    for addr, old, new in ((0x800E4AE4, 0x3C80001C, 0x3C80001E),   # lis r4, 0x1C -> 0x1E
+                           (0x800E4AEC, 0x38842000, 0x38840000),   # addi r4, r4, 0x2000 -> 0
+                           (0x800E4AF0, 0x38A00004, 0x38A00005)):  # li r5, 4 -> 5
+        if img.rd32(addr) != old:
+            sys.exit(f"0x{addr:08X} holds 0x{img.rd32(addr):08X}, not dSys_c::create's replay heap size")
+        img.wr32(addr, new)
+
     base_map = (REPO / "projects" / "nsmbw" / "MAP.txt").read_text()
     lines = [base_map.rstrip("\n"), "# Newer Super Mario Bros. Wii loader (main.dol .data) and blob"]
     lines += [f"{a:08x} {a:08x}" for a in LOADER]
