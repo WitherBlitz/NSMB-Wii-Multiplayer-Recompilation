@@ -54,6 +54,12 @@ bool PauseWindowShowing();
 bool StarCoinsWaiting();
 // One of the game's yes/no prompts (dYesNoWindow_c) is up, waiting for a choice; 1 picks the No / Cancel side.
 bool YesNoWaiting();
+// The world map's Select a World screen (dWorldSelect_c, from -): up at all; up and waiting for a
+// button; the world picked (0-8, -1 without the screen); whether a world can be picked yet.
+bool WorldSelectOpen();
+bool WorldSelectWaiting();
+int WorldSelectWorld();
+bool WorldSelectCanPick(int world);
 // The SELECT_CURSOR object (the menus' corner brackets), 0 without one.
 uint32_t SelectCursorObject();
 // Player `player` (0-3) is jumping or falling, where a shake spins him (Space Smart Spin QoL): not

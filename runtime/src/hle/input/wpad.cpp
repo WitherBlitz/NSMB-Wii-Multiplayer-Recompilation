@@ -1,10 +1,17 @@
 #include "frame_input.h"
 #include "hle_stubs.h"
 #include "memory.h"
+#include "runtime_log.h"
 #include "hle/controller_status_contract.h"
 #include "wii_remote_input.h"
+#include "wpad_speaker.h"
 
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstdint>
+#include <initializer_list>
+#include <vector>
 
 void NandQueueIosCallback(uint32_t callbackPtr, int32_t result, uint32_t callbackArg);
 
@@ -215,6 +222,162 @@ extern "C" int32_t WPADStopSimpleSync_HLE()
     return 1;
 }
 PPC_NATIVE_OVERRIDE(801DFAD0, WPADStopSimpleSync_HLE, int32_t, (), ());
+
+// ---- The remote speaker (wpad_speaker.h) ----
+//
+// The translated originals talk to a Bluetooth stack that isn't there, so the game never got a
+// speaker and its remote sounds were silent (issue #18). These answer as a working remote would,
+// on every channel alike. A real remote on the channel gets the same reports the console sends
+// (WiiBrew, "Wiimote/Speaker": 4-bit Yamaha ADPCM at 6 kHz, the rate AX mixes the remote buses
+// at), through SDL's Wii driver.
+namespace {
+
+enum SpeakerCommand : uint32_t {
+    kSpeakerOff = 0,
+    kSpeakerOn = 1,
+    kSpeakerMute = 2,
+    kSpeakerUnmute = 3,
+    kSpeakerPlay = 4,
+};
+
+struct SpeakerChannel {
+    std::atomic<bool> on{false};
+    std::atomic<bool> muted{false};
+    std::atomic<bool> real{false};  // a real remote plays this channel's speaker itself
+};
+std::array<SpeakerChannel, WpadContract::kChannelCount> g_speakers;
+
+void SendReport(uint32_t chan, std::initializer_list<uint8_t> bytes)
+{
+    const std::vector<uint8_t> report(bytes);
+    WiiRemoteInput::SendRawReport(chan, report.data(), static_cast<int>(report.size()));
+}
+
+// Output report 0x16: write `data` to the remote's register space at `address`.
+void WriteRegister(uint32_t chan, uint32_t address, std::initializer_list<uint8_t> data)
+{
+    std::array<uint8_t, 22> report{0x16, 0x04, static_cast<uint8_t>(address >> 16), static_cast<uint8_t>(address >> 8),
+                                   static_cast<uint8_t>(address), static_cast<uint8_t>(data.size())};
+    std::copy(data.begin(), data.end(), report.begin() + 6);
+    WiiRemoteInput::SendRawReport(chan, report.data(), static_cast<int>(report.size()));
+}
+
+void SetUpRealSpeaker(uint32_t chan)
+{
+    SendReport(chan, {0x14, 0x04});  // speaker on
+    SendReport(chan, {0x19, 0x04});  // muted while it is configured
+    WriteRegister(chan, 0xA20009, {0x01});
+    WriteRegister(chan, 0xA20001, {0x08});
+    // 4-bit ADPCM, sample rate 6 MHz / 1000 = 6 kHz, volume 0x40.
+    WriteRegister(chan, 0xA20001, {0x00, 0x00, 0xE8, 0x03, 0x40, 0x00, 0x00});
+    WriteRegister(chan, 0xA20008, {0x01});
+    SendReport(chan, {0x19, 0x00});  // unmuted
+}
+
+} // namespace
+
+bool WpadSpeaker::PlaysOnHost(uint32_t chan)
+{
+    if (chan >= g_speakers.size()) {
+        return false;
+    }
+    const SpeakerChannel& speaker = g_speakers[chan];
+    return speaker.on.load(std::memory_order_relaxed) && !speaker.muted.load(std::memory_order_relaxed) &&
+           !speaker.real.load(std::memory_order_relaxed);
+}
+
+extern "C" int32_t WPADControlSpeaker_HLE(uint32_t chan, uint32_t command, uint32_t callback)
+{
+    if (chan >= WpadContract::kChannelCount) {
+        return WpadContract::kErrorBadChannel;
+    }
+    SpeakerChannel& speaker = g_speakers[chan];
+    const bool real = WiiRemoteInput::HasRealRemote(chan);
+    speaker.real.store(real, std::memory_order_relaxed);
+    if (command == kSpeakerOn || command == kSpeakerOff) {
+        RT_LOGF(RT_TAG_AUDIO, "remote %u speaker %s (%s)\n", chan + 1, command == kSpeakerOn ? "on" : "off",
+                real ? "on the Wii Remote" : "on this device's speakers");
+    }
+    switch (command) {
+    case kSpeakerOff:
+        speaker.on.store(false, std::memory_order_relaxed);
+        if (real) {
+            SendReport(chan, {0x19, 0x04});
+            SendReport(chan, {0x14, 0x00});
+        }
+        break;
+    case kSpeakerOn:
+        speaker.on.store(true, std::memory_order_relaxed);
+        speaker.muted.store(false, std::memory_order_relaxed);
+        if (real) {
+            SetUpRealSpeaker(chan);
+        }
+        break;
+    case kSpeakerMute:
+    case kSpeakerUnmute:
+        speaker.muted.store(command == kSpeakerMute, std::memory_order_relaxed);
+        if (real) {
+            SendReport(chan, {0x19, static_cast<uint8_t>(command == kSpeakerMute ? 0x04 : 0x00)});
+        }
+        break;
+    case kSpeakerPlay:
+        speaker.muted.store(false, std::memory_order_relaxed);
+        if (real) {
+            WriteRegister(chan, 0xA20008, {0x01});
+        }
+        break;
+    default:
+        break;
+    }
+    // Answered later, like the remote's acknowledgement on the console: callback(chan, result).
+    if (callback != 0) {
+        NandQueueIosCallback(callback, static_cast<int32_t>(chan), static_cast<uint32_t>(kStatusOk));
+    }
+    return kStatusOk;
+}
+PPC_NATIVE_OVERRIDE(801E1E20, WPADControlSpeaker_HLE, int32_t,
+         (uint32_t chan, uint32_t command, uint32_t callback), (chan, command, callback));
+
+extern "C" int32_t WPADIsSpeakerEnabled_HLE(uint32_t chan)
+{
+    return chan < g_speakers.size() && g_speakers[chan].on.load(std::memory_order_relaxed) ? 1 : 0;
+}
+PPC_NATIVE_OVERRIDE(801E1DD0, WPADIsSpeakerEnabled_HLE, int32_t, (uint32_t chan), (chan));
+
+extern "C" int32_t WPADCanSendStreamData_HLE(uint32_t chan)
+{
+    return WPADIsSpeakerEnabled_HLE(chan);
+}
+PPC_NATIVE_OVERRIDE(801E35F0, WPADCanSendStreamData_HLE, int32_t, (uint32_t chan), (chan));
+
+// One packet of the game's ADPCM stream (20 bytes, 40 samples). A real remote gets it as output
+// report 0x18; anywhere else the mixer already plays the same sound from the remote's bus.
+extern "C" int32_t WPADSendStreamData_HLE(uint32_t chan, uint32_t bufferPtr, uint32_t length)
+{
+    if (chan >= WpadContract::kChannelCount) {
+        return WpadContract::kErrorBadChannel;
+    }
+    SpeakerChannel& speaker = g_speakers[chan];
+    // A remote connected (or gone) since the game turned its speaker on: set it up, or hand its
+    // sound to this device's speakers.
+    const bool real = WiiRemoteInput::HasRealRemote(chan);
+    if (speaker.real.exchange(real, std::memory_order_relaxed) != real && real &&
+        speaker.on.load(std::memory_order_relaxed)) {
+        SetUpRealSpeaker(chan);
+    }
+    if (speaker.on.load(std::memory_order_relaxed) && real) {
+        std::array<uint8_t, 22> report{0x18};
+        const uint32_t size = std::min<uint32_t>(length & 0xFFFF, 20);
+        report[1] = static_cast<uint8_t>(size << 3);
+        for (uint32_t i = 0; i < size; ++i) {
+            report[2 + i] = Memory::Read8(bufferPtr + i);
+        }
+        WiiRemoteInput::SendRawReport(chan, report.data(), static_cast<int>(report.size()));
+    }
+    return kStatusOk;
+}
+PPC_NATIVE_OVERRIDE(801E3680, WPADSendStreamData_HLE, int32_t,
+         (uint32_t chan, uint32_t bufferPtr, uint32_t length), (chan, bufferPtr, length));
 
 extern "C" uint32_t WPADSetSyncDeviceCallback_HLE(uint32_t callback)
 {

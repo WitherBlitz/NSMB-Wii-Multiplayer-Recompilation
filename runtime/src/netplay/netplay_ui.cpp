@@ -118,7 +118,7 @@ PointerState g_pointerNow;
 // A tap on the game's own screens is played back as remote presses on channel 1: one press, or
 // D-pad steps toward a cursor position (checked against the game's cursor before each) and then
 // 2 to pick it.
-enum class NavKind { None, Press, File, Players, Cursor, MapWalk };
+enum class NavKind { None, Press, File, Players, Cursor, MapWalk, WorldSelect };
 struct Nav {
     NavKind kind = NavKind::None;
     int target = 0;           // the cursor position, or for Press the buttons
@@ -143,7 +143,8 @@ bool CursorStep(Nav& n, uint32_t& button);
 
 
 void StartNav(NavKind kind, int target) {
-    static const char* const kKinds[] = {"none", "press", "file select", "select players", "menu cursor", "map walk"};
+    static const char* const kKinds[] = {"none",        "press",    "file select", "select players",
+                                         "menu cursor", "map walk", "world select"};
     RT_LOGF(RT_TAG_RUNTIME, "tap: %s 0x%X\n", kKinds[static_cast<int>(kind)], target);
     g_nav = Nav{};
     g_nav.kind = kind;
@@ -173,6 +174,23 @@ uint32_t NextNavButton(Nav& n) {
         }
         n.kind = NavKind::None;
         return 0;
+    }
+    if (n.kind == NavKind::WorldSelect) {
+        // Select a World: turn the ring a world at a time (it skips the ones not reached yet) the
+        // shorter way round its 8 islands, waiting out each turn, until the tapped one is at the front.
+        if (++n.stuck > 150 || !GameMenus::WorldSelectOpen()) {
+            n.kind = NavKind::None;
+            return 0;
+        }
+        if (!GameMenus::WorldSelectWaiting()) {
+            return 0;
+        }
+        const int world = GameMenus::WorldSelectWorld();
+        if (world < 0 || world > 7 || world == n.target || ++n.steps > 8) {
+            n.kind = NavKind::None;
+            return 0;
+        }
+        return (n.target - world + 8) % 8 <= 4 ? kScreenRight : kScreenLeft;
     }
     if (n.confirming || ++n.steps > 16) {
         n.kind = NavKind::None;
@@ -1108,7 +1126,8 @@ int RendererIndex() {
     return 0;
 }
 constexpr int kKeyRows = 6;
-// The QoL checkboxes under the keys: Space Smart Spin, Reverse Tilt and, on Android, Touch Controls.
+// The QoL checkboxes under the keys: Space Smart Spin, Reverse Tilt, and Touch Controls on Android or
+// Mouse as Gyro on the desktop.
 constexpr int kKeySmartSpin = 1 + Keybinds::kActionCount;
 constexpr int kKeyReverseTilt = kKeySmartSpin + 1;
 #if defined(__ANDROID__)
@@ -1116,10 +1135,10 @@ constexpr bool kTouchToggle = true;
 #else
 constexpr bool kTouchToggle = false;
 #endif
-constexpr int kKeyTouch = kTouchToggle ? kKeyReverseTilt + 1 : -1;
-constexpr int kKeyReset = (kTouchToggle ? kKeyTouch : kKeyReverseTilt) + 1, kKeyOk = kKeyReset + 1;
-constexpr int kKeyToggles[] = {kKeySmartSpin, kKeyReverseTilt, kKeyTouch};
-constexpr int kKeyToggleCount = kTouchToggle ? 3 : 2;
+constexpr int kKeyThird = kKeyReverseTilt + 1;  // Touch Controls / Mouse as Gyro
+constexpr int kKeyReset = kKeyThird + 1, kKeyOk = kKeyReset + 1;
+constexpr int kKeyToggles[] = {kKeySmartSpin, kKeyReverseTilt, kKeyThird};
+constexpr int kKeyToggleCount = 3;
 
 struct VideoChoice {
     float scale;
@@ -1503,22 +1522,27 @@ void DrawKeybindsTab(const Canvas& c) {
         const std::string label = capturing == action ? (pad ? "Press a button..." : "Press a key...")
                                   : pad              ? settings_overlay::ControllerBindingLabel(action)
                                                      : Keybinds::KeyLabel(action);
-        const float size = label.size() > 16 ? 17.0f : label.size() > 11 ? 19.0f : 22.0f;
+        const float size = label.size() > 20 ? 14.0f : label.size() > 16 ? 17.0f : label.size() > 11 ? 19.0f : 22.0f;
         const bool enabled = !pad || settings_overlay::ControllerActionRebindable(action);
         Button(c, label, x0 + 78, y, 172, g_ui.cursor == 1 + action, enabled, g_ui.frame, size, 35.0f);
         AddHit(x0 + 78, y, 178, 38, 1 + action);
     }
     if (capturing >= 0) {
-        Text(c, pad ? "Press the new button (Esc cancels)." : "Press the new key (Esc cancels).", 0, -122, 22);
+#ifdef __ANDROID__
+        constexpr const char* kKeyPrompt = "Press the new key (Esc cancels).";
+#else
+        constexpr const char* kKeyPrompt = "Press the new key or mouse button (Esc cancels).";
+#endif
+        Text(c, pad ? "Press the new button (Esc cancels)." : kKeyPrompt, 0, -122, 22);
     } else {
         // The QoL switches side by side.
-        const char* labels[] = {"Space Smart Spin", "Reverse Tilt", "Touch Controls"};
-        const bool on[] = {Keybinds::SmartSpin(), Keybinds::ReverseTilt(), settings_overlay::TouchControls()};
-        const float width = kTouchToggle ? 226.0f : 330.0f, gap = kTouchToggle ? 232.0f : 340.0f;
+        const char* labels[] = {"Space Smart Spin", "Reverse Tilt", kTouchToggle ? "Touch Controls" : "Mouse as Gyro"};
+        const bool on[] = {Keybinds::SmartSpin(), Keybinds::ReverseTilt(),
+                           kTouchToggle ? settings_overlay::TouchControls() : Keybinds::MouseGyro()};
+        constexpr float width = 226.0f, gap = 232.0f;
         for (int i = 0; i < kKeyToggleCount; ++i) {
             const float x = (static_cast<float>(i) - (kKeyToggleCount - 1) * 0.5f) * gap;
-            Button(c, labels[i], x + 18, -122, width, g_ui.cursor == kKeyToggles[i], true, g_ui.frame,
-                   kTouchToggle ? 21.0f : 24.0f, 36.0f);
+            Button(c, labels[i], x + 18, -122, width, g_ui.cursor == kKeyToggles[i], true, g_ui.frame, 21.0f, 36.0f);
             Checkbox(c, x - width / 2 + 24, -122, on[i]);
             AddHit(x, -122, width + 6, 40, kKeyToggles[i]);
         }
@@ -1659,10 +1683,12 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
         if (down) cursor = kKeyReset;
         if (confirm && cursor == kKeySmartSpin) Keybinds::SetSmartSpin(!Keybinds::SmartSpin());
         if (confirm && cursor == kKeyReverseTilt) Keybinds::SetReverseTilt(!Keybinds::ReverseTilt());
-        if (confirm && cursor == kKeyTouch) {
+        if (confirm && cursor == kKeyThird && kTouchToggle) {
             settings_overlay::SetTouchControls(!settings_overlay::TouchControls());
             g_touchControlsToggled = true;
             g_settingsChanged = true;
+        } else if (confirm && cursor == kKeyThird) {
+            Keybinds::SetMouseGyro(!Keybinds::MouseGyro());
         }
         return;
     }
@@ -1964,6 +1990,40 @@ void PressToggle() {
     }
 }
 
+// Select a World's ring of islands where TapAt measures, k = 0 the picked world's at the front and
+// k = 1-7 the worlds after it going right round the ring (read off the screen at 16:9).
+constexpr float kIslandX[8] = {-5, 164, 203, 116, 0, -121, -188, -179};
+constexpr float kIslandY[8] = {-75, -65, -7, 46, 90, 46, 2, -75};
+
+// A tap on Select a World: Back (1) at the bottom right, the front island picks its world (2), and
+// another island the game lets the player pick turns the ring to it.
+void TapWorldSelect(float lx, float ly) {
+    const float right = GameLayout::GameView().centerX / GameLayout::GameView().scale;
+    if (lx >= right - 150 && lx <= right - 20 && ly >= -190 && ly <= -135) {
+        StartNav(NavKind::Press, static_cast<int>(kOne));
+        return;
+    }
+    const int world = GameMenus::WorldSelectWorld();
+    if (world < 0 || world > 7 || !GameMenus::WorldSelectWaiting()) {
+        return;  // World 9 is off the ring; mid-turn the islands are moving
+    }
+    int island = -1;
+    float nearest = 130;
+    for (int k = 0; k < 8; ++k) {
+        // The front island is drawn the biggest: it reaches further.
+        const float distance = std::hypot(lx - kIslandX[k], ly - kIslandY[k]) * (k == 0 ? 0.6f : 1.0f);
+        if (distance < nearest) {
+            nearest = distance;
+            island = k;
+        }
+    }
+    if (island == 0) {
+        StartNav(NavKind::Press, static_cast<int>(kTwo));
+    } else if (island > 0 && GameMenus::WorldSelectCanPick((world + island) % 8)) {
+        StartNav(NavKind::WorldSelect, (world + island) % 8);
+    }
+}
+
 // A tap at (lx, ly) in layout units (y up, the game's 4:3 layout space centred on the screen). The
 // game's own buttons are where its layouts (fileSelectBase, fileSelectPlayer) put them.
 // `gx` is x in the game's own layout units, which differ from these menus' in Fill (View::gameScaleX).
@@ -2018,6 +2078,10 @@ void TapAt(float lx, float ly, float gx, uint16_t scene, bool title) {
             StartNav(NavKind::Press, static_cast<int>(kOne));  // Back (1), below the panel on the right
         }
         return;  // nothing else on the Star Coins screen takes a tap
+    }
+    if (scene == kSceneWorldMap && GameMenus::WorldSelectOpen()) {
+        TapWorldSelect(lx, ly);
+        return;
     }
     if (scene == kSceneWorldMap && g_ui.menuSettingsShown) {
         if (in(0, kMenuSettingsY, 345, 64)) {

@@ -2058,8 +2058,10 @@ static TextureBindGroupCacheKey make_texture_bind_group_cache_key(const ShaderIn
     }
     const u32 refState = (tex.ref->isReplacement ? 1u : 0u) | (tex.ref->hasArbitraryMips ? 2u : 0u) |
                          (tex.ref->mipCount << 8);
-    // The texture itself, not its view: a static texture's view is made later, by the frame worker.
-    set_texture_bind_group_cache_slot(key, i, tex.ref.get(), tex.texObj.mode0, tex.texObj.mode1, refState);
+    // The texture itself, not its view (a static texture's view is made later, by the frame worker),
+    // by serial: a cached group outlives its handles, and a new texture may reuse a freed one's address.
+    set_texture_bind_group_cache_slot(key, i, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(tex.ref->serial)),
+                                      tex.texObj.mode0, tex.texObj.mode1, refState);
   }
   return key;
 }
@@ -2167,6 +2169,11 @@ WGPUBindGroup resolve_texture_bind_group(gfx::BindGroupRef id) noexcept {
   if (!it->second.bindGroup) {  // two encoders can race to make it: the first one's stays
     it->second.bindGroup = std::move(bindGroup);
   }
+  // The group now keeps its views alive itself. Holding the handles until the entry expires kept
+  // every EFB copy target in use for ~40 frames, so the copy pool (GXFrameBuffer.cpp) could never
+  // reuse one and made new GPU textures each frame instead, each waiting out the device lock: the
+  // 1-3 Star Coin capture cost 9 ms a frame on a Pixel 3 XL.
+  it->second.textures = {};
   return it->second.bindGroup.Get();
 }
 

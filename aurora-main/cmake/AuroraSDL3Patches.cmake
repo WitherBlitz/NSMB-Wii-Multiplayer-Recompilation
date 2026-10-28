@@ -118,6 +118,28 @@ static void UpdateDeviceIdentity(SDL_HIDAPI_Device *device)
 
     now = SDL_GetTicks();
 ]==])
+
+  # Wii Remote speaker: SDL_SendGamepadEffect sends a raw output report (the game's
+  # speaker set-up and its ADPCM stream, WPADControlSpeaker/WPADSendStreamData in the
+  # runtime), queued in order behind the driver's own writes. Every output report
+  # carries the rumble bit, so it is kept as the driver last set it.
+  _aurora_sdl3_replace("${_wii}" "Wii Remote raw output reports (speaker)"
+[==[static bool HIDAPI_DriverWii_SendJoystickEffect(SDL_HIDAPI_Device *device, SDL_Joystick *joystick, const void *data, int size)
+{
+    return SDL_Unsupported();
+}]==]
+[==[static bool HIDAPI_DriverWii_SendJoystickEffect(SDL_HIDAPI_Device *device, SDL_Joystick *joystick, const void *data, int size)
+{
+    /* WiiCompiled: a raw output report, for the remote's speaker. */
+    SDL_DriverWii_Context *ctx = (SDL_DriverWii_Context *)device->context;
+    Uint8 report[32];
+    if (size < 2 || size > (int)sizeof(report)) {
+        return SDL_InvalidParamError("size");
+    }
+    SDL_memcpy(report, data, size);
+    report[1] = (Uint8)((report[1] & ~1) | (ctx->m_bRumbleActive ? 1 : 0));
+    return WriteOutput(ctx, report, size, false);
+}]==])
 endfunction()
 
 # Script mode (FetchContent PATCH_COMMAND).

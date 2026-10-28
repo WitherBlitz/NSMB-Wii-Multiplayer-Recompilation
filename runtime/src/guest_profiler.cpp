@@ -66,6 +66,7 @@ const char* GuestName(uint32_t address) {
 
 // The last present, for NSMBW_PROFILE_HITCH.
 std::atomic<int64_t> g_lastPresentNanos{0};
+std::atomic<uint32_t> g_presentedFrames{0};
 
 int64_t NowNanos() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
@@ -291,6 +292,7 @@ struct Sample {
     uintptr_t frames[kDepth];
     int depth;
     unsigned scene;
+    uint32_t frame;  // frames presented so far, to group samples by frame (profile-frames.txt)
 };
 Sample* g_samples = nullptr;
 size_t g_capacity = 0;
@@ -317,6 +319,7 @@ void OnSample(int, siginfo_t*, void* context) {
     const auto* uc = static_cast<const ucontext_t*>(context);
     Sample& sample = g_samples[index];
     sample.scene = g_scene.load(std::memory_order_relaxed);
+    sample.frame = g_presentedFrames.load(std::memory_order_relaxed);
 #if defined(__aarch64__)
     uintptr_t fp = uc->uc_mcontext.regs[29];
     sample.frames[0] = uc->uc_mcontext.pc;
@@ -419,6 +422,13 @@ void ReportLinux(size_t count) {
         }
         std::fclose(stacks);
         RT_LOGF(RT_TAG_RUNTIME, "profile: %zu samples; stacks written to %s\n", count, stacksPath.string().c_str());
+        // The frame each sample fell in, one a line in the same order (a sample is about 1 ms).
+        std::filesystem::path framesPath = stacksPath;
+        framesPath.replace_filename("profile-frames.txt");
+        if (FILE* frames = std::fopen(framesPath.string().c_str(), "w")) {
+            for (size_t i = 0; i < count; ++i) std::fprintf(frames, "%u\n", g_samples[i].frame);
+            std::fclose(frames);
+        }
     }
 
     // A rough self-time table on the device: by the translated function a sample stopped in (the
@@ -539,6 +549,7 @@ void ThreadCpuMs(double* user, double* kernel) {
 void OnFramePresented() {
 #if defined(_WIN32) || defined(__linux__)
     g_lastPresentNanos.store(NowNanos(), std::memory_order_relaxed);
+    g_presentedFrames.fetch_add(1, std::memory_order_relaxed);
     static bool started = false;
     if (started) {
         return;

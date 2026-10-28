@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace GameMenus {
 namespace {
@@ -22,6 +23,7 @@ constexpr uint16_t kProfileCourseSelectMenu = 0x2B5;  // the world map's + menu
 constexpr uint16_t kProfilePauseWindow = 0x2C6;       // a level's pause window
 constexpr uint16_t kProfileCollectionCoin = 0x2B4;    // the world map's Star Coins screen
 constexpr uint16_t kProfileYesNoWindow = 0x2C0;        // the game's yes/no prompts
+constexpr uint16_t kProfileWorldSelect = 0x2B1;        // the world map's Select a World screen (-)
 
 // Current state IDs (sStateMgr's current pointer) and the fields read from each object.
 constexpr uint32_t kSelectPlayerState = 0x9C;
@@ -42,6 +44,10 @@ constexpr uint32_t kSpExit = 0x80995580u;
 constexpr uint32_t kPauseMenuState = 0x234;
 constexpr uint32_t kCollectionCoinState = 0x434;
 constexpr uint32_t kYesNoState = 0x234;
+// dWorldSelect_c: its StateID, the world picked (0-8) and a byte per world, 1 once it can be picked.
+constexpr uint32_t kWorldSelectState = 0x238;
+constexpr uint32_t kWorldSelectWorld = 0x27C;
+constexpr uint32_t kWorldSelectOpen = 0x2A8;
 // dFileSelect_c::StateID_SelectWait.
 constexpr uint32_t kFsSelectWait = 0x80992050u;
 
@@ -453,6 +459,47 @@ bool StarCoinsWaiting() {
 bool YesNoWaiting() {
     static uint32_t selectWait = 0;
     return InState(kProfileYesNoWindow, kYesNoState, "dYesNoWindow_c::StateID_SelectWait", selectWait);
+}
+
+// The screen's object lives as long as the world map, in StateID_OnStageWait while the screen is
+// closed; StateID_Select is it up and waiting for a button (between turns of the ring).
+static uint32_t WorldSelectStateId(const char* name, uint32_t& cached) {
+    const uint32_t object = Find(kProfileWorldSelect);
+    uint32_t id = 0;
+    if (object == 0 || !Memory::TryRead32(object + kWorldSelectState, id) || id == 0) {
+        return 0;
+    }
+    if (cached == 0 && StateName(id) == name) {  // exactly: StateID_SelectExpand shares the prefix
+        cached = id;
+    }
+    return id;
+}
+
+bool WorldSelectOpen() {
+    static uint32_t closed = 0;
+    const uint32_t id = WorldSelectStateId("dWorldSelect_c::StateID_OnStageWait", closed);
+    // Before the closed state has been seen (the screen opened first), any other state is open.
+    return id != 0 && id != closed && (closed != 0 || StateName(id) != "dWorldSelect_c::StateID_OnStageWait");
+}
+
+bool WorldSelectWaiting() {
+    static uint32_t select = 0;
+    const uint32_t id = WorldSelectStateId("dWorldSelect_c::StateID_Select", select);
+    return id != 0 && id == select;
+}
+
+int WorldSelectWorld() {
+    const uint32_t object = Find(kProfileWorldSelect);
+    uint32_t world = 0;
+    if (object == 0 || !Memory::TryRead32(object + kWorldSelectWorld, world) || world > 8) {
+        return -1;
+    }
+    return static_cast<int>(world);
+}
+
+bool WorldSelectCanPick(int world) {
+    const uint32_t object = Find(kProfileWorldSelect);
+    return object != 0 && world >= 0 && world <= 8 && Memory::Read8(object + kWorldSelectOpen + world) != 0;
 }
 
 int CourseMenuCursor() {

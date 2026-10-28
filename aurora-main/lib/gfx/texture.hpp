@@ -1,6 +1,8 @@
 #pragma once
 #include <dolphin/gx.h>
 
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -72,6 +74,13 @@ struct TextureRef {
   std::unique_ptr<std::string> lazy;  // the label, while the texture is still to be made
   std::once_flag materialized;
   void materialize() noexcept;
+  // Never reused, unlike the object's address: what the texture bind group cache keys on, as its
+  // groups outlive the handles they were made from (gx.cpp, resolve_texture_bind_group).
+  const uint64_t serial = next_serial();
+  static uint64_t next_serial() noexcept {
+    static std::atomic<uint64_t> counter{0};
+    return counter.fetch_add(1, std::memory_order_relaxed) + 1;
+  }
 
   TextureRef(wgpu::Texture texture, wgpu::TextureView sampleTextureView, wgpu::TextureView attachmentTextureView,
              wgpu::Extent3D size, wgpu::TextureFormat format, uint32_t mipCount, u32 gxFormat)

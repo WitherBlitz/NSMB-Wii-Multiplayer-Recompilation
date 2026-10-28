@@ -737,6 +737,16 @@ bool IsRemoteChannel(uint32_t chan) {
     return IsKpadKind(EffectiveKind(chan));
 }
 
+bool HasRealRemote(uint32_t chan) {
+    return IsKpadKind(KindForPort(chan));
+}
+
+bool SendRawReport(uint32_t chan, const uint8_t* data, int size) {
+    if (!HasRealRemote(chan)) return false;
+    SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
+    return gamepad != nullptr && SDL_SendGamepadEffect(gamepad, data, size);
+}
+
 // Marks ports served by a real remote as "no controller" in the GameCube pad statuses.
 void HideRemotesFromPad(PADStatus* statuses, uint32_t count) {
     for (uint32_t port = 0; port < count && port < PAD_MAX_CONTROLLERS; ++port) {

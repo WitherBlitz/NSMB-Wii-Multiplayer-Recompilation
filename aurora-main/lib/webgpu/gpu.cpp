@@ -98,6 +98,7 @@ static std::atomic_bool g_initialized{false};
 //   notex      every texture samples as grey (is it geometry or texturing?)
 //   uvvis      texture samples show their coordinates instead
 //   dumpwgsl   write every generated shader to <cache>/wgsl
+//   nocache    no Dawn blob cache: every shader and pipeline compiles from scratch (cold-start timing)
 //   +name      enable the Dawn toggle `name`; -name disables it
 static std::vector<std::string> g_gfxFlags;
 static std::atomic_bool g_logValidationErrors{false};
@@ -688,6 +689,21 @@ bool initialize(AuroraBackend auroraBackend, bool allowSoftware) {
     // descriptor only restates Dawn's defaults, so use the public WebGPU descriptor here.
     dawn::native::DawnInstanceDescriptor dawnInstanceDescriptor;
     dawnInstanceDescriptor.backendValidationLevel = dawn::native::BackendValidationLevel::Disabled;
+    // Dawn's own warnings (why it skipped an adapter, for one) into the log: on Android they would
+    // otherwise only reach logcat, which some phones (LG's) keep switched off.
+    dawnInstanceDescriptor.loggingCallbackInfo = WGPULoggingCallbackInfo{
+        .callback =
+            [](WGPULoggingType type, WGPUStringView message, void*, void*) {
+              const std::string_view text = message.data == nullptr ? std::string_view{}
+                                            : message.length == WGPU_STRLEN ? std::string_view{message.data}
+                                                                            : std::string_view{message.data, message.length};
+              if (type == WGPULoggingType_Error) {
+                Log.error("Dawn: {}", text);
+              } else {
+                Log.warn("Dawn: {}", text);
+              }
+            },
+    };
     instanceDescriptor.nextInChain = &dawnInstanceDescriptor;
 #endif
     g_instance = wgpu::CreateInstance(&instanceDescriptor);
@@ -931,7 +947,7 @@ bool initialize(AuroraBackend auroraBackend, bool allowSoftware) {
       Log.info("Graphics debug flags: {}", joined);
     }
     const wgpu::DawnTogglesDescriptor togglesDescriptor({
-        .nextInChain = &cacheDescriptor,
+        .nextInChain = gfx_flag("nocache") ? nullptr : &cacheDescriptor,
         .enabledToggleCount = enableToggles.size(),
         .enabledToggles = enableToggles.data(),
         .disabledToggleCount = disableToggles.size(),

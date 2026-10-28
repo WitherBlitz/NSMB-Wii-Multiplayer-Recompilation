@@ -5,10 +5,14 @@
 #include "netplay/game_menus.h"
 #include "netplay_session.h"
 #include "runtime_log.h"
+#include "settings_overlay.h"
+#include "wii_remote_input.h"
 
 #include <dolphin/pad.h>
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_keyboard.h>
+#include <SDL3/SDL_mouse.h>
+#include <SDL3/SDL_video.h>
 #include <SDL3/SDL_timer.h>
 
 #include <algorithm>
@@ -99,6 +103,50 @@ void SmartSpinLog(const char* what) {
     }
 }
 
+// Mouse Gyro QoL (keybinds.h): the mouse as the remote's motion while no controller or Wii Remote is
+// connected. A sideways swing (1% of the window's width in one read) tilts the remote that way for
+// 5 s, long enough to ride a tilting platform across; a swing back the other way within 0.3 s is a
+// shake, which also ends the tilt, so wiggling the mouse spins without leaving the remote tilted.
+void ApplyMouseGyro(Intent& intent) {
+    static float lastX = 0.0f;
+    static bool haveLast = false;
+    static int tiltDir = 0, swingDir = 0;
+    static uint64_t tiltUntilNs = 0, swingNs = 0;
+    SDL_Window* window = SDL_GetMouseFocus();
+    bool realRemote = false;
+    for (uint32_t chan = 0; chan < PAD_MAX_CONTROLLERS; ++chan) {
+        realRemote = realRemote || WiiRemoteInput::HasRealRemote(chan);
+    }
+    if (!Keybinds::MouseGyro() || window == nullptr || realRemote || settings_overlay::ControllerConnected()) {
+        haveLast = false;
+        tiltDir = swingDir = 0;
+        return;
+    }
+    float x = 0.0f;
+    SDL_GetMouseState(&x, nullptr);
+    int width = 0;
+    SDL_GetWindowSize(window, &width, nullptr);
+    const uint64_t now = SDL_GetTicksNS();
+    const float threshold = std::max(4.0f, static_cast<float>(width) * 0.01f);
+    if (haveLast && std::fabs(x - lastX) >= threshold) {
+        const int dir = x < lastX ? -1 : 1;
+        if (swingDir != 0 && dir != swingDir && now - swingNs < 300'000'000) {
+            intent.shake = true;
+            tiltDir = 0;
+        } else {
+            tiltDir = dir;
+            tiltUntilNs = now + 5'000'000'000;
+        }
+        swingDir = dir;
+        swingNs = now;
+    }
+    lastX = x;
+    haveLast = true;
+    if (intent.tilt == 0.0f && tiltDir != 0 && now < tiltUntilNs) {
+        intent.tilt = static_cast<float>(tiltDir);
+    }
+}
+
 // The built-in layout for port 1, used while no port has aurora's keyboard switched on.
 Intent KeyboardIntent() {
     Intent intent;
@@ -181,6 +229,7 @@ Intent KeyboardIntent() {
     if (Held(kMinus)) intent.buttons |= kWpadMinus;
     intent.shake = intent.shake || Held(kShake);
     intent.tilt = (Held(kTiltRight) ? 1.0f : 0.0f) - (Held(kTiltLeft) ? 1.0f : 0.0f);
+    ApplyMouseGyro(intent);
     return intent;
 }
 

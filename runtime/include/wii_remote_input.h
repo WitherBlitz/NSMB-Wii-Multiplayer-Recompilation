@@ -91,6 +91,13 @@ float AccelCalibrationProgress();
 // Outcome of the last calibration attempt for the overlay, or nullptr.
 const char* AccelCalibrationMessage();
 
+// True when a real Wii Remote (alone or with an extension) is on `chan` right now.
+bool HasRealRemote(uint32_t chan);
+// Sends one raw output report (report ID first) to the real Wii Remote on `chan`, behind the
+// driver's own writes: the speaker's set-up and audio (WPADControlSpeaker/WPADSendStreamData).
+// False when there is no real remote there.
+bool SendRawReport(uint32_t chan, const uint8_t* data, int size);
+
 // Reports "no controller" on the GameCube side for every port served through
 // KPAD, so the game never sees the same remote twice. Runs after aurora's PADRead.
 void HideRemotesFromPad(PADStatus* statuses, uint32_t count);
