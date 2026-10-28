@@ -1,0 +1,52 @@
+schema_version: 1
+workspace_root: ../..
+
+# Newer Super Mario Bros. Wii on New Super Mario Bros. Wii, North America rev 1 (SMNE01 v1).
+# tools/newer_prelink.py applies Newer's loader offline: its patched main.dol, prelink_rels.py's
+# synthetic REL with Newer's hooks applied and its linked code blob appended, and a function map
+# extended with the blob's function starts.
+project:
+  id: nsmbw-newer-smne01
+  display_name: Newer Super Mario Bros. Wii (on USA rev 1)
+  game_id: SMNE01
+  region: E
+  base_manifest_format: nsmbw-recomp-base-manifest
+  base_manifest_stem: nsmbw_base
+
+memory:
+  base: 0x80000000
+  size: 0x01800000
+  sda_base: 0x8042F680
+  sda2_base: 0x80433080
+
+inputs:
+  dol:
+    path: ../game-newer/main.dol
+  rel:
+    path: ../game-newer/nsmbw_linked.rel
+    load_address: 0x807684C0
+
+translation:
+  entry_points:
+    - 0x80004050
+  # MAP.txt plus Newer's loader and blob, written by tools/newer_prelink.py.
+  function_map:
+    path: ../game-newer/MAP.txt
+  allow_unsupported_instructions: false
+
+runtime:
+  # The runtime under runtime/src is retargeted to NSMBW SMNE01 rev 1 (branch nsmbw).
+  native_registration_root: runtime/src
+  native_abi_directories:
+    - runtime/src/hle/gx
+
+output:
+  # runtime/CMakeLists.txt reads ../generated/build_shards/shards.cmake, so build in-tree.
+  root: generated
+  functions: functions
+  runtime_config: RuntimeConfig.h
+  data_initializer: data_sections_init.cpp
+  base_manifest: ../build/base/nsmbw_base_manifest.json
+
+
+
