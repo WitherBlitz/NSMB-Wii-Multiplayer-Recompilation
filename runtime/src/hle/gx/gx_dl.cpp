@@ -1310,6 +1310,13 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
         const bool mayContainDraw =
             (cached != nullptr) ? cached->mayContainDraw : DisplayListMayContainDraw(list, nbytes);
         if (!mayContainDraw) {
+            // NSMBW: remembered too, so the next call skips the walk (G3D's material lists are
+            // half of all display-list calls and never contain a draw).
+            if (cached == nullptr && allowScanCache) {
+                StoreDlScanCache(listAddr, nbytes, scanLayoutHash,
+                                 probe.digestValid ? probe.contentDigest : DlContentDigest(list, nbytes),
+                                 probe.writeGeneration, /*mayContainDraw=*/false, DlScanCacheEntry{}, {}, nullptr, 0);
+            }
             EnsureAuroraFrameActive();
             GXMarkFrameWork();
             GXCallDisplayList(list, nbytes);

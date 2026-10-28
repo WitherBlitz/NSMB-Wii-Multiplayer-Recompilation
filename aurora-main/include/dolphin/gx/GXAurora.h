@@ -110,6 +110,9 @@ uint64_t AuroraTakeUnmergedDraws(void);
 // exactly the same commands as the last time it ran.
 void AuroraBeginCommandDigest(void);
 uint64_t AuroraEndCommandDigest(void);
+// NSMBW: aurora's vertex descriptor (vcdLo, vcdHi), format `fmt`'s attribute table (vatA/B/C) and
+// normal type, as last set through the GX API.
+void AuroraGetVtxFormatRegs(uint32_t fmt, uint32_t out[6]);
 // Time spent processing GX commands since start (NSMBW_LOG_FPS only; else 0).
 uint64_t AuroraGxProcessNanosTotal(void);
 // NSMBW: GXCopyTex calls and the new GPU textures they needed, since the last call (profiling).

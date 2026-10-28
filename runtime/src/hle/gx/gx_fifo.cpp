@@ -108,6 +108,71 @@ static bool TrySubmitRawDirectFifoDraw(const uint8_t* packet, uint32_t packetByt
     return true;
 }
 
+static void HleFifoWriteBurstChunked(const uint8_t* data, uint32_t sizeBytes);
+
+// NSMBW: GXBegin with an all-direct vertex format (its tiles, text glyphs, layout and lighting
+// quads). The per-attribute path below decodes every component to a float, hands it to aurora's
+// GXPosition/GXTexCoord/GXColor, which encode it back into the very same bytes, and aurora then
+// decodes those again: three passes per component. Here the guest's bytes are gathered as they
+// arrive and drawn raw once the declared vertices are all in, which aurora's shaders read as they
+// are. NSMBW_NO_RAW_BEGIN=1 keeps the per-attribute path (A/B).
+bool HleTryBeginRaw(GXPrimitive prim, GXVtxFmt fmt, uint16_t verts) {
+    static const bool off = std::getenv("NSMBW_NO_RAW_BEGIN") != nullptr;
+    uint32_t vertexSize = 0;
+    if (off || verts == 0 || !TryGetRawDirectFifoVertexSize(fmt, vertexSize)) {
+        return false;
+    }
+    auto& s = g_hleGxState;
+    s.rawBegin = true;
+    s.rawExpected = 3u + static_cast<uint32_t>(verts) * vertexSize;
+    if (s.rawPacket.size() < s.rawExpected) {
+        s.rawPacket.resize(s.rawExpected);
+    }
+    s.rawPacket[0] = static_cast<uint8_t>(fmt | prim);
+    s.rawPacket[1] = static_cast<uint8_t>(verts >> 8);
+    s.rawPacket[2] = static_cast<uint8_t>(verts);
+    s.rawFilled = 3;
+    return true;
+}
+
+void HleEndRaw() {
+    g_hleGxState.rawBegin = false;
+}
+
+static void RawBeginFinish() {
+    auto& s = g_hleGxState;
+    s.rawBegin = false;
+    const GXPrimitive prim = s.currentPrim;
+    const GXVtxFmt fmt = s.currentVtxFmt;
+    const auto verts = static_cast<uint16_t>(s.vertsRemaining);
+    if (TrySubmitRawDirectFifoDraw(s.rawPacket.data(), s.rawExpected, prim, fmt, verts)) {
+        return;
+    }
+    // Aurora refused it: run the same bytes through the per-attribute path.
+    s.currentVtxFmt = fmt;
+    s.currentPrim = prim;
+    s.vertsRemaining = verts;
+    s.inBegin = true;
+    s.auroraBeginCalled = false;
+    s.fifoReadOffset = 0;
+    s.fifoByteCount = 0;
+    s.ResetVertex();
+    const std::vector<uint8_t> vertices(s.rawPacket.begin() + 3, s.rawPacket.begin() + s.rawExpected);
+    HleFifoWriteBurstChunked(vertices.data(), static_cast<uint32_t>(vertices.size()));
+}
+
+// Takes what the open raw GXBegin still needs of `data`, drawing once complete; returns the bytes taken.
+static uint32_t RawBeginAppend(const uint8_t* data, uint32_t size) {
+    auto& s = g_hleGxState;
+    const uint32_t take = std::min(s.rawExpected - s.rawFilled, size);
+    std::memcpy(s.rawPacket.data() + s.rawFilled, data, take);
+    s.rawFilled += take;
+    if (s.rawFilled == s.rawExpected) {
+        RawBeginFinish();
+    }
+    return take;
+}
+
 static void DecodeColorFromArray(uint32_t addr, GXCompType type, GXCompCnt cnt, GXColor& out) {
     // Gather exactly the bytes the shared decoder consumes. GX_RGBX8 is the one
     // format whose stream footprint (4 bytes) exceeds what is decoded (3), and
@@ -349,6 +414,18 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
     const bool recordOnly = IsDisplayListActive();
     if (recordOnly) {
         WriteDisplayListData(val, sizeBytes);
+        return;
+    }
+    if (g_hleGxState.rawBegin) {
+        const uint32_t count = sizeBytes == 0 ? 4u : std::min<uint32_t>(sizeBytes, 4u);
+        uint8_t bytes[4];
+        for (uint32_t i = 0; i < count; ++i) {
+            bytes[i] = static_cast<uint8_t>(val >> (8u * (count - 1u - i)));
+        }
+        const uint32_t taken = RawBeginAppend(bytes, count);
+        for (uint32_t i = taken; i < count; ++i) {
+            HleFifoWrite(bytes[i], 1);  // past the last vertex: the next command's first bytes
+        }
         return;
     }
 
@@ -782,6 +859,14 @@ extern "C" void GX_HLE_FIFO_WriteBurst(const uint8_t* data, uint32_t sizeBytes) 
 
     if (IsDisplayListActive() && WriteDisplayListBurst(data, sizeBytes)) {
         return;
+    }
+    if (g_hleGxState.rawBegin && !IsDisplayListActive()) {
+        const uint32_t taken = RawBeginAppend(data, sizeBytes);
+        data += taken;
+        sizeBytes -= taken;
+        if (sizeBytes == 0) {
+            return;
+        }
     }
 
     const uint32_t applied = ApplyFifoPacketsDirect(data, sizeBytes);

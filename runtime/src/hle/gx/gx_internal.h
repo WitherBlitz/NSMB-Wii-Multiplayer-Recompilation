@@ -255,6 +255,14 @@ struct HleGxState {
     size_t fifoReadOffset = 0;
     size_t fifoByteCount = 0;
 
+    // A GXBegin whose vertex format is all GX_DIRECT gathers its vertex bytes here, after the
+    // draw packet's 3-byte header, and hands the packet to aurora raw once complete
+    // (HleTryBeginRaw in gx_fifo.cpp).
+    bool rawBegin = false;
+    uint32_t rawExpected = 0;
+    uint32_t rawFilled = 0;
+    std::vector<uint8_t> rawPacket;
+
     void ResetVertex();
     void InvalidateVtxLayoutHash() noexcept {
         vtxLayoutHashDirty = true;
@@ -363,6 +371,11 @@ void MarkTlutObjsDirtyForRange(uint32_t addr, uint32_t size);
 extern "C" void GxNotifyGuestRamDmaWrite(uint32_t addr, uint32_t size);
 
 void HleFifoWrite(u32 val, uint32_t sizeBytes);
+// Called by GXBegin (outside display-list recording): true when the vertex format is all
+// GX_DIRECT and the vertices will be gathered and drawn raw.
+bool HleTryBeginRaw(GXPrimitive prim, GXVtxFmt fmt, uint16_t verts);
+// GXEnd: drops a raw GXBegin whose vertices never all arrived.
+void HleEndRaw();
 void SubmitAttribute(GXAttr attr, float* comps, const VtxAttrFmt& fmt, const u32* rawComps = nullptr);
 void SubmitIndexedAttribute(GXAttr attr, uint32_t index);
 

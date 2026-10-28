@@ -453,3 +453,14 @@ void GXEnableTexOffsets(GXTexCoordID coord, GXBool line_enable, GXBool point_ena
   __gx->bpSent = 1;
 }
 }
+
+// NSMBW: the vertex descriptor and one format's attribute table as aurora holds them, so the runtime
+// can tell that republishing its own copy would change nothing.
+extern "C" void AuroraGetVtxFormatRegs(uint32_t fmt, uint32_t out[6]) {
+  out[0] = __gx->vcdLo;
+  out[1] = __gx->vcdHi;
+  out[2] = fmt < 8 ? __gx->vatA[fmt] : 0;
+  out[3] = fmt < 8 ? __gx->vatB[fmt] : 0;
+  out[4] = fmt < 8 ? __gx->vatC[fmt] : 0;
+  out[5] = static_cast<uint32_t>(__gx->nrmType);
+}

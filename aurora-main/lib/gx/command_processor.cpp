@@ -2235,6 +2235,58 @@ static bool admit_draw(GXPrimitive prim, GXVtxFmt fmt, u16 count, uint32_t verte
   return gfx::staging_has_space(demand);
 }
 
+// The last draw a new primitive can be appended to, or nullptr. FIFO and raw draws share these rules.
+static DrawData* merge_target(GXPrimitive prim, u16 vtxCount) {
+  // NSMBW debugging: NSMBW_NO_MERGE turns draw merging off.
+  static const int noMergeMode = [] {
+    const char* v = std::getenv("NSMBW_NO_MERGE");
+    return v == nullptr ? 0 : std::atoi(v);
+  }();
+  // 1: never merge; 2: not while drawing into the EFB below line 456 (light textures, tile frames);
+  // 3: only there.
+  const bool scratch =
+      noMergeMode >= 2 && g_gxState.xfViewport[4] - 340.0f + g_gxState.xfViewport[1] > 455.0f;
+  const bool noMerge = noMergeMode == 1 || (noMergeMode == 2 && scratch) || (noMergeMode == 3 && !scratch);
+  if (g_gxState.stateDirty || noMerge) {
+    return nullptr;
+  }
+  auto* lastDraw = gfx::get_last_draw_command<DrawData>();
+  // Expanded lines/points have different vertex interpretation even with one instance.
+  // Triangle-list output has no restart index; index 65535 is usable.
+  // Overflow would address earlier vertices instead of the appended geometry.
+  if (lastDraw != nullptr && prim != GX_LINES && prim != GX_LINESTRIP && prim != GX_POINTS &&
+      !lastDraw->expandedPrimitive && lastDraw->instanceCount == 1 &&
+      uint64_t(lastDraw->vtxCount) + vtxCount <= 65536u) LIKELY {
+    return lastDraw;
+  }
+  return nullptr;
+}
+
+// Appends a primitive's vertices and indices to `lastDraw` (admitted by the caller).
+static void merge_into(DrawData* lastDraw, GXPrimitive prim, u16 vtxCount, const u8* vertices, u32 totalVtxBytes,
+                       u32 vtxSize) {
+  const gfx::Range vertRange = gfx::push_verts(vertices, totalVtxBytes);
+  const auto& indexTemplate = cached_index_template(prim, vtxCount);
+  const auto indices = offset_index_template(indexTemplate, lastDraw->vtxCount);
+  const u32 numIndices = indexTemplate.indexCount;
+  const gfx::Range idxRange = gfx::push_indices(indices);
+  CHECK(lastDraw->vertRange.offset + lastDraw->vertRange.size == vertRange.offset,
+        "Non-consecutive vertex ranges ({} < {})", lastDraw->vertRange.offset + lastDraw->vertRange.size,
+        vertRange.offset);
+  CHECK(lastDraw->idxRange.offset + lastDraw->idxRange.size == idxRange.offset,
+        "Non-consecutive index ranges ({} < {})", lastDraw->idxRange.offset + lastDraw->idxRange.size,
+        idxRange.offset);
+  lastDraw->vertRange.size += vertRange.size;
+  lastDraw->idxRange.size += idxRange.size;
+  lastDraw->vtxCount += vtxCount;
+  lastDraw->indexCount += numIndices;
+  ++gfx::g_mergedDrawCallCount;
+  // This primitive now renders through the draw we merged into, so its palette slots belong to that draw's interpolation snapshot as well.
+  if (s_lastDrawRecordedInterpolation) UNLIKELY {
+    extend_interpolation_draw(pn_mtx_mask(vertices, vtxCount, vtxSize));
+  }
+}
+
 bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, uint16_t vtxCount,
                      uint32_t vertexBytes) {
   ZoneScoped;
@@ -2281,6 +2333,16 @@ bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, ui
 
   // This entry point bypasses process(), so it owns the renderer lock itself.
   std::unique_lock gpuLock(aurora::renderer_gpu_mutex());
+  // NSMBW: joins the last draw like a FIFO draw would (a run of tiles, glyphs or layout quads with
+  // nothing changed between them is one draw). Not in the EFB scratch area below line 456, where the
+  // game draws each animated tile frame and light texture before copying it out: merging there lost
+  // the ? blocks' marks (each copy then saw the last frame drawn), and those draws are few.
+  const bool scratch = g_gxState.xfViewport[4] - 340.0f + g_gxState.xfViewport[1] > 455.0f;
+  if (DrawData* target = scratch ? nullptr : merge_target(prim, vtxCount);
+      target != nullptr && admit_draw(prim, fmt, vtxCount, vertexBytes, true)) {
+    merge_into(target, prim, vtxCount, vertices, vertexBytes, vtxSize);
+    return true;
+  }
   if (!admit_draw(prim, fmt, vtxCount, vertexBytes)) {
     gpuLock.unlock();
     gfx::split_staging_batch();
@@ -2336,32 +2398,9 @@ static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
     return true;
   }
 
-  DrawData* mergeTarget = nullptr;
-  // NSMBW debugging: NSMBW_NO_MERGE turns draw merging off.
-  static const int noMergeMode = [] {
-    const char* v = std::getenv("NSMBW_NO_MERGE");
-    return v == nullptr ? 0 : std::atoi(v);
-  }();
-  // 1: never merge; 2: not while drawing into the EFB below line 456 (light textures, tile frames);
-  // 3: only there.
-  const bool scratch =
-      noMergeMode >= 2 && g_gxState.xfViewport[4] - 340.0f + g_gxState.xfViewport[1] > 455.0f;
-  const bool noMerge = noMergeMode == 1 || (noMergeMode == 2 && scratch) || (noMergeMode == 3 && !scratch);
   // Decide admission before allocating anything. The merged path needs only
   // vertices and indices; it must not resolve pipelines or upload arrays.
-  // Try to merge with previous draw call
-  if (!g_gxState.stateDirty && !noMerge) LIKELY {
-    auto* lastDraw = gfx::get_last_draw_command<DrawData>();
-    // Expanded lines/points have different vertex interpretation even with one instance.
-    // Triangle-list output has no restart index; index 65535 is usable.
-    // Overflow would address earlier vertices instead of the appended geometry.
-    if (lastDraw != nullptr && prim != GX_LINES && prim != GX_LINESTRIP && prim != GX_POINTS &&
-        !lastDraw->expandedPrimitive && lastDraw->instanceCount == 1 &&
-        uint64_t(lastDraw->vtxCount) +
-            vtxCount <= 65536u) LIKELY {
-      mergeTarget = lastDraw;
-    }
-  }
+  DrawData* mergeTarget = merge_target(prim, vtxCount);
   if (MergeSuspectsOn()) {
     if (mergeTarget != nullptr && !g_mergeSuspects.empty()) {
       static absl::flat_hash_set<u32> logged;
@@ -2377,30 +2416,12 @@ static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
   }
   if (!admit_draw(prim, fmt, vtxCount, totalVtxBytes, mergeTarget != nullptr)) throw gfx::StagingBatchFull{};
   const uint8_t* vertices = data + pos;
-  gfx::Range vertRange = gfx::push_verts(vertices, totalVtxBytes);
   pos += totalVtxBytes;
-  if (auto* lastDraw = mergeTarget) {
-      const auto& indexTemplate = cached_index_template(prim, vtxCount);
-      const auto indices = offset_index_template(indexTemplate, lastDraw->vtxCount);
-      const u32 numIndices = indexTemplate.indexCount;
-      const gfx::Range idxRange = gfx::push_indices(indices);
-      CHECK(lastDraw->vertRange.offset + lastDraw->vertRange.size == vertRange.offset,
-            "Non-consecutive vertex ranges ({} < {})", lastDraw->vertRange.offset + lastDraw->vertRange.size,
-            vertRange.offset);
-      CHECK(lastDraw->idxRange.offset + lastDraw->idxRange.size == idxRange.offset,
-            "Non-consecutive index ranges ({} < {})", lastDraw->idxRange.offset + lastDraw->idxRange.size,
-            idxRange.offset);
-      lastDraw->vertRange.size += vertRange.size;
-      lastDraw->idxRange.size += idxRange.size;
-      lastDraw->vtxCount += vtxCount;
-      lastDraw->indexCount += numIndices;
-      ++gfx::g_mergedDrawCallCount;
-      // This primitive now renders through the draw we merged into, so its palette slots belong to that draw's interpolation snapshot as well.
-      if (s_lastDrawRecordedInterpolation) UNLIKELY {
-        extend_interpolation_draw(pn_mtx_mask(vertices, vtxCount, vtxSize));
-      }
-      return true;
+  if (mergeTarget != nullptr) {
+    merge_into(mergeTarget, prim, vtxCount, vertices, totalVtxBytes, vtxSize);
+    return true;
   }
+  gfx::Range vertRange = gfx::push_verts(vertices, totalVtxBytes);
 
   const bool interpolationIdentityActive = frame_interpolation_identity_needed();
   const PnMtxUsage matrixUsage = interpolationIdentityActive

@@ -6,8 +6,11 @@
 #include "guest_interrupt_context.h"
 #include "runtime_log.h"
 
+#include <dolphin/gx/GXAurora.h>
+
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace {
 uint32_t CanonicalVtxAttr(uint32_t attr) {
@@ -19,12 +22,31 @@ uint32_t CanonicalVtxAttr(uint32_t attr) {
 // precede the draw carrying the max-index bounds, which cannot be known without
 // buffering the whole primitive. Indexed attributes are therefore expanded into
 // the packed direct stream below (GX_INDEX8/16 -> GX_DIRECT).
+// NSMBW: every GXBegin (each background tile, each text glyph) republished the whole vertex
+// descriptor and format, 40-odd GX calls that almost always change nothing. Skipped when the HLE's
+// vertex state is the one last published for this format and aurora still holds exactly what that
+// publish left (anything else that set aurora's descriptor or table shows up as different registers).
 void ApplyAuroraVtxStateForBegin(GXVtxFmt fmt) {
+    static bool valid = false;
+    static GXVtxFmt lastFmt = GX_VTXFMT0;
+    static uint32_t lastGeneration = 0;
+    static uint32_t lastRegs[6] = {};
+    uint32_t regs[6];
+    if (valid && fmt == lastFmt && g_hleGxState.vtxStateGeneration == lastGeneration) {
+        AuroraGetVtxFormatRegs(fmt, regs);
+        if (std::memcmp(regs, lastRegs, sizeof(regs)) == 0) {
+            return;
+        }
+    }
     GxStream::PublishAuroraVtxState(fmt,
                                     GxStream::AuroraVtxPublishOptions{
                                         /*includeNbt=*/false,
                                         /*fmtLoopFirst=*/static_cast<int>(GX_VA_POS),
                                         /*fmtLoopLast=*/static_cast<int>(GX_VA_TEX7)});
+    valid = true;
+    lastFmt = fmt;
+    lastGeneration = g_hleGxState.vtxStateGeneration;
+    AuroraGetVtxFormatRegs(fmt, lastRegs);
 }
 }
 
@@ -291,10 +313,11 @@ extern "C" void GX__Begin_8016f0f0(uint32_t t, uint32_t vf, uint32_t nv) {
     g_hleGxState.vertsRemaining=nv; g_hleGxState.inBegin=true; g_hleGxState.auroraBeginCalled=false;
     g_hleGxState.fifoReadOffset = 0;
     g_hleGxState.fifoByteCount=0; g_hleGxState.ResetVertex();
+    HleTryBeginRaw(static_cast<GXPrimitive>(t), static_cast<GXVtxFmt>(vf), static_cast<uint16_t>(nv));
 }
 PPC_NATIVE_OVERRIDE_VOID(801c5570, GX__Begin_8016f0f0, (uint32_t t, uint32_t vf, uint32_t nv), (t, vf, nv));
 
-extern "C" void GX__End_80044b30() { g_hleGxState.inBegin=false; GXEnd(); }
+extern "C" void GX__End_80044b30() { HleEndRaw(); g_hleGxState.inBegin=false; GXEnd(); }
 PPC_NATIVE_OVERRIDE_VOID(802a35b0, GX__End_80044b30, (), ());  // NSMBW out-of-line GXEnd copy #1 (blr)
 
 extern "C" void GX__End_80048c30() { GX__End_80044b30(); }
