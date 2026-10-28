@@ -138,18 +138,36 @@ std::filesystem::path HostMarker() {
 }
 
 // A host that closed the game during a session never went through EndSession: bring the session's
-// save back now, before anything reads the NAND.
+// save back now, before anything reads the NAND. The marker names the save and where it goes, so
+// the session's game gets it back even when another game (the original, a mod) starts first.
 void RecoverHostSave() {
     std::error_code ec;
-    if (!std::filesystem::exists(HostMarker(), ec)) {
+    std::ifstream marker(HostMarker());
+    if (!marker) {
         return;
     }
-    const auto played = SessionNand() / SaveFile();
-    const auto mine = RuntimeNandPath::ResolveNandRootPath() / SaveFile();
+    std::filesystem::path save = SaveFile();
+    std::filesystem::path mine;
+    std::string line;
+    while (std::getline(marker, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
+            line.pop_back();
+        }
+        if (line.rfind("save=", 0) == 0) {
+            save = std::filesystem::u8path(line.substr(5));
+        } else if (line.rfind("to=", 0) == 0) {
+            mine = std::filesystem::u8path(line.substr(3));
+        }
+    }
+    marker.close();
+    if (mine.empty()) {
+        mine = RuntimeNandPath::ResolveNandRootPath() / save;  // a marker from before it named them
+    }
+    const auto played = SessionNand() / save;
     if (std::filesystem::exists(played, ec)) {
         std::filesystem::copy_file(played, mine, std::filesystem::copy_options::overwrite_existing, ec);
-        RT_LOGF(RT_TAG_RUNTIME, "netplay: kept the save from the last session you hosted (%s)\n",
-                ec ? ec.message().c_str() : "ok");
+        RT_LOGF(RT_TAG_RUNTIME, "netplay: kept the save from the last session you hosted, %s (%s)\n",
+                RuntimeConfigFile::PathToUtf8(mine).c_str(), ec ? ec.message().c_str() : "ok");
     }
     std::filesystem::remove(HostMarker(), ec);
 }
@@ -201,7 +219,9 @@ bool TakePendingSession(NetplaySession::Config& config, int& saveFile) {
     g_names = names;
     g_isHost = config.localSlot == 0;
     if (g_isHost) {
-        std::ofstream(HostMarker()) << "1\n";
+        std::ofstream(HostMarker()) << "save=" << RuntimeConfigFile::PathToUtf8(SaveFile()) << "\n"
+                                    << "to=" << RuntimeConfigFile::PathToUtf8(
+                                           RuntimeNandPath::ResolveNandRootPath() / SaveFile()) << "\n";
     }
     RuntimeNandPath::NandRootOverride() = SessionNand();
     return true;
