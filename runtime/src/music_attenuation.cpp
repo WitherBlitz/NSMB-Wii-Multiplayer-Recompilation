@@ -11,12 +11,21 @@
 #include <mutex>
 #include <thread>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+// Other apps' audio can be watched through Core Audio process objects on macOS only; iOS has no
+// equivalent and takes the "unavailable" path, like any platform without media controls.
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+#define MKW_MACOS_EXTERNAL_AUDIO 1
+#endif
+
 #if defined(_WIN32)
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Media.Control.h>
-#elif defined(__APPLE__)
+#elif defined(MKW_MACOS_EXTERNAL_AUDIO)
 #include "external_audio_macos.h"
 #elif defined(__linux__)
 #include <dlfcn.h>
@@ -470,7 +479,7 @@ void MonitorLinuxMprisSessions() noexcept {
 }
 #endif
 
-#if defined(__APPLE__)
+#if defined(MKW_MACOS_EXTERNAL_AUDIO)
 void MonitorMacOSAudio() noexcept {
     using namespace std::chrono_literals;
     for (;;) {
@@ -491,7 +500,7 @@ void StartMonitor() noexcept {
 #elif defined(__linux__)
     // Detached so there is no shutdown ordering to manage against static audio state.
     std::thread(MonitorLinuxMprisSessions).detach();
-#elif defined(__APPLE__)
+#elif defined(MKW_MACOS_EXTERNAL_AUDIO)
     std::thread(MonitorMacOSAudio).detach();
 #else
     g_mediaControlAvailable.store(false, std::memory_order_release);

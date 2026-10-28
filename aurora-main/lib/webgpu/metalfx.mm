@@ -1,7 +1,13 @@
 #include "metalfx.hpp"
 
 #import <Foundation/Foundation.h>
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+// iOS's IOSurface framework has no umbrella header; the C API is in IOSurfaceRef.h.
+#import <IOSurface/IOSurfaceRef.h>
+#else
 #import <IOSurface/IOSurface.h>
+#endif
 #import <Metal/Metal.h>
 #import <MetalFX/MetalFX.h>
 

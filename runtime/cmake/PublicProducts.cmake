@@ -25,6 +25,14 @@ if(EXISTS "${DATA_INIT_BLOB_ASM}")
 endif()
 list(REMOVE_DUPLICATES SOURCES)
 
+# The frameworks the iOS shell (src/platform/ios/ios_app.mm) and the runtime objects call into.
+# SDL and Dawn bring their own through their targets; the OBJECT-library gap described in
+# mkw_configure_product means the product link has to name these itself.
+set(MKW_IOS_FRAMEWORKS
+    "-framework Foundation" "-framework UIKit" "-framework CoreMotion" "-framework UniformTypeIdentifiers"
+    "-framework CoreFoundation" "-framework Metal" "-framework QuartzCore" "-framework IOSurface"
+    "-framework AVFoundation" "-framework AudioToolbox" "-framework CoreHaptics" "-framework GameController")
+
 if(MKW_PLATFORM_MACOS)
     find_library(MKW_IOKIT_FRAMEWORK IOKit REQUIRED)
     find_library(MKW_COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
@@ -92,6 +100,8 @@ elseif(MKW_PLATFORM_LINUX)
     target_link_libraries(mkw_runtime_common PRIVATE mkw::libco ${CMAKE_DL_LIBS})
 elseif(MKW_PLATFORM_ANDROID)
     target_link_libraries(mkw_runtime_common PRIVATE android log ${CMAKE_DL_LIBS})
+elseif(MKW_PLATFORM_IOS)
+    target_link_libraries(mkw_runtime_common PRIVATE ${MKW_IOS_FRAMEWORKS})
 endif()
 
 if(MKW_PLATFORM_MACOS)
@@ -252,6 +262,20 @@ function(mkw_configure_product target)
         target_link_libraries(${target} PRIVATE android log ${CMAKE_DL_LIBS})
         target_link_options(${target} PRIVATE "LINKER:-z,max-page-size=16384" "LINKER:--no-undefined")
         set_target_properties(${target} PROPERTIES OUTPUT_NAME main)
+    elseif(MKW_PLATFORM_IOS)
+        # An app bundle: the runtime's data files are copied next to the executable below, which on
+        # iOS is the bundle's own top level, where ExecutableDirectory() finds them. ios/build-ios.sh
+        # signs it with ios/NSMBW.entitlements afterwards.
+        target_link_libraries(${target} PRIVATE ${MKW_IOS_FRAMEWORKS})
+        target_link_options(${target} PRIVATE "LINKER:-U,_OBJC_CLASS_$_MTLLogStateDescriptor")
+        set_target_properties(${target} PROPERTIES
+            OUTPUT_NAME NSMBW
+            MACOSX_BUNDLE TRUE
+            MACOSX_BUNDLE_INFO_PLIST "${MKW_RUNTIME_SOURCE_DIR}/../ios/Info.plist.in"
+            MACOSX_BUNDLE_GUI_IDENTIFIER "${MKW_IOS_BUNDLE_ID}"
+            MACOSX_BUNDLE_BUNDLE_NAME "NSMBW"
+            MACOSX_BUNDLE_SHORT_VERSION_STRING "${MKW_IOS_VERSION}"
+            MACOSX_BUNDLE_BUNDLE_VERSION "${MKW_IOS_BUILD_NUMBER}")
     endif()
     if(MKW_PLATFORM_WINDOWS)
         foreach(runtime_dll libc++.dll libunwind.dll)
@@ -319,6 +343,11 @@ function(mkw_configure_product target)
     endif()
 endfunction()
 
+set(MKW_IOS_BUNDLE_ID "com.wither.nsmbw" CACHE STRING
+    "iOS bundle identifier; it must match the provisioning profile the app is signed with")
+set(MKW_IOS_VERSION "0.3.1" CACHE STRING "iOS CFBundleShortVersionString")
+set(MKW_IOS_BUILD_NUMBER "1" CACHE STRING "iOS CFBundleVersion")
+
 if(MKW_PLATFORM_ANDROID)
     add_library(WiiCompiled SHARED "${MKW_BASE_PRODUCT_SOURCE}" ${MKW_BASE_REGISTRATION_SOURCES})
 else()
@@ -378,6 +407,11 @@ elseif(MKW_PLATFORM_ANDROID)
     # older than the Cortex-A55/A75 run it too (the Snapdragon 835's Kryo 280 has no LSE atomics and
     # took SIGILL on ldadd); outline atomics still use LSE where the CPU has it, picked at run time.
     set(MKW_BASELINE_ARCH_FLAG -march=armv8-a -moutline-atomics)
+elseif(MKW_PLATFORM_IOS)
+    # Cross-compiled as well. The A11 (iPhone 8/X) is the oldest chip iOS 16, the deployment floor,
+    # runs on; a newer one can be named for a build that only targets newer phones.
+    set(MKW_IOS_CPU "apple-a11" CACHE STRING "-mcpu for the iOS product (apple-a11 and up)")
+    set(MKW_BASELINE_ARCH_FLAG -mcpu=${MKW_IOS_CPU})
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
     set(MKW_BASELINE_ARCH_FLAG -mcpu=native)
 else()

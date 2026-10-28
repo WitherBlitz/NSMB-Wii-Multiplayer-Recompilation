@@ -23,6 +23,8 @@
 #include <unistd.h>
 #endif
 
+#include "ios_app.h"
+
 #if defined(__ANDROID__)
 namespace AndroidBridge {
 bool RestartGame();
@@ -67,6 +69,8 @@ std::filesystem::path SaveFile() {
     TerminateProcess(GetCurrentProcess(), 0);
 #elif defined(__ANDROID__)
     AndroidBridge::RestartGame();
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+    IosApp::RestartForSession();
 #elif defined(__linux__)
     // Desktop Linux: the same program again, in this process's place. execv keeps open descriptors,
     // so the lobby's socket would still hold the LAN play port the session needs: none survives.

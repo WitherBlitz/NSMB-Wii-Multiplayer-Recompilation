@@ -13,6 +13,7 @@
 #endif
 
 #if defined(__APPLE__)
+#include <TargetConditionals.h>
 #include <mach-o/dyld.h>
 #include <pwd.h>
 #endif
@@ -66,6 +67,15 @@ std::filesystem::path ApplicationDataDirectory(std::string_view applicationName)
         const std::filesystem::path directory = std::filesystem::path(rawPath) / applicationName;
         CoTaskMemFree(rawPath);
         return directory;
+    }
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+    // HOME is the app's container. Its Documents folder is the one the Files app and a Mac's Finder
+    // show (UIFileSharingEnabled), so saves, logs and the imported game stay reachable there, the way
+    // the Android app keeps them in its external files directory. The container belongs to this game
+    // alone, so there is no application subfolder.
+    (void)applicationName;
+    if (const char* home = std::getenv("HOME"); home && *home) {
+        return std::filesystem::path(home) / "Documents";
     }
 #elif defined(__APPLE__)
     if (const char* home = std::getenv("HOME"); home && *home) {

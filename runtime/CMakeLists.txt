@@ -5,8 +5,14 @@ cmake_minimum_required(VERSION 3.25)
 # accidentally inherit the running SDK's deployment version. This cache entry
 # is harmless on non-Apple platforms and remains overridable by a caller.
 if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING
-        "Minimum macOS version supported by WiiCompiled" FORCE)
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        # UIScene-era UIKit, UTType folder picking and Dawn's Metal 3 floor.
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "16.0" CACHE STRING
+            "Minimum iOS version supported by WiiCompiled" FORCE)
+    else()
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING
+            "Minimum macOS version supported by WiiCompiled" FORCE)
+    endif()
 endif()
 project(mkw_recompiled)
 
@@ -28,6 +34,11 @@ endif()
 
 if(WIN32 AND MINGW AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
     set(MKW_PLATFORM_WINDOWS TRUE)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|ARM64|aarch64)$")
+    # Cross-built with Xcode's iPhoneOS SDK for arm64 devices. Shares Apple Silicon's fiber backend
+    # and Metal renderer; guest memory has its own backend (guest_flat_memory_ios.cpp) and the app
+    # shell is runtime/src/platform/ios. See ios/README.md.
+    set(MKW_PLATFORM_IOS TRUE)
 elseif(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64|arm64|ARM64)$")
     set(MKW_PLATFORM_MACOS TRUE)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
@@ -44,7 +55,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(
 else()
     message(FATAL_ERROR
         "WiiCompiled supports 64-bit LLVM-MinGW Clang on Windows, native Linux x86_64/aarch64, "
-        "Apple Clang on macOS x86_64/arm64, or the NDK for Android arm64-v8a")
+        "Apple Clang on macOS x86_64/arm64 or iOS arm64, or the NDK for Android arm64-v8a")
 endif()
 
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -237,7 +248,7 @@ else()
         set(DAWN_ENABLE_VULKAN ON CACHE BOOL "" FORCE)
         set(DAWN_ENABLE_METAL OFF CACHE BOOL "" FORCE)
         set(TINT_BUILD_HLSL_WRITER ON CACHE BOOL "" FORCE)
-    elseif(MKW_PLATFORM_MACOS)
+    elseif(MKW_PLATFORM_MACOS OR MKW_PLATFORM_IOS)
         set(DAWN_ENABLE_D3D12 OFF CACHE BOOL "" FORCE)
         set(DAWN_ENABLE_VULKAN OFF CACHE BOOL "" FORCE)
         set(DAWN_ENABLE_METAL ON CACHE BOOL "" FORCE)
@@ -281,6 +292,17 @@ else()
     # Isolate aurora build products to a subdirectory under the main build dir.
     add_subdirectory(${MKW_AURORA_DIR} ${CMAKE_BINARY_DIR}/aurora-build EXCLUDE_FROM_ALL)
     set(CMAKE_DISABLE_PRECOMPILE_HEADERS OFF)
+
+    # iOS builds SDL3 from source (aurora has no prebuilt iOS SDL). aurora enables OBJCXX after
+    # OBJC, and both claim the .m extension, so SDL's Objective-C sources would be compiled as
+    # Objective-C++ with aurora's C++20 flag. Name their language explicitly.
+    if(MKW_PLATFORM_IOS AND TARGET SDL3-static)
+        get_target_property(MKW_SDL_SOURCES SDL3-static SOURCES)
+        get_target_property(MKW_SDL_SOURCE_DIR SDL3-static SOURCE_DIR)
+        list(FILTER MKW_SDL_SOURCES INCLUDE REGEX "\\.m$")
+        set_source_files_properties(${MKW_SDL_SOURCES} DIRECTORY "${MKW_SDL_SOURCE_DIR}"
+            PROPERTIES LANGUAGE OBJC)
+    endif()
 
     # Keep upstream Aurora split: several sources intentionally use file-local
     # names that collide under this repo's aggressive unity build settings.
@@ -343,7 +365,28 @@ file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 set(NSMBW_GAME_ID "SMNE01" CACHE STRING "Disc ID (boot.bin) of the game this build was translated for")
 set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/product/base_product.cpp" PROPERTIES
     COMPILE_DEFINITIONS "NSMBW_GAME_ID=\"${NSMBW_GAME_ID}\"")
-if(MKW_PLATFORM_MACOS)
+
+if(NOT MKW_PLATFORM_IOS)
+    list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_ios.cpp")
+endif()
+if(MKW_PLATFORM_IOS)
+    list(REMOVE_ITEM SOURCES
+        "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_macos.cpp"
+        # Core Audio process objects (detecting other apps' audio) exist on macOS only; iOS takes
+        # music_attenuation.cpp's "unavailable" path.
+        "${CMAKE_CURRENT_LIST_DIR}/src/external_audio_macos.cpp")
+    enable_language(ASM)
+    enable_language(OBJCXX)
+    list(APPEND SOURCES
+        "${CMAKE_CURRENT_LIST_DIR}/src/platform/macos/co_switch.S"
+        "${CMAKE_CURRENT_LIST_DIR}/src/platform/ios/ios_app.mm")
+    # The UIKit shell is Objective-C++ under ARC and must not be folded into a C++ unity batch.
+    set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/platform/ios/ios_app.mm" PROPERTIES
+        SKIP_UNITY_BUILD_INCLUSION ON
+        SKIP_PRECOMPILE_HEADERS ON
+        COMPILE_OPTIONS "-fobjc-arc")
+elseif(MKW_PLATFORM_MACOS)
     list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory.cpp")
     if(MKW_PLATFORM_MACOS_ARM64)
         # HostContext's Apple Silicon backend is implemented in a small assembly
@@ -403,6 +446,10 @@ if(MKW_BUILD_PSQ_TESTS)
         -P "${CMAKE_CURRENT_LIST_DIR}/tests/psq_reserved_tests.cmake")
 endif()
 
+# The host-contract tests below are command-line programs; an iOS build has no host to run them on.
+# tests/ios_guest_flat_memory_tests.cpp covers the iOS memory backend from a Mac instead (see
+# MKW_PLATFORM_MACOS below).
+if(NOT MKW_PLATFORM_IOS)
 add_executable(mkw_platform_paths_tests "${CMAKE_CURRENT_LIST_DIR}/tests/platform_paths_tests.cpp")
 target_link_libraries(mkw_platform_paths_tests PRIVATE mkw_platform)
 target_compile_features(mkw_platform_paths_tests PRIVATE cxx_std_17)
@@ -440,6 +487,7 @@ add_executable(mkw_input_expr_tests
 target_include_directories(mkw_input_expr_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
 target_compile_features(mkw_input_expr_tests PRIVATE cxx_std_17)
 add_test(NAME mkw_input_expr_tests COMMAND mkw_input_expr_tests)
+endif()
 
 # HostContext deliberately keeps the platform-specific context primitive out
 # of fiber_manager.cpp. Exercise the Linux libco handoff directly so future
@@ -485,6 +533,16 @@ if(MKW_PLATFORM_MACOS)
     target_compile_features(mkw_macos_host_context_tests PRIVATE cxx_std_17)
     add_test(NAME mkw_macos_host_context_tests COMMAND mkw_macos_host_context_tests)
 
+    # The iOS backend's Mach memory-entry layout, run on the Mac (MKW_TEST_DYNAMIC_GUEST_BASE gives
+    # the macOS build iOS's runtime-chosen guest base).
+    add_executable(mkw_ios_guest_flat_memory_tests
+        "${CMAKE_CURRENT_LIST_DIR}/tests/ios_guest_flat_memory_tests.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_ios.cpp")
+    target_include_directories(mkw_ios_guest_flat_memory_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
+    target_compile_definitions(mkw_ios_guest_flat_memory_tests PRIVATE MKW_TEST_DYNAMIC_GUEST_BASE)
+    target_compile_features(mkw_ios_guest_flat_memory_tests PRIVATE cxx_std_17)
+    add_test(NAME mkw_ios_guest_flat_memory_tests COMMAND mkw_ios_guest_flat_memory_tests)
+
     add_executable(mkw_macos_guest_flat_memory_tests
         "${CMAKE_CURRENT_LIST_DIR}/tests/macos_guest_flat_memory_tests.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_macos.cpp")
@@ -528,7 +586,7 @@ if(MKW_BUILD_PRODUCTS)
     set(MKW_RUNTIME_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}")
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/PublicProducts.cmake")
 else()
-    if(MKW_PLATFORM_MACOS)
+    if(MKW_PLATFORM_MACOS OR MKW_PLATFORM_IOS)
         # Compile-only audit of native runtime sources. It deliberately avoids
         # translated products until their host dependencies are portable.
         # These sources depend on generated/RuntimeConfig.h, which is emitted for
@@ -538,6 +596,8 @@ else()
         list(REMOVE_ITEM MKW_MACOS_NATIVE_AUDIT_SOURCES
             "${CMAKE_CURRENT_LIST_DIR}/src/abi_bridge.cpp"
             "${CMAKE_CURRENT_LIST_DIR}/src/hle/os/os_alarm.cpp")
+        # The audit is a plain OBJECT library: the co_switch assembly needs no compile check here.
+        list(FILTER MKW_MACOS_NATIVE_AUDIT_SOURCES EXCLUDE REGEX "\\.S$")
         add_library(mkw_macos_native_compile OBJECT ${MKW_MACOS_NATIVE_AUDIT_SOURCES})
         target_include_directories(mkw_macos_native_compile PRIVATE
             "${CMAKE_CURRENT_LIST_DIR}/include" "${CMAKE_CURRENT_LIST_DIR}/src"

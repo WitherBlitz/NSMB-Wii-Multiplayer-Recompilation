@@ -286,6 +286,8 @@ Android) and Python 3. The full steps, from Dolphin's extraction to the APK and 
 - The NSMBW project: [`projects/nsmbw`](projects/nsmbw) (translator config, function map, tools).
 - The runtime, retargeted from Mario Kart Wii to NSMBW: [`runtime`](runtime).
 - The Android app: [`android`](android).
+- The iOS app (built on a Mac with your own game, signed with your own Apple Developer account):
+  [`ios`](ios/README.md).
 - WiiCompiled's own README, for the translator and the runtime it comes from:
   [`docs/WiiCompiled-README.md`](docs/WiiCompiled-README.md).
 
