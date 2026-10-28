@@ -19,6 +19,8 @@ struct Descriptor {
     std::string_view discName = "New Super Mario Bros. Wii for the USA (SMNE01), revision 1";
     std::string_view versionFile = {};
     uint64_t versionFileSize = 0;
+    // The game's save in the NAND (network play hands it to every player); mods rename it.
+    std::string_view saveFile = "title/00010000/534d4e45/data/wiimj2d.sav";
 };
 
 // Each public executable links exactly one small provider definition. Keeping

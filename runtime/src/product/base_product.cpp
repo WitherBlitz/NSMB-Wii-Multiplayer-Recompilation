@@ -23,6 +23,7 @@ const Descriptor& Active() noexcept {
               "Newer Super Mario Bros. Wii v1.30 for the USA (NTSC, SMNE03)",
               "NewerRes/DLCodeUS_1.bin",
               463252,
+              "title/00010000/534d4e45/data/NerSMBW.sav",
           }
         : Descriptor{
               Kind::BaseGame,
