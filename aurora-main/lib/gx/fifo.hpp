@@ -81,6 +81,13 @@ bool in_display_list();
 // Drain the internal FIFO buffer through the command processor
 void drain();
 
+// AuroraBeginCommandDigest: while on, process() and texture copies fold what they see into the digest.
+extern bool g_commandDigestOn;
+extern uint64_t g_commandDigest;
+// Texture object IDs handed out inside a digest: from the same base every time, so that two runs of
+// the same drawing (each initializing its texture objects afresh) digest alike.
+extern uint32_t g_digestTexObjId;
+
 // Internal buffer inspection
 const uint8_t* get_buffer_data();
 uint32_t get_buffer_size();

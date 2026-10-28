@@ -1206,12 +1206,15 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             const double n = times.frames;
             uint64_t gxNanos = 0, lockNanos = 0, draws = 0;
             AuroraTakeGxStats(&gxNanos, &lockNanos, &draws);
+            const uint64_t unmerged = AuroraTakeUnmergedDraws();
             uint64_t copies = 0, creates = 0;
             AuroraTakeCopyStats(&copies, &creates);
             RT_LOGF(RT_TAG_VI,
-                    "fps %.1f: game %.2f ms (gx %.2f ms, lock wait %.2f ms, %.0f draws, %.1f copies, %.1f new copy "
-                    "textures), end_frame %.2f ms, pace %.2f ms, worst frame %.1f ms, jitter %.2f ms, %d over 20 ms\n",
+                    "fps %.1f: game %.2f ms (gx %.2f ms, lock wait %.2f ms, %.0f draws, %.0f unmerged, %.1f copies, "
+                    "%.1f new copy textures), end_frame %.2f ms, pace %.2f ms, worst frame %.1f ms, jitter %.2f ms, "
+                    "%d over 20 ms\n",
                     n * 1000.0 / window, times.gameMs / n, gxNanos / 1e6 / n, lockNanos / 1e6 / n, draws / n,
+                    unmerged / n,
                     copies / n, creates / n, times.endFrameMs / n, times.paceMs / n, times.worstMs,
                     std::sqrt(std::max(0.0, times.sumSq / n - (window / n) * (window / n))), times.slow);
             const uint32_t waits = g_idleWaits.exchange(0, std::memory_order_relaxed);

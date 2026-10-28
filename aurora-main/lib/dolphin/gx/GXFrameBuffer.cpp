@@ -478,6 +478,13 @@ void GXCopyTex(void* dest, GXBool clear) {
   if (aurora::gx::fifo::get_buffer_size() != 0) {
     aurora::gx::fifo::drain();
   }
+  if (aurora::gx::fifo::g_commandDigestOn) UNLIKELY {
+    const int64_t copy[] = {static_cast<int64_t>(reinterpret_cast<uintptr_t>(dest)), clear, g_gxState.texCopySrc.x,
+                            g_gxState.texCopySrc.y, g_gxState.texCopySrc.width, g_gxState.texCopySrc.height,
+                            g_gxState.texCopyDstWidth, g_gxState.texCopyDstHeight,
+                            static_cast<int64_t>(g_gxState.texCopyFmt), g_gxState.texCopyHalfScale};
+    aurora::gx::fifo::g_commandDigest = aurora::xxh3_hash_s(copy, sizeof(copy), aurora::gx::fifo::g_commandDigest);
+  }
   const auto sourceRect = map_texture_copy_source(g_gxState.texCopySrc, g_gxState.texCopySrcRenderSpace);
   const auto rect = sourceRect.clearRect;
   // Keep guest dimensions for cache identity while preserving scaled GPU detail.

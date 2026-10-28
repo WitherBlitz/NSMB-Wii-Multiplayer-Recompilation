@@ -103,6 +103,13 @@ void AuroraSetWidePerspectiveAspect(float aspect);
 void AuroraSetTexturePatches(bool enabled);
 // NSMBW: GX decoding time, renderer-lock wait and draw count since the last call (profiling).
 void AuroraTakeGxStats(uint64_t* processNanos, uint64_t* lockNanos, uint64_t* draws);
+// Draws since the last call that did not merge into the previous one (counted under NSMBW_LOG_FPS).
+uint64_t AuroraTakeUnmergedDraws(void);
+// NSMBW: a digest of every GX command aurora decodes (and every texture copy it makes) between Begin
+// and End, which both drain first: lets the runtime check that a piece of guest drawing produced
+// exactly the same commands as the last time it ran.
+void AuroraBeginCommandDigest(void);
+uint64_t AuroraEndCommandDigest(void);
 // Time spent processing GX commands since start (NSMBW_LOG_FPS only; else 0).
 uint64_t AuroraGxProcessNanosTotal(void);
 // NSMBW: GXCopyTex calls and the new GPU textures they needed, since the last call (profiling).

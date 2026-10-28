@@ -195,6 +195,31 @@ struct StaticPaletteTextureKey {
   }
 };
 
+// NSMBW: a large source (a course's 2 MB tile atlas) is also validated a 64 KiB chunk at a time, each
+// with its own digest and write generation. The animated tiles' EFB copies land inside the atlas and
+// mark its range written every frame, which used to re-digest all 2 MB per frame (most of a
+// millisecond on a slower phone); now only the chunks whose generation moved are read again.
+constexpr uintptr_t kSourceChunkBytes = 64 * 1024;
+constexpr u32 kChunkedSourceBytes = 2 * kSourceChunkBytes;
+
+struct SourceChunk {
+  u64 digest = 0;
+  u64 generation = kGuestWriteUntracked;
+};
+
+// Calls fn(pointer, size) for each piece of [data, data + size), split at 64 KiB host boundaries.
+template <typename Fn>
+static void for_each_source_chunk(const void* data, u32 size, Fn&& fn) {
+  const auto* p = static_cast<const u8*>(data);
+  const auto* end = p + size;
+  while (p < end) {
+    const uintptr_t boundary = (reinterpret_cast<uintptr_t>(p) + kSourceChunkBytes) & ~(kSourceChunkBytes - 1);
+    const auto* next = std::min(end, reinterpret_cast<const u8*>(boundary));
+    fn(p, static_cast<size_t>(next - p));
+    p = next;
+  }
+}
+
 // Revalidation used to keep a full byte-for-byte copy of every cached source and memcmp against it.
 struct StaticTextureSourceEntry {
   gfx::TextureHandle handle;
@@ -202,6 +227,7 @@ struct StaticTextureSourceEntry {
   u32 sourceSize = 0;
   u64 validationRevision = 0;
   u64 sourceGeneration = kGuestWriteUntracked;
+  std::vector<SourceChunk> chunks;  // sources of kChunkedSourceBytes and up
 };
 
 struct StaticPaletteTextureSourceEntry {
@@ -398,6 +424,7 @@ static bool source_matches_digest(const void* data, size_t size, u64 digest, u32
   return digest_source_bytes(data, size) == digest;
 }
 
+
 // A source whose generation still matches the one recorded beside its digest cannot have been written since, so the digest is skipped.
 static bool validate_static_texture_source_entry(const StaticTextureKey& key,
                                                  StaticTextureSourceEntry& entry) noexcept {
@@ -407,6 +434,33 @@ static bool validate_static_texture_source_entry(const StaticTextureKey& key,
   const u32 dataSize = static_texture_data_size(key);
   const u64 generation = guest_write_generation(key.data, dataSize);
   if (dataSize == entry.sourceSize && guest_write_generation_matches(entry.sourceGeneration, generation)) {
+    entry.validationRevision = s_staticTextureCacheValidationRevision;
+    note_texture_cache_stamp();
+    return true;
+  }
+  static const bool noChunks = std::getenv("NSMBW_NO_SOURCE_CHUNKS") != nullptr;  // A/B switch
+  if (!noChunks && !entry.chunks.empty() && dataSize == entry.sourceSize) {
+    size_t index = 0;
+    bool same = true;
+    for_each_source_chunk(key.data, dataSize, [&](const u8* chunkData, size_t chunkSize) {
+      SourceChunk& chunk = entry.chunks[index++];
+      if (!same) {
+        return;
+      }
+      const u64 chunkGeneration = guest_write_generation(chunkData, chunkSize);
+      if (guest_write_generation_matches(chunk.generation, chunkGeneration)) {
+        return;
+      }
+      if (digest_source_bytes(chunkData, chunkSize) != chunk.digest) {
+        same = false;
+        return;
+      }
+      chunk.generation = chunkGeneration;
+    });
+    if (!same) {
+      return false;
+    }
+    entry.sourceGeneration = generation;
     entry.validationRevision = s_staticTextureCacheValidationRevision;
     note_texture_cache_stamp();
     return true;
@@ -452,12 +506,20 @@ static StaticTextureSourceEntry make_static_texture_source_entry(const StaticTex
   const u32 dataSize = static_texture_data_size(key);
   const u64 generation = guest_write_generation(key.data, dataSize);
   note_texture_cache_stamp();
+  std::vector<SourceChunk> chunks;
+  if (dataSize >= kChunkedSourceBytes) {
+    for_each_source_chunk(key.data, dataSize, [&](const u8* chunkData, size_t chunkSize) {
+      const u64 chunkGeneration = guest_write_generation(chunkData, chunkSize);
+      chunks.push_back({digest_source_bytes(chunkData, chunkSize), chunkGeneration});
+    });
+  }
   return {
       .handle = handle,
       .digest = digest_source_bytes(key.data, dataSize),
       .sourceSize = dataSize,
       .validationRevision = s_staticTextureCacheValidationRevision,
       .sourceGeneration = generation,
+      .chunks = std::move(chunks),
   };
 }
 

@@ -3,6 +3,7 @@
 
 #include "../../gfx/texture.hpp"
 #include "../../gfx/texture_replacement.hpp"
+#include "../../gx/fifo.hpp"
 #include "dolphin/gx/GXAurora.h"
 
 #include <absl/container/flat_hash_map.h>
@@ -27,6 +28,11 @@ u32 sNextTexObjId = 1;
 u32 sNextTlutObjId = 1;
 
 u32 next_tex_obj_id() {
+  // Inside a command digest (a verification run, never normal play) the IDs restart from the same
+  // base every time, so two runs of the same drawing digest alike.
+  if (aurora::gx::fifo::g_commandDigestOn) UNLIKELY {
+    return aurora::gx::fifo::g_digestTexObjId++;
+  }
   if (sNextTexObjId == 0) {
     FATAL("texObj ID overflow");
   }

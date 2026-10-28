@@ -503,7 +503,11 @@ static bool handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian);
 
 // NSMBW: time spent decoding GX commands (and waiting for the renderer lock first), and draws
 // decoded, for the runtime's NSMBW_LOG_FPS breakdown.
-std::atomic<uint64_t> g_statProcessNanos{0}, g_statLockNanos{0}, g_statDraws{0};
+std::atomic<uint64_t> g_statProcessNanos{0}, g_statLockNanos{0}, g_statDraws{0}, g_statUnmerged{0};
+// AuroraBeginCommandDigest/AuroraEndCommandDigest (game thread only).
+bool g_commandDigestOn = false;
+uint64_t g_commandDigest = 0;
+uint32_t g_digestTexObjId = 0;
 std::atomic<uint64_t> g_statProcessTotalNanos{0};  // never reset: slow-frame breakdowns take deltas
 thread_local int t_statDepth = 0;  // only the outermost of nested process()/raw draws counts
 // Timed on Windows always (the slow-frame log splits a frame into GX and the rest), elsewhere only
@@ -557,6 +561,9 @@ static void note_write(u32 kind, u32 reg, u32 value, bool wasDirty) {
 uint32_t process(const u8* data, u32 size, bool bigEndian) {
   ZoneScoped;
   ProcessTimer timer;
+  if (g_commandDigestOn) UNLIKELY {
+    g_commandDigest = xxh3_hash_s(data, size, g_commandDigest);
+  }
   // Everything decoded here mutates renderer state (GX state, the recorded command lists and the mapped staging buffers), so take the renderer GPU mutex once for the whole drain rather than once per draw command.
   const auto lockStart = StatTiming() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   std::lock_guard gpuLock(aurora::renderer_gpu_mutex());
@@ -2241,6 +2248,9 @@ bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, ui
   if (vertices == nullptr || vtxCount == 0 || vertexBytes == 0) {
     return false;
   }
+  if (g_commandDigestOn) UNLIKELY {
+    g_commandDigest = xxh3_hash_s(vertices, vertexBytes, g_commandDigest ^ (u32(prim) << 8 | u32(fmt)));
+  }
 
   if (__gx->dirtyState != 0) UNLIKELY {
     __GXSetDirtyState();
@@ -2408,6 +2418,9 @@ static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount,
                                  HashType matrixTopologySignature,
                                  HashType geometrySignature, bool interpolationIdentityActive) {
   ZoneScoped;
+  if (StatTiming()) {
+    g_statUnmerged.fetch_add(1, std::memory_order_relaxed);
+  }
   // GX_CULL_ALL rasterizes nothing on hardware - no color, no depth.
   if (g_gxState.cullMode == GX_CULL_ALL && prim != GX_LINES && prim != GX_LINESTRIP && prim != GX_POINTS)
       UNLIKELY {
@@ -2671,6 +2684,23 @@ extern "C" void AuroraTakeGxStats(uint64_t* processNanos, uint64_t* lockNanos, u
   *processNanos = aurora::gx::fifo::g_statProcessNanos.exchange(0, std::memory_order_relaxed);
   *lockNanos = aurora::gx::fifo::g_statLockNanos.exchange(0, std::memory_order_relaxed);
   *draws = aurora::gx::fifo::g_statDraws.exchange(0, std::memory_order_relaxed);
+}
+
+extern "C" uint64_t AuroraTakeUnmergedDraws() {
+  return aurora::gx::fifo::g_statUnmerged.exchange(0, std::memory_order_relaxed);
+}
+
+extern "C" void AuroraBeginCommandDigest() {
+  aurora::gx::fifo::drain();
+  aurora::gx::fifo::g_commandDigest = 0;
+  aurora::gx::fifo::g_digestTexObjId = 0xF0000000u;
+  aurora::gx::fifo::g_commandDigestOn = true;
+}
+
+extern "C" uint64_t AuroraEndCommandDigest() {
+  aurora::gx::fifo::drain();
+  aurora::gx::fifo::g_commandDigestOn = false;
+  return aurora::gx::fifo::g_commandDigest;
 }
 
 extern "C" void AuroraSetWidePerspectiveAspect(float aspect) {
