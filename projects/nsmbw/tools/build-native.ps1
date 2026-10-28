@@ -1,14 +1,19 @@
 # Build targets of the NSMBW native build with the portable toolchain on a scrubbed PATH.
+# -Newer: the Newer Super Mario Bros. Wii build (configure-native.ps1 -Newer), native-build-newer.
 [CmdletBinding()]
 param(
     [string[]]$Target = @('WiiCompiled'),
     [int]$Jobs = 10,
-    [string]$BuildDirectory = 'E:\NSMBWPort\wiicompiled\native-build',
+    [string]$BuildDirectory,
     [string]$LogPath = 'E:\NSMBWPort\build-nsmbw\logs\build.log',
-    [switch]$KeepGoing
+    [switch]$KeepGoing,
+    [switch]$Newer
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $BuildDirectory) {
+    $BuildDirectory = if ($Newer) { 'E:\NSMBWPort\wiicompiled\native-build-newer' } else { 'E:\NSMBWPort\wiicompiled\native-build' }
+}
 $toolchain = 'E:\NSMBWPort\toolchain'
 . 'E:\NSMBWPort\wiicompiled\Launcher\NativeBuildFlags.ps1'
 $env:PATH = Get-MkwToolchainPath $toolchain

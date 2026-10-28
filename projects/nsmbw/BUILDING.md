@@ -116,9 +116,21 @@ projects/nsmbw/tools/build-linux.sh --newer <extracted Newer folder> --game <ext
 That runs `newer_prelink.py` (it writes `../game-newer`: the patched `main.dol`, the synthetic REL
 with Newer's code appended, and `MAP.txt` with Newer's function starts), translates
 [`recomp-newer.yml`](recomp-newer.yml) and builds `native-build-newer` with `-DNSMBW_GAME_ID=SMNE03`,
-so the game accepts the Newer disc. The game is `../nsmbw-newer-build/WiiCompiled`. By hand, on any
-platform: run `newer_prelink.py <extracted Newer folder>`, then the step 3 commands with
-`--project projects/nsmbw/recomp-newer.yml`, and configure with `-DNSMBW_GAME_ID=SMNE03`.
+so the game accepts the Newer disc. The game is `../nsmbw-newer-build/WiiCompiled`.
+
+On Windows, with the step 4 scripts (configure once, then rebuild whenever something changed):
+
+```
+projects/nsmbw/tools/configure-native.ps1 -Newer
+projects/nsmbw/tools/rebuild-all.ps1 -Newer <extracted Newer folder>
+```
+
+`configure-native.ps1 -Newer` sets up `native-build-newer` with `-DNSMBW_GAME_ID=SMNE03`;
+`rebuild-all.ps1 -Newer` runs `newer_prelink.py`, translates `recomp-newer.yml` and builds that folder
+(`build-native.ps1 -Newer` only builds it). The game is `native-build-newer/WiiCompiled.exe`.
+
+By hand, on any platform: run `newer_prelink.py <extracted Newer folder>`, then the step 3 commands
+with `--project projects/nsmbw/recomp-newer.yml`, and configure with `-DNSMBW_GAME_ID=SMNE03`.
 
 Both builds translate into the same `generated/` folder: building one after the other retranslates,
 and the first build in each build folder after a switch recompiles most shards.
