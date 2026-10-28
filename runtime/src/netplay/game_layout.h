@@ -96,7 +96,8 @@ private:
 };
 
 // The game's text, measured and drawn with one of its fonts ("mj2d00_MessageFont_32_I4.brfnt",
-// "mj2d01_marioFont_64_IA4.brfnt", "mj2d00_PictureFont_32_RGBA8.brfnt").
+// "mj2d01_marioFont_64_IA4.brfnt", "mj2d00_PictureFont_32_RGBA8.brfnt"). This is the runtime's own
+// text: characters a mod's font draws as icons come from the Mario font (layout panes keep them).
 std::shared_ptr<Font> LoadFont(const std::string& name);
 bool FontReady(const Font* font);
 float MeasureText(const Font& font, const std::u16string& text, float fontSize);
