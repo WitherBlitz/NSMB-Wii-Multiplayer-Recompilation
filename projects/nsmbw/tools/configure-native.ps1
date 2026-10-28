@@ -7,17 +7,17 @@
 param(
     [int]$TranslatedJobs = 6,
     [string]$BuildDirectory,
-    [string]$LogPath = 'E:\NSMBWPort\build-nsmbw\logs\configure.log',
+    [string]$LogPath,
     [switch]$Newer
 )
 
 $ErrorActionPreference = 'Stop'
-if (-not $BuildDirectory) {
-    $BuildDirectory = if ($Newer) { 'E:\NSMBWPort\wiicompiled\native-build-newer' } else { 'E:\NSMBWPort\wiicompiled\native-build' }
-}
+. (Join-Path $PSScriptRoot 'paths.ps1')
+if (-not $BuildDirectory) { $BuildDirectory = Get-NsmbwBuildDirectory $(if ($Newer) { 'native-build-newer' } else { 'native-build' }) }
+if (-not $LogPath) { $LogPath = Join-Path (Get-NsmbwLogDirectory $BuildDirectory) 'configure.log' }
 $gameId = if ($Newer) { 'SMNE03' } else { 'SMNE01' }
-$workspace = 'E:\NSMBWPort\wiicompiled'
-$toolchain = 'E:\NSMBWPort\toolchain'
+$workspace = $NsmbwRepo
+$toolchain = Get-NsmbwToolchain
 . (Join-Path $workspace 'Launcher\NativeBuildFlags.ps1')
 
 $bin = Join-Path $toolchain 'llvm-mingw\bin'

@@ -10,10 +10,17 @@ param([int]$Threads = 10, [int]$Jobs = 10, [string]$Newer)
 
 $ErrorActionPreference = 'Stop'
 if ($Newer) { $Newer = (Resolve-Path -LiteralPath $Newer).Path }  # before Push-Location below
-$ws = 'E:\NSMBWPort\wiicompiled'
-$logs = 'E:\NSMBWPort\build-nsmbw\logs'
-$env:DOTNET_ROOT = 'E:\NSMBWPort\toolchain\dotnet'
-$env:PATH = "$env:DOTNET_ROOT;$env:PATH"
+. (Join-Path $PSScriptRoot 'paths.ps1')
+$ws = $NsmbwRepo
+$logs = Get-NsmbwLogDirectory (Get-NsmbwBuildDirectory $(if ($Newer) { 'native-build-newer' } else { 'native-build' }))
+# The toolchain's own .NET SDK if it has one (dotnet\), else the one on PATH.
+$dotnetRoot = Join-Path (Get-NsmbwToolchain) 'dotnet'
+if (Test-Path -LiteralPath (Join-Path $dotnetRoot 'dotnet.exe')) {
+    $env:DOTNET_ROOT = $dotnetRoot
+    $env:PATH = "$env:DOTNET_ROOT;$env:PATH"
+} elseif (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+    throw "No .NET 8 SDK: install it, or put it in $dotnetRoot"
+}
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $translator = Join-Path $ws 'translator\src\Translator.Cli\bin\Release\net8.0\Translator.Cli.dll'
 $project = if ($Newer) { 'projects/nsmbw/recomp-newer.yml' } else { 'projects/nsmbw/recomp.yml' }
@@ -31,8 +38,12 @@ function Invoke-Step([string]$Name, [string[]]$Arguments) {
 Push-Location $ws
 try {
     # Stop any test instance so the link can replace WiiCompiled.exe.
-    Get-Process WiiCompiled -ErrorAction SilentlyContinue | Where-Object { $_.Path -like 'E:\NSMBWPort\*' } |
+    Get-Process WiiCompiled -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$ws\*" } |
         ForEach-Object { Stop-Process -Id $_.Id -Force }
+    if (-not (Test-Path -LiteralPath $translator)) {
+        & dotnet build translator/Translator.sln -c Release -v quiet -nologo
+        if ($LASTEXITCODE -ne 0) { throw "building the translator failed ($LASTEXITCODE)" }
+    }
     if ($Newer) {
         # Newer's loader, done offline: its patches and its code linked into ..\game-newer.
         $log = Join-Path $logs 'rebuild-newer-prelink.log'

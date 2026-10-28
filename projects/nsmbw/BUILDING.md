@@ -4,16 +4,17 @@ Building it yourself still needs your own **New Super Mario Bros. Wii (USA, SMNE
 extracted with Dolphin's **Extract Entire Disc**. These are the steps and scripts the 0.0.1 release
 was built with, on Windows 10 x64.
 
-The PowerShell scripts in [`tools/`](tools) were written for this folder layout. Change the paths at
-the top of each script if yours differs:
+The PowerShell build scripts in [`tools/`](tools) find everything from the repository's own location
+([`tools/paths.ps1`](tools/paths.ps1)):
 
-```
-E:\NSMBWPort\
-  wiicompiled\        this repository
-  game\               the translator's inputs (step 2)
-  toolchain\          dotnet\, llvm-mingw\, CMake\, Ninja\ (step 1)
-  build-nsmbw\logs\   build logs
-```
+- The build folders (`native-build`, `native-build-newer`, `android-build`) are in the repository, with
+  their logs in each one's `logs` folder (`NSMBW_LOGS` overrides that).
+- The toolchain (`llvm-mingw\`, `CMake\`, `Ninja\`, optionally `dotnet\`) is `..\toolchain` next to the
+  repository if there is one, else `Launcher\artifacts\portable-tools`, where step 1 puts it
+  (`NSMBW_TOOLCHAIN` overrides it). Without a `dotnet\` there, the .NET SDK on `PATH` is used.
+- The Android NDK is `ANDROID_NDK_HOME`, else `ndk\29.0.14206865` in `ANDROID_HOME` or in Android
+  Studio's `%LOCALAPPDATA%\Android\Sdk`.
+- The translator's inputs are `..\game` next to the repository (step 2).
 
 ## 1. Tools
 
@@ -63,7 +64,7 @@ extracted game folder `game` and put it next to the exe, or let the exe ask for 
 ```
 projects/nsmbw/tools/configure-android.ps1
 projects/nsmbw/tools/build-android.ps1
-projects/nsmbw/tools/stage-android.ps1 -NativeDirectory <this repository>\android\native
+projects/nsmbw/tools/stage-android.ps1
 gradle -p android assembleRelease
 ```
 
@@ -155,4 +156,5 @@ Things that are specific to Newer:
 - `ppcdis.py`, `symhash.py`, `nsmbw_versions.py`, `hook_size_check.py`, `verify_runtime_addrs.py`:
   the reverse-engineering helpers used to move WiiCompiled's Mario Kart Wii hooks to NSMBW.
 - `capture-window.ps1`, `keyboard-run.ps1`, `capture-session.ps1`, `run-android.ps1`,
-  `android-ui.ps1`, `gfx-test-android.ps1`: test drivers for the Windows and Android builds.
+  `android-ui.ps1`, `gfx-test-android.ps1`, `deploy-android.ps1`: test drivers for the Windows and
+  Android builds. They still expect the `E:\NSMBWPort` layout the release was built in.

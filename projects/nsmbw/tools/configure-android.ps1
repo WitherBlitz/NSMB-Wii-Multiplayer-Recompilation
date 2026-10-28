@@ -4,19 +4,21 @@
 [CmdletBinding()]
 param(
     [int]$TranslatedJobs = 6,
-    [string]$BuildDirectory = 'E:\NSMBWPort\wiicompiled\android-build',
-    [string]$LogPath = 'E:\NSMBWPort\build-nsmbw\logs\configure-android.log'
+    [string]$BuildDirectory,
+    [string]$LogPath
 )
 
 $ErrorActionPreference = 'Stop'
-$workspace = 'E:\NSMBWPort\wiicompiled'
-$toolchain = 'E:\NSMBWPort\toolchain'
-$ndk = 'C:\Users\Wither\AppData\Local\Android\Sdk\ndk\29.0.14206865'
+. (Join-Path $PSScriptRoot 'paths.ps1')
+if (-not $BuildDirectory) { $BuildDirectory = Get-NsmbwBuildDirectory 'android-build' }
+if (-not $LogPath) { $LogPath = Join-Path (Get-NsmbwLogDirectory $BuildDirectory) 'configure-android.log' }
+$workspace = $NsmbwRepo
+$toolchain = Get-NsmbwToolchain
+$ndk = Get-NsmbwNdk
 $dependencies = Join-Path $workspace 'Dependencies'
 
 function ConvertTo-CMakePath([string]$Path) { [IO.Path]::GetFullPath($Path).Replace('\', '/') }
 
-if (-not (Test-Path (Join-Path $ndk 'build\cmake\android.toolchain.cmake'))) { throw "NDK missing: $ndk" }
 if (-not (Test-Path (Join-Path $dependencies 'dawn_prebuilt_android\lib\libwebgpu_dawn.a'))) {
     throw 'Dependencies\dawn_prebuilt_android is missing (pinned dawn-android-aarch64 v20260603.191052)'
 }

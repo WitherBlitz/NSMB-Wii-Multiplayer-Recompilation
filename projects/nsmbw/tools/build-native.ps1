@@ -5,17 +5,17 @@ param(
     [string[]]$Target = @('WiiCompiled'),
     [int]$Jobs = 10,
     [string]$BuildDirectory,
-    [string]$LogPath = 'E:\NSMBWPort\build-nsmbw\logs\build.log',
+    [string]$LogPath,
     [switch]$KeepGoing,
     [switch]$Newer
 )
 
 $ErrorActionPreference = 'Stop'
-if (-not $BuildDirectory) {
-    $BuildDirectory = if ($Newer) { 'E:\NSMBWPort\wiicompiled\native-build-newer' } else { 'E:\NSMBWPort\wiicompiled\native-build' }
-}
-$toolchain = 'E:\NSMBWPort\toolchain'
-. 'E:\NSMBWPort\wiicompiled\Launcher\NativeBuildFlags.ps1'
+. (Join-Path $PSScriptRoot 'paths.ps1')
+if (-not $BuildDirectory) { $BuildDirectory = Get-NsmbwBuildDirectory $(if ($Newer) { 'native-build-newer' } else { 'native-build' }) }
+if (-not $LogPath) { $LogPath = Join-Path (Get-NsmbwLogDirectory $BuildDirectory) 'build.log' }
+$toolchain = Get-NsmbwToolchain
+. (Join-Path $NsmbwRepo 'Launcher\NativeBuildFlags.ps1')
 $env:PATH = Get-MkwToolchainPath $toolchain
 
 $arguments = @('--build', $BuildDirectory)
