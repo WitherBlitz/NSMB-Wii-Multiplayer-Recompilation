@@ -10,7 +10,7 @@ android {
         applicationId 'com.wither.nsmbw'
         // Android 8.0 and up: the native side calls memfd_create itself (or uses ashmem) and looks the
         // newer Choreographer calls up at run time.
-        minSdk 26
+        minSdk 28
         targetSdk 34
         versionCode 18
         versionName '0.2.2'
