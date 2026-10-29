@@ -122,7 +122,10 @@ static void UpdateDeviceIdentity(SDL_HIDAPI_Device *device)
   # Wii Remote speaker: SDL_SendGamepadEffect sends a raw output report (the game's
   # speaker set-up and its ADPCM stream, WPADControlSpeaker/WPADSendStreamData in the
   # runtime), queued in order behind the driver's own writes. Every output report
-  # carries the rumble bit, so it is kept as the driver last set it.
+  # carries the rumble bit, so it is kept as the driver last set it. Speaker data
+  # (about 150 packets a second) is dropped while writes are backed up, so a slow
+  # Bluetooth stack can't grow the queue (whose thread holds the device lock the
+  # input reads need) until the remote looks disconnected.
   _aurora_sdl3_replace("${_wii}" "Wii Remote raw output reports (speaker)"
 [==[static bool HIDAPI_DriverWii_SendJoystickEffect(SDL_HIDAPI_Device *device, SDL_Joystick *joystick, const void *data, int size)
 {
@@ -135,6 +138,17 @@ static void UpdateDeviceIdentity(SDL_HIDAPI_Device *device)
     Uint8 report[32];
     if (size < 2 || size > (int)sizeof(report)) {
         return SDL_InvalidParamError("size");
+    }
+    /* WiiCompiled: speaker data comes about 150 times a second. Where Bluetooth writes can't keep
+     * up (Windows), queuing all of it grows the write queue without end, and the write thread holds
+     * the device lock the input reads need, so input stops and the remote looks disconnected.
+     * Drop a packet while writes are backed up instead: a gap in the sound, not a lost remote. */
+    if (((const Uint8 *)data)[0] == k_eWiiOutputReportIDs_SpeakerData && SDL_GetAtomicInt(&device->rumble_pending) >= 3) {
+        static Uint32 dropped;
+        if ((++dropped & 1023) == 1) {
+            SDL_LogDebug(SDL_LOG_CATEGORY_INPUT, "HIDAPI Wii: speaker writes backed up, %u packets dropped", (unsigned)dropped);
+        }
+        return true;
     }
     SDL_memcpy(report, data, size);
     report[1] = (Uint8)((report[1] & ~1) | (ctx->m_bRumbleActive ? 1 : 0));
