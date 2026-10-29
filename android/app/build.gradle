@@ -12,8 +12,8 @@ android {
         // newer Choreographer calls up at run time.
         minSdk 28
         targetSdk 34
-        versionCode 19
-        versionName '0.3.0'
+        versionCode 20
+        versionName '0.3.1'
         ndk {
             abiFilters 'arm64-v8a'
         }
