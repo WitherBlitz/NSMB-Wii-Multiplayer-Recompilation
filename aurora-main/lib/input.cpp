@@ -362,6 +362,33 @@ void ensure_player_index(GameController& controller) noexcept {
     claim(false);
   }
 }
+
+// NSMBW: a "gamepad" with no sticks is a TV remote or the like, such as the virtual pad NVIDIA's
+// Shield remote service adds on Shield-based Android. It took player 1 and left the real
+// controller on player 2, so a real gamepad takes the lowest slot any of those hold.
+bool has_sticks(const GameController& controller) {
+  return SDL_GamepadHasAxis(controller.m_controller, SDL_GAMEPAD_AXIS_LEFTX);
+}
+
+void take_slot_from_remote(GameController& added) {
+  if (!has_sticks(added)) {
+    return;
+  }
+  const int32_t addedPort = effective_player_index(added);
+  GameController* remote = nullptr;
+  for (auto& [instance, controller] : g_GameControllers) {
+    const int32_t port = effective_player_index(controller);
+    if (&controller != &added && port >= 0 && (addedPort < 0 || port < addedPort) && !has_sticks(controller) &&
+        (remote == nullptr || port < effective_player_index(*remote))) {
+      remote = &controller;
+    }
+  }
+  if (remote != nullptr) {
+    const int32_t port = effective_player_index(*remote);
+    assign_player_index(*remote, addedPort);
+    assign_player_index(added, port);
+  }
+}
 } // namespace
 
 GameController* get_controller_for_player(uint32_t player) noexcept {
@@ -413,6 +440,7 @@ SDL_JoystickID add_controller(SDL_JoystickID which) noexcept {
     SDL_JoystickID instance = SDL_GetJoystickID(SDL_GetGamepadJoystick(ctrl));
     g_GameControllers[instance] = controller;
     ensure_player_index(g_GameControllers[instance]);
+    take_slot_from_remote(g_GameControllers[instance]);
     apply_port_preferences();
 #if defined(SDL_PLATFORM_MACOS)
     // First-use convenience only: never override a saved assignment or None.
