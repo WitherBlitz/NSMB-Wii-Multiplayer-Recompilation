@@ -195,11 +195,20 @@ struct StaticPaletteTextureKey {
   }
 };
 
-// NSMBW: a large source (a course's 2 MB tile atlas) is also validated a 64 KiB chunk at a time, each
-// with its own digest and write generation. The animated tiles' EFB copies land inside the atlas and
-// mark its range written every frame, which used to re-digest all 2 MB per frame (most of a
-// millisecond on a slower phone); now only the chunks whose generation moved are read again.
+// NSMBW: a large source (a course's 2 MB tile atlas) can also be validated a 64 KiB chunk at a time,
+// each with its own digest and write generation, so the animated tiles' EFB copies (which mark the
+// atlas written every frame) don't re-digest all 2 MB. Off unless NSMBW_SOURCE_CHUNKS=1: the write
+// tracking misses one write of a course's tile textures (gx_guest_write.h), and only a whole-atlas
+// digest catches it. Per chunk, the chunk holding that write kept the last course's tiles (0.3.0).
 constexpr uintptr_t kSourceChunkBytes = 64 * 1024;
+
+static bool source_chunks_enabled() noexcept {
+  static const bool on = [] {
+    const char* value = std::getenv("NSMBW_SOURCE_CHUNKS");
+    return value != nullptr && value[0] == '1';
+  }();
+  return on;
+}
 constexpr u32 kChunkedSourceBytes = 2 * kSourceChunkBytes;
 
 struct SourceChunk {
@@ -438,8 +447,7 @@ static bool validate_static_texture_source_entry(const StaticTextureKey& key,
     note_texture_cache_stamp();
     return true;
   }
-  static const bool noChunks = std::getenv("NSMBW_NO_SOURCE_CHUNKS") != nullptr;  // A/B switch
-  if (!noChunks && !entry.chunks.empty() && dataSize == entry.sourceSize) {
+  if (!entry.chunks.empty() && dataSize == entry.sourceSize) {
     size_t index = 0;
     bool same = true;
     for_each_source_chunk(key.data, dataSize, [&](const u8* chunkData, size_t chunkSize) {
@@ -507,7 +515,7 @@ static StaticTextureSourceEntry make_static_texture_source_entry(const StaticTex
   const u64 generation = guest_write_generation(key.data, dataSize);
   note_texture_cache_stamp();
   std::vector<SourceChunk> chunks;
-  if (dataSize >= kChunkedSourceBytes) {
+  if (dataSize >= kChunkedSourceBytes && source_chunks_enabled()) {
     for_each_source_chunk(key.data, dataSize, [&](const u8* chunkData, size_t chunkSize) {
       const u64 chunkGeneration = guest_write_generation(chunkData, chunkSize);
       chunks.push_back({digest_source_bytes(chunkData, chunkSize), chunkGeneration});
