@@ -845,6 +845,7 @@ public sealed class FunctionTranslator
         const string CallCtrPrefix = "call_ctr_";
         const string CallLrPrefix = "call_lr_";
         const string LinkBranchPrefix = "link_branch_";
+        const string CallDirectPrefix = "call_direct_";
 
         if (label.StartsWith(IndirectCtrPrefix, StringComparison.OrdinalIgnoreCase))
         {
@@ -876,6 +877,17 @@ public sealed class FunctionTranslator
                 new IrAssign(temp, IrValue.Register("lr")),
                 new IrAssign("lr", IrValue.Imm((int)fallthrough)),
                 new IrIndirectCall(string.Empty, IrValue.Register(temp), args),
+                new IrJump($"0x{fallthrough:X8}")
+            });
+            return true;
+        }
+
+        if (TryParseLinkBranchLabel(label, CallDirectPrefix, out fallthrough, out var callTarget))
+        {
+            block = new IrBasicBlock(label, new IrInstruction[]
+            {
+                new IrAssign("lr", IrValue.Imm((int)fallthrough)),
+                new IrCall(string.Empty, $"0x{callTarget:X8}", BuildAbiCallArgs()),
                 new IrJump($"0x{fallthrough:X8}")
             });
             return true;

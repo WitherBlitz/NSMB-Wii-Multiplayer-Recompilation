@@ -249,6 +249,10 @@ int FileSelectCursor() {
     return static_cast<int>(cursor);
 }
 
+uint32_t FileSelectObject() {
+    return Find(kProfileFileSelect);
+}
+
 int FileSelectRawCursor() {
     const uint32_t object = Find(kProfileFileSelect);
     uint32_t cursor = 0;

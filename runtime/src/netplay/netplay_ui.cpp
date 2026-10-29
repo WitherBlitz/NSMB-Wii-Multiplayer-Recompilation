@@ -141,6 +141,39 @@ void WalkPanes(uint32_t pane, int depth, const std::function<void(uint32_t)>& vi
 struct CursorRect;
 CursorRect GameCursorRect();
 bool CursorStep(Nav& n, uint32_t& button);
+uint32_t FindRootPane(uint32_t object);
+
+// Whether the file select's layout stacks the three files (Newer's fileSelectBase: up and down move
+// between them) instead of putting them in a row (the game's own: left and right do). Read from
+// where the layout puts its first two files' anchors, N_posFile1_00 and N_posFile2_00.
+bool FilesStacked() {
+    static uint32_t s_object = 0;
+    static bool s_stacked = false;
+    const uint32_t object = GameMenus::FileSelectObject();
+    if (object == 0 || object == s_object) {
+        return s_stacked;
+    }
+    const uint32_t root = FindRootPane(object);
+    float x[2] = {}, y[2] = {};
+    int found = 0;
+    if (root != 0) {
+        WalkPanes(root, 0, [&](uint32_t pane) {
+            const std::string name = LivePaneName(pane);
+            const int i = name == "N_posFile1_00" ? 0 : name == "N_posFile2_00" ? 1 : -1;
+            if (i >= 0) {
+                x[i] = Memory::ReadFloat32(pane + 0x2C);
+                y[i] = Memory::ReadFloat32(pane + 0x30);
+                found |= 1 << i;
+            }
+        });
+    }
+    if (found != 3) {
+        return false;  // not built yet: look again next time
+    }
+    s_object = object;
+    s_stacked = std::fabs(y[1] - y[0]) > std::fabs(x[1] - x[0]);
+    return s_stacked;
+}
 
 
 void StartNav(NavKind kind, int target) {
@@ -203,12 +236,14 @@ uint32_t NextNavButton(Nav& n) {
         if (!GameMenus::FileSelectWaiting()) {
             return 0;  // still moving: wait
         }
-        // 0-2 the files in a row, 3 and 4 Free-for-All and Coin Battle below them.
+        // 0-2 the files in a row, 3 and 4 Free-for-All and Coin Battle below them; on a layout
+        // that stacks the files, one file per row.
         cursor = GameMenus::FileSelectRawCursor();
-        row = cursor <= 2 ? 0 : 1;
-        col = cursor <= 2 ? cursor : cursor - 3;
-        targetRow = n.target <= 2 ? 0 : 1;
-        targetCol = n.target <= 2 ? n.target : n.target - 3;
+        const int fileRows = FilesStacked() ? 3 : 1;
+        row = cursor <= 2 ? (fileRows == 3 ? cursor : 0) : fileRows;
+        col = cursor <= 2 ? (fileRows == 3 ? 0 : cursor) : cursor - 3;
+        targetRow = n.target <= 2 ? (fileRows == 3 ? n.target : 0) : fileRows;
+        targetCol = n.target <= 2 ? (fileRows == 3 ? 0 : n.target) : n.target - 3;
     } else {
         if (!GameMenus::SelectPlayersSettled()) {
             return 0;
@@ -340,6 +375,7 @@ void Window(const Canvas& c, float height, float width = 528.0f) {
     p.paneSize["P_bg_00"] = {width, height};
     p.paneSize["P_stripe_00"] = {width + 2, height};
     p.paneSize["W_yesnoWindow_00"] = {width + 14, height + 8};
+    a.yesNo.StretchSlices(p, "WindowLeft", "WindowCentre", "WindowRight", width - 528.0f, height - 322.0f);
     a.yesNo.Draw(c.list, c.view, "N_yesnoWindow_00", p);
 }
 
@@ -393,13 +429,16 @@ void Button(const Canvas& c, const std::string& label, float x, float y, float w
     Assets& a = GetAssets();
     GameLayout::DrawParams p;
     p.alpha = c.alpha * (enabled ? 1.0f : 0.55f);
-    p.offsetX = x;
-    p.offsetY = y + 118.0f;  // the pane is authored at (0, -118)
+    float authoredX = 0.0f, authoredY = -118.0f, authoredW = 240.0f, authoredH = 53.0f;
+    a.yesNo.PaneRect("P_centerBase_00", authoredX, authoredY, authoredW, authoredH);
+    p.offsetX = x - authoredX;
+    p.offsetY = y - authoredY;
     p.scale = fixedScale > 0.0f ? fixedScale : selected ? 1.0f + 0.04f * Pulse(frame) : 0.94f;
     p.paneScale["P_centerBase_00"] = 1.0f;  // authored at 0: it grows in through an animation
     p.paneSize["P_centerBase_00"] = {w, h};
     p.paneSize["W_button_02"] = {w + 5.0f, h + 10.0f};
     p.paneSize["P_shadow_02"] = {w, h};
+    a.yesNo.StretchSlices(p, "SingleBtnLeft", "SingleBtnMiddle", "SingleBtnRight", w - authoredW, h - authoredH);
     p.visible["T_center_00"] = false;
     p.visible["T_center_01"] = false;
     if (!enabled) {
@@ -670,7 +709,7 @@ void ApplyMenuLayout() {
 // course can't be left yet (Exit Course greyed out, its P_shadowBlack shown), the controller stops on
 // Settings, as the game's own cursor stops on Continue.
 constexpr float kPauseGrow = 70.0f, kPauseRaise = 35.0f, kPauseLower = -35.0f;
-constexpr float kPauseSettingsY = -24.0f;  // window space: one pitch (70) under Continue at 11 + 35
+constexpr float kPauseSettingsY = -24.0f;  // window space: one pitch (70) under Continue at 11 + 35 (PauseSettingsY)
 MenuLayout g_pauseLayout;
 std::atomic<bool> g_pauseFocus{false};  // "Settings" holds the pause window's cursor
 int g_pauseFocusFrom = 0;               // the game's own cursor meanwhile: 0 Continue, 1 Exit Course
@@ -707,10 +746,12 @@ bool AttachPauseLayout() {
 }
 
 bool PauseShift(const std::string& name, float& dy) {
+    // LevelNumShadow and LevelNameShadow are Newer's own course title lines.
     static const std::map<std::string, float> kShifts = {
         {"N_worldText_00", kPauseRaise}, {"N_osusumeText_00", kPauseRaise}, {"N_multiText_00", kPauseRaise},
         {"P_SBBase_00", kPauseRaise},    {"N_posMulti_UP", kPauseRaise},
         {"P_SBBase_02", kPauseLower},    {"N_posMulti_Down", kPauseLower},
+        {"LevelNumShadow", kPauseRaise}, {"LevelNameShadow", kPauseRaise},
     };
     const auto it = kShifts.find(name);
     if (it == kShifts.end()) {
@@ -757,8 +798,22 @@ void HoldPauseButtonScale(bool hold) {
 
 void ApplyPauseLayout() {
     if (AttachPauseLayout()) {
-        ApplyLayoutEdit(g_pauseLayout, PauseShift, {"W_N_pauseMenu_00", "P_bg_00"}, kPauseGrow);
+        // Newer draws the window's background as three slices (BG_Left/Middle/Right) instead of P_bg_00.
+        ApplyLayoutEdit(g_pauseLayout, PauseShift, {"W_N_pauseMenu_00", "P_bg_00", "BG_Left", "BG_Middle", "BG_Right"},
+                        kPauseGrow);
     }
+}
+
+// Window space, halfway between Continue and Exit Course once they have moved apart: -24 on the
+// base game's window (Continue at -22 + 33 + 35), -31 on Newer's, whose buttons sit further apart.
+float PauseSettingsY() {
+    const auto& panes = g_pauseLayout.panes;
+    const auto first = panes.find("P_SBBase_00"), second = panes.find("P_SBBase_02");
+    const auto row = panes.find("N_pauseMenu_01");
+    if (first == panes.end() || second == panes.end() || row == panes.end()) {
+        return kPauseSettingsY;
+    }
+    return row->second.y + (first->second.y + kPauseRaise + second->second.y + kPauseLower) / 2;
 }
 
 // Exit Course can't be chosen in a course not yet cleared: the game shades it (P_shadowBlack).
@@ -1001,7 +1056,7 @@ void DrawMenuSettings(ImDrawList* list) {
 
 void DrawPauseSettings(ImDrawList* list) {
     static const MatchButtons kPauseButtons{&g_pauseLayout, "P_SBBase_00", "P_SBBase_02", &g_pauseOnScale[0]};
-    DrawWindowSettings(list, PauseWindowTransform, kPauseSettingsY, g_pauseFocus.load(), &kPauseButtons);
+    DrawWindowSettings(list, PauseWindowTransform, PauseSettingsY(), g_pauseFocus.load(), &kPauseButtons);
 }
 
 // Which of the pause window's buttons the game's own cursor is on (0 Continue, 1 Exit Course), from
@@ -1012,7 +1067,7 @@ int PauseGameCursor() {
     if (!r.valid || !PauseWindowTransform(cx, cy, scale, alpha)) {
         return -1;
     }
-    return (r.y0 + r.y1) / 2 > cy + kPauseSettingsY * scale ? 0 : 1;
+    return (r.y0 + r.y1) / 2 > cy + PauseSettingsY() * scale ? 0 : 1;
 }
 
 bool UpdateShown() {
@@ -2107,7 +2162,7 @@ void TapAt(float lx, float ly, float gx, uint16_t scene, bool title) {
     if (scene == kSceneStage && g_ui.pauseSettingsShown) {
         float cx = 0, cy = 0, scale = 1, alpha = 1;
         if (PauseWindowTransform(cx, cy, scale, alpha) &&
-            in(cx, cy + kPauseSettingsY * scale, 345 * scale, 62 * scale)) {
+            in(cx, cy + PauseSettingsY() * scale, 345 * scale, 62 * scale)) {
             const int cursor = PauseGameCursor();
             g_pauseFocus = true;
             g_pauseFocusFrom = cursor >= 0 ? cursor : g_pauseFocusFrom;
@@ -2318,6 +2373,45 @@ void DumpProfiles() {
     last = profiles;
 }
 
+// NSMBW_DUMP_EF=1: twice a second, the particle effects alive per nw4r::ef::EffectSystem group
+// (active/closing), to tell effects that are never created from effects that are not drawn.
+// The system is at 0x804170D4: group count at +0xC014, its ActivityList array (0x1C each) at +0xC018.
+void DumpEffects() {
+    static const bool on = std::getenv("NSMBW_DUMP_EF") != nullptr;
+    static int frame = 0;
+    if (!on || ++frame % 30 != 0) {
+        return;
+    }
+    constexpr uint32_t kEffectSystem = 0x804170D4u;
+    uint32_t groups = 0, lists = 0;
+    if (!Memory::TryRead32(kEffectSystem + 0xC014u, groups) || !Memory::TryRead32(kEffectSystem + 0xC018u, lists) ||
+        groups > 64) {
+        return;
+    }
+    std::string text;
+    for (uint32_t g = 0; g < groups; ++g) {
+        uint32_t active = 0, closing = 0;
+        Memory::TryRead32(lists + g * 0x1Cu + 0x08u, active);
+        Memory::TryRead32(lists + g * 0x1Cu + 0x14u, closing);
+        if ((active >> 16) != 0 || (closing >> 16) != 0) {
+            char item[32];
+            std::snprintf(item, sizeof(item), "g%u=%u/%u ", g, active >> 16, closing >> 16);
+            text += item;
+        }
+    }
+    // nw4r::ef::Resource (0x80423170): effect projects (ut::List) with their emitter total at +0xC,
+    // texture projects at +0x10 with their texture total at +0x1C.
+    constexpr uint32_t kResource = 0x80423170u;
+    uint32_t projects = 0, emitters = 0, texProjects = 0, textures = 0;
+    Memory::TryRead32(kResource + 0x08u, projects);
+    Memory::TryRead32(kResource + 0x0Cu, emitters);
+    Memory::TryRead32(kResource + 0x18u, texProjects);
+    Memory::TryRead32(kResource + 0x1Cu, textures);
+    RT_LOGF(RT_TAG_RUNTIME, "ef (scene %03X, %u groups, lists %08X, %u breff/%u emitters, %u breft/%u textures): %s\n",
+            GameMenus::CurrentScene(), groups, lists, projects >> 16, emitters, texProjects >> 16, textures,
+            text.c_str());
+}
+
 // NSMBW_WARP=<world>-<course> (debug.nsmbw.warp on Android): entering any course from the world map
 // enters that one instead (testing a level without a save that reaches it). Courses 1-9 are the
 // numbered ones; others are STAGE_e numbers: 20 ghost house, 21 tower, 23 castle, 32-34 the map
@@ -2446,6 +2540,7 @@ void ScriptedTaps() {
 
 void Draw() {
     DumpProfiles();
+    DumpEffects();
     Warp();
     if (std::getenv("NSMBW_DUMP_STATES") != nullptr) {
         static std::string lastStates;
@@ -2808,11 +2903,12 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
         }
 
         // Up from any of the three files (also in Create Room's file pick) moves onto the LAN /
-        // Couch toggle above them; the game never sees that press, so its cursor stays put.
+        // Couch toggle above them; the game never sees that press, so its cursor stays put. Where
+        // the layout stacks the files, only from the top one: up from the others is the game's.
         const uint32_t screenUp = upright ? kUp : kRight;
         const int fileCursor = GameMenus::FileSelectRawCursor();
         if (g_ui.toggleShown && !g_ui.toggleFocus && !Modal() && (pressed & screenUp) != 0 && fileCursor >= 0 &&
-            fileCursor <= 2) {
+            fileCursor <= (FilesStacked() ? 0 : 2)) {
             g_ui.toggleFocus = true;
             g_ui.topItem = 0;
             g_ui.events &= ~kEvUp;

@@ -4,6 +4,7 @@
 #include "nand_path.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
+#include "runtime_product.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -18,6 +19,7 @@
 #endif
 #include <windows.h>
 #elif defined(__linux__) && !defined(__ANDROID__)
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -43,7 +45,10 @@ std::filesystem::path SessionNand() {
 std::vector<std::string> g_names;
 bool g_isHost = false;
 
-constexpr const char* kSaveFile = "title/00010000/534d4e45/data/wiimj2d.sav";
+// The game's save, by its name in this game (a mod may rename it).
+std::filesystem::path SaveFile() {
+    return std::filesystem::u8path(std::string(RuntimeProduct::Active().saveFile));
+}
 
 [[noreturn]] void RestartProcess() {
 #if defined(_WIN32)
@@ -63,10 +68,25 @@ constexpr const char* kSaveFile = "title/00010000/534d4e45/data/wiimj2d.sav";
 #elif defined(__ANDROID__)
     AndroidBridge::RestartGame();
 #elif defined(__linux__)
-    // Desktop Linux: the same program again, in this process's place.
+    // Desktop Linux: the same program again, in this process's place. execv keeps open descriptors,
+    // so the lobby's socket would still hold the LAN play port the session needs: none survives.
     char exe[4096] = {};
     const ssize_t length = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
     if (length > 0) {
+        // stdout and stderr go into the run log's pipes, whose reading ends close with the rest:
+        // give them back first, or the new program dies of SIGPIPE at its first line of output.
+        EndProcessTranscript();
+        std::vector<int> descriptors;
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it("/proc/self/fd", ec), end; !ec && it != end; it.increment(ec)) {
+            const int fd = std::atoi(it->path().filename().c_str());
+            if (fd > 2) {
+                descriptors.push_back(fd);
+            }
+        }
+        for (const int fd : descriptors) {
+            fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+        }
         char* const argv[] = {exe, nullptr};
         execv(exe, argv);
     }
@@ -118,18 +138,36 @@ std::filesystem::path HostMarker() {
 }
 
 // A host that closed the game during a session never went through EndSession: bring the session's
-// save back now, before anything reads the NAND.
+// save back now, before anything reads the NAND. The marker names the save and where it goes, so
+// the session's game gets it back even when another game (the original, a mod) starts first.
 void RecoverHostSave() {
     std::error_code ec;
-    if (!std::filesystem::exists(HostMarker(), ec)) {
+    std::ifstream marker(HostMarker());
+    if (!marker) {
         return;
     }
-    const auto played = SessionNand() / std::filesystem::u8path(kSaveFile);
-    const auto mine = RuntimeNandPath::ResolveNandRootPath() / std::filesystem::u8path(kSaveFile);
+    std::filesystem::path save = SaveFile();
+    std::filesystem::path mine;
+    std::string line;
+    while (std::getline(marker, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
+            line.pop_back();
+        }
+        if (line.rfind("save=", 0) == 0) {
+            save = std::filesystem::u8path(line.substr(5));
+        } else if (line.rfind("to=", 0) == 0) {
+            mine = std::filesystem::u8path(line.substr(3));
+        }
+    }
+    marker.close();
+    if (mine.empty()) {
+        mine = RuntimeNandPath::ResolveNandRootPath() / save;  // a marker from before it named them
+    }
+    const auto played = SessionNand() / save;
     if (std::filesystem::exists(played, ec)) {
         std::filesystem::copy_file(played, mine, std::filesystem::copy_options::overwrite_existing, ec);
-        RT_LOGF(RT_TAG_RUNTIME, "netplay: kept the save from the last session you hosted (%s)\n",
-                ec ? ec.message().c_str() : "ok");
+        RT_LOGF(RT_TAG_RUNTIME, "netplay: kept the save from the last session you hosted, %s (%s)\n",
+                RuntimeConfigFile::PathToUtf8(mine).c_str(), ec ? ec.message().c_str() : "ok");
     }
     std::filesystem::remove(HostMarker(), ec);
 }
@@ -181,7 +219,9 @@ bool TakePendingSession(NetplaySession::Config& config, int& saveFile) {
     g_names = names;
     g_isHost = config.localSlot == 0;
     if (g_isHost) {
-        std::ofstream(HostMarker()) << "1\n";
+        std::ofstream(HostMarker()) << "save=" << RuntimeConfigFile::PathToUtf8(SaveFile()) << "\n"
+                                    << "to=" << RuntimeConfigFile::PathToUtf8(
+                                           RuntimeNandPath::ResolveNandRootPath() / SaveFile()) << "\n";
     }
     RuntimeNandPath::NandRootOverride() = SessionNand();
     return true;
@@ -198,8 +238,8 @@ void PrepareToLeave() {
         std::filesystem::remove(HostMarker(), markerError);
         std::error_code ec;
         RuntimeNandPath::NandRootOverride().clear();
-        const auto mine = RuntimeNandPath::ResolveNandRootPath() / std::filesystem::u8path(kSaveFile);
-        const auto played = SessionNand() / std::filesystem::u8path(kSaveFile);
+        const auto mine = RuntimeNandPath::ResolveNandRootPath() / SaveFile();
+        const auto played = SessionNand() / SaveFile();
         if (std::filesystem::exists(played, ec)) {
             std::filesystem::copy_file(played, mine, std::filesystem::copy_options::overwrite_existing, ec);
             RT_LOGF(RT_TAG_RUNTIME, "netplay: kept the session's save (%s)\n", ec ? ec.message().c_str() : "ok");

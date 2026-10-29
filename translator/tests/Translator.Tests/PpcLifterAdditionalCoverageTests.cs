@@ -25,10 +25,42 @@ public class PpcLifterAdditionalCoverageTests
         Assert.Equal("lr", lr.Destination);
         Assert.Equal(unchecked((int)0x80004398u), lr.Value.Constant);
 
+        // A target outside the lifted function is a call that returns to the fallthrough.
         var decision = Assert.IsType<IrBranch>(ir[1]);
-        Assert.Equal("blt", decision.Condition);
-        Assert.Equal("0x800043BC", decision.TrueLabel);
+        Assert.Equal("raw", decision.Condition);
+        Assert.Equal("call_direct_80004398_800043BC", decision.TrueLabel);
         Assert.Equal("0x80004398", decision.FalseLabel);
+    }
+
+    [Fact]
+    public void LinkedConditionalBranchToLocalSubroutineIsACall()
+    {
+        // beql cr0 to a blr-terminated snippet inside the same slice (GCC places such subroutines
+        // in the function body): its blr returns to the fallthrough, not from the whole function.
+        var branch = PpcDecoder.Decode(0x80004000, 0x41820009);
+        var fallthrough = PpcDecoder.Decode(0x80004004, 0x60000000);
+        var target = PpcDecoder.Decode(0x80004008, 0x4E800020);
+        var ir = new PpcLifter().Lift(new[] { branch, fallthrough, target })[0].Ir;
+
+        Assert.Equal("beql", branch.Mnemonic);
+        Assert.Equal("lr", Assert.IsType<IrAssign>(ir[0]).Destination);
+        var decision = Assert.IsType<IrBranch>(ir[1]);
+        Assert.Equal("call_direct_80004004_80004008", decision.TrueLabel);
+        Assert.Equal("0x80004004", decision.FalseLabel);
+    }
+
+    [Fact]
+    public void LinkedBranchToFallthroughStaysAJump()
+    {
+        // bcl 20,31,$+4, CodeWarrior's way to read the PC: only LR changes.
+        var branch = PpcDecoder.Decode(0x80004000, 0x429F0005);
+        var next = PpcDecoder.Decode(0x80004004, 0x7C6802A6);
+        var ir = new PpcLifter().Lift(new[] { branch, next })[0].Ir;
+
+        Assert.Equal("lr", Assert.IsType<IrAssign>(ir[0]).Destination);
+        var decision = Assert.IsType<IrBranch>(ir[1]);
+        Assert.Equal("0x80004004", decision.TrueLabel);
+        Assert.Equal("0x80004004", decision.FalseLabel);
     }
 
     [Fact]

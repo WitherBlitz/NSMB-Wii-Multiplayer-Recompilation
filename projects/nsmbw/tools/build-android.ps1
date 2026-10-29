@@ -3,13 +3,16 @@
 param(
     [string[]]$Target = @('WiiCompiled'),
     [int]$Jobs = 10,
-    [string]$BuildDirectory = 'E:\NSMBWPort\wiicompiled\android-build',
-    [string]$LogPath = 'E:\NSMBWPort\build-nsmbw\logs\build-android.log',
+    [string]$BuildDirectory,
+    [string]$LogPath,
     [switch]$KeepGoing
 )
 
 $ErrorActionPreference = 'Stop'
-$toolchain = 'E:\NSMBWPort\toolchain'
+. (Join-Path $PSScriptRoot 'paths.ps1')
+if (-not $BuildDirectory) { $BuildDirectory = Get-NsmbwBuildDirectory 'android-build' }
+if (-not $LogPath) { $LogPath = Join-Path (Get-NsmbwLogDirectory $BuildDirectory) 'build-android.log' }
+$toolchain = Get-NsmbwToolchain
 $env:PATH = "$toolchain\CMake\bin;$toolchain\Ninja;$env:SystemRoot\System32;$env:SystemRoot"
 
 $arguments = @('--build', $BuildDirectory)

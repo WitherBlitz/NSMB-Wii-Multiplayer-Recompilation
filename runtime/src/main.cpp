@@ -843,6 +843,10 @@ void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) 
     }
 }
 
+void EndProcessTranscript() {
+    ShutdownProcessTranscript();
+}
+
 namespace RuntimeCrash {
 
 void WriteCrashArtifacts(std::string_view reason, std::string_view extraDetails,
@@ -1499,7 +1503,8 @@ int RuntimeMain(int argc, char** argv) {
             NetplaySession::SetStallHandler(&NetplayUi::OnSessionStall);
         }
         if (RuntimeConfigFile::DiscordPresenceEnabled()) {
-            DiscordPresence::Initialize(RuntimeConfigFile::DiscordClientId(), "New Super Mario Bros. Wii");
+            DiscordPresence::Initialize(RuntimeConfigFile::DiscordClientId(),
+                                        RuntimeProduct::Active().displayName.data());
         }
         SystemBridge::Initialize();
         TranslatedFunctionRegistry::Finalize();

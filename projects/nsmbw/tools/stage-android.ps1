@@ -2,12 +2,15 @@
 # runtime's data files (what a desktop build keeps beside its executable) in android/native/assets.
 [CmdletBinding()]
 param(
-    [string]$BuildDirectory = 'E:\NSMBWPort\wiicompiled\android-build',
-    [string]$NativeDirectory = 'E:\NSMBWPort\android\native'
+    [string]$BuildDirectory,
+    [string]$NativeDirectory
 )
 
 $ErrorActionPreference = 'Stop'
-$ndk = 'C:\Users\Wither\AppData\Local\Android\Sdk\ndk\29.0.14206865'
+. (Join-Path $PSScriptRoot 'paths.ps1')
+if (-not $BuildDirectory) { $BuildDirectory = Get-NsmbwBuildDirectory 'android-build' }
+if (-not $NativeDirectory) { $NativeDirectory = Join-Path $NsmbwRepo 'android\native' }
+$ndk = Get-NsmbwNdk
 $strip = Join-Path $ndk 'toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-strip.exe'
 
 $lib = Join-Path $BuildDirectory 'libmain.so'

@@ -902,9 +902,12 @@ static void BuildAndPublishRuntimeFst() {
         const uint64_t endBytes = startBytes + std::max<uint32_t>(entry.size, 1u);
         g_publishedExtents.push_back({startBytes, endBytes, static_cast<int32_t>(i)});
     }
+    // Discs built by modding tools give empty files the offset of the file after them (Newer's
+    // COPYDATE_* share effect_wnmario.breff's): order the longer extent last at a shared start,
+    // so a lookup there, which takes the last extent starting at or before it, finds the real file.
     std::sort(g_publishedExtents.begin(), g_publishedExtents.end(),
               [](const PublishedExtent& a, const PublishedExtent& b) {
-                  return a.startBytes < b.startBytes;
+                  return a.startBytes != b.startBytes ? a.startBytes < b.startBytes : a.endBytes < b.endBytes;
               });
 
     // Use the FST memory reserved before guest code can allocate over it.

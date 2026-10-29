@@ -4,6 +4,7 @@
 #include "netplay/net_socket.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
+#include "runtime_product.h"
 
 #include <xxhash.h>
 
@@ -53,9 +54,9 @@ enum Type : uint8_t {
     kGo = 11,
 };
 
-// The save-related NAND files every device must start from.
+// The save-related NAND files every device must start from (the save first: its name is the game's).
 const char* const kNandFiles[] = {
-    "title/00010000/534d4e45/data/wiimj2d.sav",
+    RuntimeProduct::Active().saveFile.data(),
     "title/00010000/534d4e45/data/banner.bin",
     "title/00000001/00000002/data/setting.txt",
 };

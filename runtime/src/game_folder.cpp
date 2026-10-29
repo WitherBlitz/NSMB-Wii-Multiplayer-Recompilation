@@ -2,6 +2,7 @@
 
 #include "runtime_config.h"
 #include "runtime_log.h"
+#include "runtime_product.h"
 
 #include <cstdlib>
 #include <fstream>
@@ -31,18 +32,31 @@ bool IsExtractedDisc(const fs::path& path) {
     return fs::is_directory(path / "files", ec) && fs::is_regular_file(path / "sys" / "fst.bin", ec);
 }
 
-#if defined(_WIN32)
-constexpr const wchar_t* kTitle = L"New Super Mario Bros. Wii";
+// The game this build was translated from (runtime_product.h: the original, or a mod such as Newer).
+std::string GameName() {
+    return std::string(RuntimeProduct::Active().displayName);
+}
 
-constexpr const wchar_t* kSteps =
-    L"This port runs your own copy of New Super Mario Bros. Wii (USA, SMNE01, revision 1). "
-    L"Extract it once with Dolphin:\n\n"
-    L"1. Open Dolphin on this computer and find New Super Mario Bros. Wii in the game list.\n"
-    L"2. Right-click it, choose Properties, then the Filesystem tab.\n"
-    L"3. Right-click the disc at the top and choose Extract Entire Disc, then pick an empty folder.\n"
-    L"4. Click OK here and choose that folder. Keep it: the game reads it every time.\n\n"
-    L"(Dolphin shows the revision under Properties > Info. Or put the extracted folder next to this "
-    L"program and name it \"game\".)";
+#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
+// What to extract, and how.
+std::string Steps(const char* openDolphin) {
+    return "This port runs your own copy of " + std::string(RuntimeProduct::Active().discName) +
+           ". Extract it once with Dolphin:\n\n"
+           "1. " + openDolphin + " and find " + GameName() + " in the game list.\n"
+           "2. Right-click it, choose Properties, then the Filesystem tab.\n"
+           "3. Right-click the disc at the top and choose Extract Entire Disc, then pick an empty folder.\n"
+           "4. Click OK here and choose that folder. Keep it: the game reads it every time.\n\n"
+           "(Dolphin shows the revision under Properties > Info. Or put the extracted folder next to this "
+           "program and name it \"game\".)";
+}
+
+std::string PickerTitle() {
+    return "Choose the folder Dolphin extracted " + GameName() + " to";
+}
+#endif
+
+#if defined(_WIN32)
+std::wstring Widen(const std::string& utf8);
 
 fs::path ProgramDirectory() {
     return RuntimeConfigFile::ExecutableDirectory().value_or(fs::path{});  // the compat build's too
@@ -57,7 +71,7 @@ fs::path PickFolder() {
         DWORD options = 0;
         dialog->GetOptions(&options);
         dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-        dialog->SetTitle(L"Choose the folder Dolphin extracted New Super Mario Bros. Wii to");
+        dialog->SetTitle(Widen(PickerTitle()).c_str());
         if (SUCCEEDED(dialog->Show(nullptr))) {
             IShellItem* item = nullptr;
             if (SUCCEEDED(dialog->GetResult(&item))) {
@@ -84,18 +98,6 @@ std::wstring Widen(const std::string& utf8) {
     return wide;
 }
 #elif defined(__linux__) && !defined(__ANDROID__)
-constexpr const char* kTitle = "New Super Mario Bros. Wii";
-
-constexpr const char* kSteps =
-    "This port runs your own copy of New Super Mario Bros. Wii (USA, SMNE01, revision 1). "
-    "Extract it once with Dolphin:\n\n"
-    "1. Open Dolphin and find New Super Mario Bros. Wii in the game list.\n"
-    "2. Right-click it, choose Properties, then the Filesystem tab.\n"
-    "3. Right-click the disc at the top and choose Extract Entire Disc, then pick an empty folder.\n"
-    "4. Click OK here and choose that folder. Keep it: the game reads it every time.\n\n"
-    "(Dolphin shows the revision under Properties > Info. Or put the extracted folder next to this "
-    "program and name it \"game\".)";
-
 fs::path ProgramDirectory() {
     return RuntimeConfigFile::ExecutableDirectory().value_or(fs::path{});  // the compat build's too
 }
@@ -106,7 +108,9 @@ bool AskOkCancel(const std::string& message) {
         {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Cancel"},
         {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "OK"},
     };
-    const SDL_MessageBoxData data = {SDL_MESSAGEBOX_INFORMATION, nullptr, kTitle, message.c_str(), 2, buttons, nullptr};
+    const std::string title = GameName();
+    const SDL_MessageBoxData data = {SDL_MESSAGEBOX_INFORMATION, nullptr, title.c_str(), message.c_str(), 2, buttons,
+                                     nullptr};
     int pressed = 0;
     return SDL_ShowMessageBox(&data, &pressed) && pressed == 1;
 }
@@ -114,18 +118,16 @@ bool AskOkCancel(const std::string& message) {
 // The desktop's folder picker (zenity on GNOME and most others, kdialog on KDE); empty when cancelled,
 // nullopt when neither is installed.
 std::optional<fs::path> PickFolder() {
-    const char* const commands[] = {
-        "zenity --file-selection --directory "
-        "--title='Choose the folder Dolphin extracted New Super Mario Bros. Wii to' 2>/dev/null",
-        "kdialog --getexistingdirectory \"$HOME\" "
-        "--title 'Choose the folder Dolphin extracted New Super Mario Bros. Wii to' 2>/dev/null",
+    const std::string commands[] = {
+        "zenity --file-selection --directory --title='" + PickerTitle() + "' 2>/dev/null",
+        "kdialog --getexistingdirectory \"$HOME\" --title '" + PickerTitle() + "' 2>/dev/null",
     };
-    for (const char* command : commands) {
-        const std::string tool(command, std::string(command).find(' '));
+    for (const std::string& command : commands) {
+        const std::string tool = command.substr(0, command.find(' '));
         if (std::system(("command -v " + tool + " >/dev/null 2>&1").c_str()) != 0) {
             continue;
         }
-        FILE* pipe = popen(command, "r");
+        FILE* pipe = popen(command.c_str(), "r");
         if (pipe == nullptr) {
             continue;
         }
@@ -171,13 +173,28 @@ std::string Problem(const fs::path& root) {
     }
     const std::string id(header, 6);
     const int revision = static_cast<unsigned char>(header[7]);
-    if (id != "SMNE01") {
-        return "That is " + id + ", not New Super Mario Bros. Wii for the USA (SMNE01). This port runs "
-               "only the USA disc, revision 1.";
+    const RuntimeProduct::Descriptor& product = RuntimeProduct::Active();
+    const std::string disc(product.discName);
+    if (id != product.gameId) {
+        return "That is " + id + ", not " + disc + ". This build runs only that disc: it was translated from it.";
     }
     if (revision != 1) {
-        return "That is New Super Mario Bros. Wii revision " + std::to_string(revision) +
-               ". This port runs only revision 1 (Dolphin shows it under Properties > Info).";
+        return "That is " + id + " revision " + std::to_string(revision) + ". This build runs only " + disc +
+               " (Dolphin shows the revision under Properties > Info).";
+    }
+    // A mod keeps its disc ID from version to version; its own code tells them apart.
+    if (!product.versionFile.empty()) {
+        const std::string file = "files/" + std::string(product.versionFile);
+        std::error_code ec;
+        const uintmax_t size = fs::file_size(root / fs::u8path(file), ec);
+        if (ec) {
+            return "That is " + id + ", but it has no " + file + ". This build runs only " + disc + ".";
+        }
+        if (size != product.versionFileSize) {
+            return "That is another version of " + GameName() + " (its " + file + " is " + std::to_string(size) +
+                   " bytes, not " + std::to_string(product.versionFileSize) + "). This build runs only " + disc +
+                   ": it was translated from that version's code.";
+        }
     }
     return {};
 }
@@ -202,12 +219,14 @@ bool EnsureConfigured() {
         return true;
     }
 #if defined(_WIN32)
-    std::wstring message = kSteps;
+    const std::wstring steps = Widen(Steps("Open Dolphin on this computer"));
+    const std::wstring title = Widen(GameName());
+    std::wstring message = steps;
     if (!configured.empty()) {
         message = Widen(Problem(configured)) + L"\n\n" + message;
     }
     for (;;) {
-        if (MessageBoxW(nullptr, message.c_str(), kTitle, MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) {
+        if (MessageBoxW(nullptr, message.c_str(), title.c_str(), MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) {
             return false;
         }
         const fs::path picked = PickFolder();
@@ -217,7 +236,7 @@ bool EnsureConfigured() {
         const fs::path root = Find(picked);
         const std::string problem = Problem(root.empty() ? picked : root);
         if (!problem.empty()) {
-            message = Widen(problem) + L"\n\n" + kSteps;
+            message = Widen(problem) + L"\n\n" + steps;
             continue;
         }
         RuntimeConfigFile::SetDvdRoot(root);
@@ -225,7 +244,8 @@ bool EnsureConfigured() {
         return true;
     }
 #elif defined(__linux__) && !defined(__ANDROID__)
-    std::string message = kSteps;
+    const std::string steps = Steps("Open Dolphin");
+    std::string message = steps;
     if (!configured.empty()) {
         message = Problem(configured) + "\n\n" + message;
     }
@@ -241,7 +261,7 @@ bool EnsureConfigured() {
                 "No folder picker (zenity or kdialog) is installed. Put the extracted game next to this "
                 "program in a folder named \"game\", or write its path into " + config +
                 " under [paths] as dvd_root = '/path/to/the/folder', then start the game again.";
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, kTitle, help.c_str(), nullptr);
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, GameName().c_str(), help.c_str(), nullptr);
             return false;
         }
         if (picked->empty()) {
@@ -250,7 +270,7 @@ bool EnsureConfigured() {
         const fs::path root = Find(*picked);
         const std::string problem = Problem(root.empty() ? *picked : root);
         if (!problem.empty()) {
-            message = problem + "\n\n" + kSteps;
+            message = problem + "\n\n" + steps;
             continue;
         }
         RuntimeConfigFile::SetDvdRoot(root);

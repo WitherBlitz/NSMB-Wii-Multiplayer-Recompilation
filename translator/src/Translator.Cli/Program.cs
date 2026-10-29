@@ -3085,7 +3085,8 @@ IEnumerable<uint> DiscoverTranslationTargetsCore(
             continue;
         }
 
-        var shouldFollow = ins.IsCall;
+        // Conditional branch-and-link (bc with LK=1) is lifted as a call, so its target is a function.
+        var shouldFollow = ins.IsCall || ((ins.Word >> 26) == 16 && (ins.Word & 1) != 0);
         if (!shouldFollow && ins.IsUnconditionalBranch)
         {
             // If the branch jumps outside this function, treat it as a tail call.

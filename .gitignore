@@ -26,6 +26,7 @@ Code.pul
 /build/
 /build-*/
 /native-build/
+/native-build-newer/
 /native-build-macos/
 /android-build/
 /local-products/

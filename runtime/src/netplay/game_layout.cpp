@@ -24,6 +24,7 @@ public:
         int8_t charWidth = 0;
         uint16_t sheet = 0;
         float u0 = 0, v0 = 0, u1 = 0, v1 = 0;
+        bool picture = false;  // drawn in colour: an icon, not a letter
     };
     bool ok = false;
     int8_t linefeed = 0;
@@ -39,10 +40,25 @@ public:
     // The other languages' copies of this font: each language folder's font carries the letters its
     // own text needs (the English one has no n with tilde, for one). Asked for letters this one lacks.
     std::vector<std::shared_ptr<Font>> fallbacks;
+    // Mods redraw some characters as icons for their own messages (Newer's message font: parentheses
+    // as mushrooms, + and - as the remote's buttons); the runtime's own text takes those from this
+    // font instead (the Mario font, which they keep).
+    std::shared_ptr<Font> plain;
 
-    // The glyph for a character, and in `owner` the font whose sheets hold it.
-    const Glyph* Find(char16_t code, const Font** owner = nullptr) const {
+    // The glyph for a character, and in `owner` the font whose sheets hold it. `plainText`: a letter,
+    // never one of the font's icons.
+    const Glyph* Find(char16_t code, const Font** owner = nullptr, bool plainText = false) const {
         const auto it = map.find(static_cast<uint16_t>(code));
+        if (plainText && plain != nullptr && it != map.end() && it->second < glyphs.size() &&
+            glyphs[it->second].picture) {
+            const auto found = plain->map.find(static_cast<uint16_t>(code));
+            if (found != plain->map.end() && found->second < plain->glyphs.size()) {
+                if (owner != nullptr) {
+                    *owner = plain.get();
+                }
+                return &plain->glyphs[found->second];
+            }
+        }
         if (it == map.end()) {
             for (const auto& other : fallbacks) {
                 const auto found = other->map.find(static_cast<uint16_t>(code));
@@ -415,6 +431,9 @@ std::shared_ptr<Font> LoadFontFile(const std::string& path) {
                 const uint16_t sheetWidth = BE16(t + 16);
                 const uint16_t sheetHeight = BE16(t + 18);
                 const uint32_t sheetData = BE32(t + 20);
+                // A colour sheet (RGB565, RGB5A3, RGBA8) may hold icons: kept to look at the glyphs.
+                const bool colour = sheetFormat >= 4 && sheetFormat <= 6;
+                std::vector<Image> colourSheets;
                 for (uint16_t i = 0; i < sheetCount; ++i) {
                     const size_t at = sheetData + static_cast<size_t>(i) * sheetSize;
                     Image sheet;
@@ -425,6 +444,9 @@ std::shared_ptr<Font> LoadFontFile(const std::string& path) {
                         break;
                     }
                     font->sheets.push_back(Upload(sheet));
+                    if (colour) {
+                        colourSheets.push_back(std::move(sheet));
+                    }
                 }
                 const uint32_t perSheet = static_cast<uint32_t>(perRow) * perColumn;
                 // Widths, then the glyph cells.
@@ -455,6 +477,21 @@ std::shared_ptr<Font> LoadFontFile(const std::string& path) {
                     g.v0 = y / sheetHeight;
                     g.u1 = (x + g.glyphWidth) / sheetWidth;
                     g.v1 = (y + font->cellHeight) / sheetHeight;
+                    // An icon: a good part of what it draws is in colour (letters are one grey).
+                    if (g.sheet < colourSheets.size()) {
+                        const Image& sheet = colourSheets[g.sheet];
+                        uint32_t opaque = 0, coloured = 0;
+                        for (uint32_t py = static_cast<uint32_t>(y); py < y + font->cellHeight && py < sheet.height; ++py) {
+                            for (uint32_t px = static_cast<uint32_t>(x); px < x + g.glyphWidth && px < sheet.width; ++px) {
+                                const uint8_t* p = &sheet.rgba[(static_cast<size_t>(py) * sheet.width + px) * 4];
+                                if (p[3] > 128) {
+                                    ++opaque;
+                                    coloured += std::max({p[0], p[1], p[2]}) - std::min({p[0], p[1], p[2]}) > 60;
+                                }
+                            }
+                        }
+                        g.picture = opaque != 0 && coloured * 100 > opaque * 15;
+                    }
                 }
             }
             while (cmap != 0 && cmap + 12 <= data.size()) {
@@ -517,6 +554,14 @@ std::shared_ptr<Font> LoadFont(const std::string& name) {
     if (!font->ok) {
         RT_LOGF(RT_TAG_RUNTIME, "netplay ui: could not load the game font %s\n", name.c_str());
     }
+    static const std::string kPlainFont = "mj2d01_marioFont_64_IA4.brfnt";
+    const bool icons = std::any_of(font->glyphs.begin(), font->glyphs.end(), [](const Font::Glyph& g) { return g.picture; });
+    if (icons && name != kPlainFont) {
+        auto plain = LoadFont(kPlainFont);
+        if (plain->ok) {
+            font->plain = std::move(plain);
+        }
+    }
     std::lock_guard<std::mutex> lock(g_cacheMutex);
     g_fonts[name] = font;
     return font;
@@ -529,14 +574,24 @@ struct TextLine {
     float width = 0;
 };
 
-std::vector<TextLine> SplitLines(const Font& font, const std::u16string& text, float scaleX, float charSpace) {
+// A glyph from another font (a plain letter standing in for an icon) is drawn at this font's size:
+// the factor its own units are scaled by on top of this font's.
+float OwnerScale(const Font& font, const Font& owner, bool vertical) {
+    const float mine = vertical ? font.height : font.width;
+    const float theirs = vertical ? owner.height : owner.width;
+    return &owner == &font || theirs == 0 ? 1.0f : mine / theirs;
+}
+
+std::vector<TextLine> SplitLines(const Font& font, const std::u16string& text, float scaleX, float charSpace,
+                                 bool plainText) {
     std::vector<TextLine> lines(1);
     for (char16_t c : text) {
         if (c == u'\n') {
             lines.emplace_back();
             continue;
         }
-        const Font::Glyph* g = font.Find(c);
+        const Font* owner = &font;
+        const Font::Glyph* g = font.Find(c, &owner, plainText);
         if (g == nullptr) {
             continue;
         }
@@ -544,7 +599,7 @@ std::vector<TextLine> SplitLines(const Font& font, const std::u16string& text, f
             lines.back().width += charSpace;
         }
         lines.back().text.push_back(c);
-        lines.back().width += g->charWidth * scaleX;
+        lines.back().width += g->charWidth * scaleX * OwnerScale(font, *owner, false);
     }
     return lines;
 }
@@ -597,14 +652,15 @@ ImVec2 ToScreen(const View& view, const Mtx& m, float x, float y) {
 
 void DrawTextLines(ImDrawList* list, const View& view, const Mtx& m, const Font& font, const std::u16string& text,
                    float rectX0, float rectY0, float rectW, float rectH, int textPosition, int alignment, float fontW,
-                   float fontH, float charSpace, float lineSpace, const Rgba& top, const Rgba& bottom) {
+                   float fontH, float charSpace, float lineSpace, const Rgba& top, const Rgba& bottom,
+                   bool plainText) {
     if (!font.ok || font.width == 0 || font.height == 0) {
         return;
     }
     const float scaleX = fontW / font.width;
     const float scaleY = fontH / font.height;
     const float lineHeight = font.linefeed * scaleY + lineSpace;
-    const auto lines = SplitLines(font, text, scaleX, charSpace);
+    const auto lines = SplitLines(font, text, scaleX, charSpace, plainText);
     float blockWidth = 0;
     for (const auto& line : lines) {
         blockWidth = std::max(blockWidth, line.width);
@@ -620,19 +676,23 @@ void DrawTextLines(ImDrawList* list, const View& view, const Mtx& m, const Font&
         float x = blockX + (align == 0 ? 0.0f : align == 1 ? (blockWidth - line.width) / 2 : blockWidth - line.width);
         for (char16_t c : line.text) {
             const Font* owner = &font;
-            const Font::Glyph* g = font.Find(c, &owner);
+            const Font::Glyph* g = font.Find(c, &owner, plainText);
             if (g == nullptr || g->sheet >= owner->sheets.size()) {
                 continue;
             }
-            const float gx = x + g->left * scaleX;
-            const float gw = g->glyphWidth * scaleX;
-            const float gh = owner->cellHeight * scaleY;
-            const ImVec2 p[4] = {ToScreen(view, m, gx, y), ToScreen(view, m, gx + gw, y), ToScreen(view, m, gx + gw, y - gh),
-                                 ToScreen(view, m, gx, y - gh)};
+            const float sx = scaleX * OwnerScale(font, *owner, false);
+            const float sy = scaleY * OwnerScale(font, *owner, true);
+            // On this font's baseline.
+            const float gy = y - (font.ascent * scaleY - owner->ascent * sy);
+            const float gx = x + g->left * sx;
+            const float gw = g->glyphWidth * sx;
+            const float gh = owner->cellHeight * sy;
+            const ImVec2 p[4] = {ToScreen(view, m, gx, gy), ToScreen(view, m, gx + gw, gy),
+                                 ToScreen(view, m, gx + gw, gy - gh), ToScreen(view, m, gx, gy - gh)};
             const ImVec2 uv[4] = {ImVec2(g->u0, g->v0), ImVec2(g->u1, g->v0), ImVec2(g->u1, g->v1), ImVec2(g->u0, g->v1)};
             const ImU32 col[4] = {topCol, topCol, bottomCol, bottomCol};
             PushQuad(list, owner->sheets[g->sheet], p, uv, col);
-            x += g->charWidth * scaleX + charSpace;
+            x += g->charWidth * sx + charSpace;
         }
         y -= lineHeight;
     }
@@ -670,7 +730,7 @@ float MeasureText(const Font& font, const std::u16string& text, float fontSize) 
         return 0;
     }
     float widest = 0;
-    for (const auto& line : SplitLines(font, text, fontSize / font.width, 0)) {
+    for (const auto& line : SplitLines(font, text, fontSize / font.width, 0, true)) {
         widest = std::max(widest, line.width);
     }
     return widest;
@@ -689,7 +749,7 @@ void DrawText(ImDrawList* list, const View& view, const Font& font, const std::u
     const float h = font.height == 0 ? 0 : font.cellHeight * fontSize / font.height;
     const float x0 = x - (originH == 0 ? 0 : originH == 1 ? w / 2 : w);
     const float y0 = y + (originV == 0 ? 0 : originV == 1 ? h / 2 : h);
-    DrawTextLines(list, view, Mtx{}, font, text, x0, y0, w, h, 0, 0, fontSize, fontSize, 0, 0, top, bottom);
+    DrawTextLines(list, view, Mtx{}, font, text, x0, y0, w, h, 0, 0, fontSize, fontSize, 0, 0, top, bottom, true);
 }
 
 // ---------------------------------------------------------------- layouts
@@ -1038,6 +1098,33 @@ bool Layout::PaneWorldRect(const std::string& paneName, float& x, float& y, floa
     return true;
 }
 
+bool Layout::StretchSlices(DrawParams& params, const std::string& left, const std::string& middle,
+                           const std::string& right, float dw, float dh) const {
+    const auto mid = m_byName.find(middle);
+    if (!m_loaded || mid == m_byName.end()) {
+        return false;
+    }
+    // A pane grows away from its origin: shift it back so the row grows about its centre.
+    const auto keepCentred = [](const Pane& pane, float grownW, float grownH) {
+        const int posH = pane.origin % 3, posV = pane.origin / 3;
+        return std::pair{posH == 0 ? -grownW / 2 : posH == 2 ? grownW / 2 : 0.0f,
+                         posV == 0 ? grownH / 2 : posV == 2 ? -grownH / 2 : 0.0f};
+    };
+    const Pane& m = *mid->second;
+    params.paneSize[middle] = {m.w + dw, m.h + dh};
+    params.paneOffset[middle] = keepCentred(m, dw, dh);
+    for (const auto& [name, side] : {std::pair{left, -1.0f}, std::pair{right, 1.0f}}) {
+        const auto cap = m_byName.find(name);
+        if (cap == m_byName.end()) {
+            continue;
+        }
+        auto [ox, oy] = keepCentred(*cap->second, 0.0f, dh);
+        params.paneSize[name] = {cap->second->w, cap->second->h + dh};
+        params.paneOffset[name] = {ox + side * dw / 2, oy};
+    }
+    return true;
+}
+
 std::vector<std::string> Layout::PaneNames() const {
     std::vector<std::string> names;
     for (const auto& pane : m_panes) {
@@ -1082,6 +1169,10 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
         ty += params.offsetY;
         sx *= params.scale;
         sy *= params.scale;
+    }
+    if (const auto o = params.paneOffset.find(pane.name); o != params.paneOffset.end()) {
+        tx += o->second.first;
+        ty += o->second.second;
     }
     const Mtx parent{parentMtx[0], parentMtx[1], parentMtx[2], parentMtx[3], parentMtx[4], parentMtx[5]};
     const Mtx m = Compose(parent, tx, ty, pane.rot, sx, sy);
@@ -1281,7 +1372,8 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
         top.a *= alpha;
         bottom.a *= alpha;
         DrawTextLines(list, view, m, *m_fonts[pane.font], *text, x0, y0, paneW, paneH, pane.textPosition,
-                      pane.textAlignment, pane.fontW, pane.fontH, pane.charSpace, pane.lineSpace, top, bottom);
+                      pane.textAlignment, pane.fontW, pane.fontH, pane.charSpace, pane.lineSpace, top, bottom,
+                      false);
     }
 
     const float mtx[6] = {m.a, m.b, m.c, m.d, m.tx, m.ty};

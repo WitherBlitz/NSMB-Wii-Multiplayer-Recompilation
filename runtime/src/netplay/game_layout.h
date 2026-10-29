@@ -56,6 +56,7 @@ struct DrawParams {
     std::unordered_map<std::string, std::pair<float, float>> paneSize;  // replaces the pane's width and height
     // Recolours the pane's vertex colours: rgb' = m * rgb, row-major (after the tint; a green button made orange).
     std::unordered_map<std::string, std::array<float, 9>> colorMatrix;
+    std::unordered_map<std::string, std::pair<float, float>> paneOffset;  // added to the pane's translation
 };
 
 class Layout {
@@ -76,6 +77,11 @@ public:
     bool PaneRect(const std::string& paneName, float& x, float& y, float& w, float& h) const;
     // Where a pane sits in the whole layout (its centre for a centred origin), as authored.
     bool PaneWorldRect(const std::string& paneName, float& x, float& y, float& w, float& h) const;
+    // Grows a row of three slices (left cap, middle, right cap) by dw x dh about its centre: mods such
+    // as Newer draw the windows and buttons the base game makes from one stretchable pane this way.
+    // False when the layout has no `middle`.
+    bool StretchSlices(DrawParams& params, const std::string& left, const std::string& middle,
+                       const std::string& right, float dw, float dh) const;
     std::vector<std::string> PaneNames() const;
 
     struct Material;
@@ -93,7 +99,8 @@ private:
 };
 
 // The game's text, measured and drawn with one of its fonts ("mj2d00_MessageFont_32_I4.brfnt",
-// "mj2d01_marioFont_64_IA4.brfnt", "mj2d00_PictureFont_32_RGBA8.brfnt").
+// "mj2d01_marioFont_64_IA4.brfnt", "mj2d00_PictureFont_32_RGBA8.brfnt"). This is the runtime's own
+// text: characters a mod's font draws as icons come from the Mario font (layout panes keep them).
 std::shared_ptr<Font> LoadFont(const std::string& name);
 bool FontReady(const Font* font);
 float MeasureText(const Font& font, const std::u16string& text, float fontSize);
