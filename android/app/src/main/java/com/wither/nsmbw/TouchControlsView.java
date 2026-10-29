@@ -38,6 +38,7 @@ final class TouchControlsView extends View {
     private static final int MODE_BUTTONS = 1;  // the finger presses whatever button it is over
     private static final int MODE_PAD = 2;      // the finger steers the cross-pad until lifted
     private static final int MODE_MENU = 3;     // the press started on the menu button
+    private static final int MODE_REVEAL = 4;   // the press brought the hidden remote back; it does nothing else
 
     interface Listener {
         void onTouchInput(int buttons, boolean shake);
@@ -47,6 +48,9 @@ final class TouchControlsView extends View {
         /** A finger held on the game's menus (menu mode), as fractions of the view; held is false
          *  when it is lifted. The game's sliders follow it. */
         void onPointer(float x, float y, boolean held);
+        /** A finger landed while a controller has the remote hidden: whether to show it again (only
+         *  while playing, never on a menu). */
+        boolean canRevealControls();
     }
 
     private static final class Button {
@@ -74,6 +78,7 @@ final class TouchControlsView extends View {
     private boolean controlsVisible = true;
     private final android.util.SparseBooleanArray freeTaps = new android.util.SparseBooleanArray();
     private boolean menuMode;  // the game's menus are up: no remote, taps go to the game
+    private boolean controllerHidden;  // a controller is in use: no remote until a tap while playing
     private boolean haptics = true;
     private final android.util.SparseArray<float[]> tapStarts = new android.util.SparseArray<>();
     private int dragId = -1;  // the finger the game's menus follow (onPointer), or -1
@@ -117,7 +122,18 @@ final class TouchControlsView extends View {
         invalidate();
     }
 
-    private boolean showsControls() { return controlsVisible && !menuMode; }
+    /**
+     * Hidden while a controller is in use (it connected, or its buttons or sticks moved); a tap while
+     * playing shows the remote again. The menu button stays either way.
+     */
+    void setControllerHidden(boolean hidden) {
+        if (controllerHidden == hidden) return;
+        controllerHidden = hidden;
+        release();
+        invalidate();
+    }
+
+    private boolean showsControls() { return controlsVisible && !menuMode && !controllerHidden; }
 
     /** Lets go of everything, e.g. when the app loses focus or a menu opens. */
     void release() {
@@ -179,6 +195,12 @@ final class TouchControlsView extends View {
             final int i = e.getActionIndex();
             tapStarts.put(e.getPointerId(i), new float[] {e.getX(i), e.getY(i)});
             tapTimes.put(e.getPointerId(i), e.getEventTime());
+            if (controllerHidden && controlsVisible && !menuMode && !menuAt(e.getX(i), e.getY(i))
+                    && listener != null && listener.canRevealControls()) {
+                setControllerHidden(false);
+                pointerModes.put(e.getPointerId(i), MODE_REVEAL);
+                return true;
+            }
             press(e.getPointerId(i), e.getX(i), e.getY(i));
             if (menuMode && dragId < 0 && pointerModes.get(e.getPointerId(i), 0) != MODE_MENU) {
                 dragId = e.getPointerId(i);

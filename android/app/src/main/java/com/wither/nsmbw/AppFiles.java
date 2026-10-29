@@ -56,16 +56,16 @@ final class AppFiles {
     /** Why the extracted game at `root` can't be played, or null when it can. */
     static String gameProblem(File root) {
         if (!isGameRoot(root)) {
-            return "That isn't an extracted game: it needs the files and sys folders Dolphin's "
-                    + "Extract Entire Disc makes.";
+            return Lang.t("That isn't an extracted game: it needs the files and sys folders Dolphin's "
+                    + "Extract Entire Disc makes.");
         }
         final byte[] header = new byte[8];
         try (InputStream in = new FileInputStream(new File(root, "sys/boot.bin"))) {
             if (readFully(in, header) < header.length) {
-                return "Its sys/boot.bin is too short, so the game can't be identified.";
+                return Lang.t("Its sys/boot.bin is too short, so the game can't be identified.");
             }
         } catch (IOException e) {
-            return "It has no sys/boot.bin, so the game can't be identified.";
+            return Lang.t("It has no sys/boot.bin, so the game can't be identified.");
         }
         return headerProblem(header);
     }
@@ -78,12 +78,12 @@ final class AppFiles {
         final String id = new String(header, 0, 6, StandardCharsets.US_ASCII);
         final int revision = header[7] & 0xFF;
         if (!id.equals("SMNE01")) {
-            return "That is " + id.trim() + ", not New Super Mario Bros. Wii for the USA (SMNE01). "
-                    + "This port runs only the USA disc, revision 1.";
+            return Lang.f("That is %s, not New Super Mario Bros. Wii for the USA (SMNE01). "
+                    + "This port runs only the USA disc, revision 1.", id.trim());
         }
         if (revision != 1) {
-            return "That is New Super Mario Bros. Wii revision " + revision + ". This port runs only "
-                    + "revision 1 (Dolphin shows it under Properties > Info).";
+            return Lang.f("That is New Super Mario Bros. Wii revision %d. This port runs only "
+                    + "revision 1 (Dolphin shows it under Properties > Info).", revision);
         }
         return null;
     }
@@ -190,6 +190,66 @@ final class AppFiles {
             android.util.Log.w("NSMBW", "could not read the old Config.toml", e);
         }
         return kept.toString();
+    }
+
+    /** Whether `line` sets `key` (a TOML `key = value` line). */
+    private static boolean setsKey(String line, String key) {
+        final String trimmed = line.trim();
+        final int eq = trimmed.indexOf('=');
+        return eq > 0 && trimmed.substring(0, eq).trim().equals(key);
+    }
+
+    /** The game's language, Config.toml's [game] language: "en" (the default), "es" or "fr". */
+    static String gameLanguage(Context context) {
+        final File config = new File(dataDir(context), "Config.toml");
+        if (!config.isFile()) return "en";
+        try {
+            boolean inGame = false;
+            for (String line : java.nio.file.Files.readAllLines(config.toPath(), StandardCharsets.UTF_8)) {
+                final String trimmed = line.trim();
+                if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                    inGame = trimmed.equals("[game]");
+                } else if (inGame && setsKey(trimmed, "language")) {
+                    return trimmed.substring(trimmed.indexOf('=') + 1).trim().replaceAll("^[\"']|[\"']$", "");
+                }
+            }
+        } catch (IOException e) {
+            android.util.Log.w("NSMBW", "could not read Config.toml", e);
+        }
+        return "en";
+    }
+
+    /** Sets [game] language in Config.toml, as the game's Language tab does; the game reads it at boot. */
+    static void setGameLanguage(Context context, String code) throws IOException {
+        final File config = new File(dataDir(context), "Config.toml");
+        final java.util.List<String> lines = config.isFile()
+                ? new java.util.ArrayList<>(java.nio.file.Files.readAllLines(config.toPath(), StandardCharsets.UTF_8))
+                : new java.util.ArrayList<>();
+        final String entry = "language = \"" + code + "\"";
+        int start = -1, end = lines.size();
+        for (int i = 0; i < lines.size(); ++i) {
+            final String trimmed = lines.get(i).trim();
+            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                if (start >= 0) {
+                    end = i;
+                    break;
+                }
+                if (trimmed.equals("[game]")) start = i;
+            }
+        }
+        if (start < 0) {
+            lines.add("");
+            lines.add("[game]");
+            lines.add(entry);
+        } else {
+            int at = -1;
+            for (int i = start + 1; i < end; ++i) {
+                if (setsKey(lines.get(i), "language")) at = i;
+            }
+            if (at >= 0) lines.set(at, entry);
+            else lines.add(start + 1, entry);
+        }
+        writeText(config, String.join("\n", lines) + "\n");
     }
 
     private static String apkStamp(Context context) {

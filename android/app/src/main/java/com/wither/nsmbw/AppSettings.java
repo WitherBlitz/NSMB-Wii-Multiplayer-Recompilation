@@ -83,8 +83,12 @@ final class AppSettings {
     static final String[] RENDERER_LABELS = {"Automatic", "Vulkan", "OpenGL ES"};
     String graphicsApi() {
         final String value = prefs.getString("graphics_api", "auto");
+        if (!OPENGLES_AVAILABLE && value.equals("opengles")) return "vulkan";
         return java.util.Arrays.asList(RENDERERS).contains(value) ? value : "auto";
     }
+    /** OpenGL ES is walled off for now (a later version): greyed out in the Renderer list, and a
+     *  saved choice of it runs Vulkan. */
+    static final boolean OPENGLES_AVAILABLE = false;
     void setGraphicsApi(String value) { prefs.edit().putString("graphics_api", value).commit(); }
     static String rendererLabel(String value) {
         final int index = java.util.Arrays.asList(RENDERERS).indexOf(value);
@@ -112,7 +116,7 @@ final class AppSettings {
 
     /** "2× (960p)": the scale and the number of lines it renders, as the menu shows it. */
     static String resolutionLabel(float scale) {
-        if (scale <= 0f) return "Match screen";
+        if (scale <= 0f) return Lang.t("Match screen");
         final String factor = scale == Math.rint(scale)
                 ? String.valueOf((int) scale) : String.valueOf(scale);
         return factor + "× (" + Math.round(480 * scale) + "p)";

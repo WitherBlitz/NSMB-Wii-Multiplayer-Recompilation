@@ -49,6 +49,8 @@ public class GameActivity extends SDLActivity
     static native void nativePointer(float x, float y, boolean held);
     /** Whether a menu that taps drive is up (the remote is hidden then). */
     static native boolean nativeTapScreen();
+    /** Whether the player is in a course or on the world map with no menu up. */
+    static native boolean nativePlaying();
     /** {render scale, show FPS, aspect} after the game's own settings window changed them, else null. */
     static native float[] nativeTakeSettings();
     /**
@@ -117,6 +119,7 @@ public class GameActivity extends SDLActivity
         addContentView(touch, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         motion = new MotionInput(this, this);
+        watchControllers();
         if (nativeReady) {
             listenForUpdateResult();
             checkForUpdate();
@@ -341,9 +344,90 @@ public class GameActivity extends SDLActivity
         onMenu();
     }
 
+    // --- controllers ---------------------------------------------------------------------------
+
+    /**
+     * A controller hides the on-screen remote: when one connects (or is there at the start) and
+     * whenever its buttons or sticks are used. A tap while playing shows it again
+     * (canRevealControls); it comes back by itself when the last controller goes.
+     */
+    private void watchControllers() {
+        final android.hardware.input.InputManager input =
+                (android.hardware.input.InputManager) getSystemService(Context.INPUT_SERVICE);
+        if (input == null) return;
+        input.registerInputDeviceListener(new android.hardware.input.InputManager.InputDeviceListener() {
+            @Override public void onInputDeviceAdded(int id) {
+                if (isController(android.view.InputDevice.getDevice(id))) touch.setControllerHidden(true);
+            }
+            @Override public void onInputDeviceRemoved(int id) {
+                if (!anyController()) touch.setControllerHidden(false);
+            }
+            @Override public void onInputDeviceChanged(int id) {}
+        }, new android.os.Handler(android.os.Looper.getMainLooper()));
+        if (anyController()) touch.setControllerHidden(true);
+    }
+
+    /**
+     * A real controller: sticks or a joystick pad. Not the gamepad-like TV remotes some systems add
+     * (NVIDIA's Shield remote service on Shield-based Android), which have no stick.
+     */
+    private static boolean isController(android.view.InputDevice device) {
+        return device != null && !device.isVirtual()
+                && (device.getSources() & android.view.InputDevice.SOURCE_JOYSTICK) == android.view.InputDevice.SOURCE_JOYSTICK
+                && device.getMotionRange(android.view.MotionEvent.AXIS_X, android.view.InputDevice.SOURCE_JOYSTICK) != null;
+    }
+
+    private static boolean anyController() {
+        for (int id : android.view.InputDevice.getDeviceIds()) {
+            if (isController(android.view.InputDevice.getDevice(id))) return true;
+        }
+        return false;
+    }
+
+    private static boolean fromGamepad(android.view.InputEvent event) {
+        final int sources = event.getSource();
+        return event.getDeviceId() >= 0
+                && ((sources & android.view.InputDevice.SOURCE_GAMEPAD) == android.view.InputDevice.SOURCE_GAMEPAD
+                || (sources & android.view.InputDevice.SOURCE_JOYSTICK) == android.view.InputDevice.SOURCE_JOYSTICK);
+    }
+
+    @Override
+    public boolean canRevealControls() {
+        if (!nativeReady) return false;
+        try {
+            return nativePlaying();
+        } catch (UnsatisfiedLinkError e) {
+            return false;
+        }
+    }
+
+    /** A stick pushed well past its centre (or a trigger pulled): the controller is in use. */
+    @Override
+    public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
+        if (fromGamepad(event) && event.getAction() == android.view.MotionEvent.ACTION_MOVE) {
+            final int[] axes = {android.view.MotionEvent.AXIS_X, android.view.MotionEvent.AXIS_Y,
+                android.view.MotionEvent.AXIS_Z, android.view.MotionEvent.AXIS_RZ,
+                android.view.MotionEvent.AXIS_HAT_X, android.view.MotionEvent.AXIS_HAT_Y,
+                android.view.MotionEvent.AXIS_LTRIGGER, android.view.MotionEvent.AXIS_RTRIGGER};
+            for (int axis : axes) {
+                if (Math.abs(event.getAxisValue(axis)) > 0.5f) {
+                    touch.setControllerHidden(true);
+                    break;
+                }
+            }
+        }
+        return super.dispatchGenericMotionEvent(event);
+    }
+
     /** SDL takes the Back key as keyboard input before onBackPressed: the Back menu gets it first. */
     @Override
     public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        if (event.getAction() == android.view.KeyEvent.ACTION_DOWN && fromGamepad(event)
+                && (android.view.KeyEvent.isGamepadButton(event.getKeyCode())
+                || (event.getKeyCode() >= android.view.KeyEvent.KEYCODE_DPAD_UP
+                && event.getKeyCode() <= android.view.KeyEvent.KEYCODE_DPAD_RIGHT))) {
+            touch.setControllerHidden(true);
+        }
         if (event.getKeyCode() == android.view.KeyEvent.KEYCODE_BACK) {
             if (event.getAction() == android.view.KeyEvent.ACTION_UP && !event.isCanceled()) {
                 onMenu();

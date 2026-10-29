@@ -99,6 +99,7 @@ public final class LauncherActivity extends Activity {
             }
             skipAfterCheck = true;  // Auto Update first; the game opens once there's nothing to install
         }
+        Lang.load(this);
         final int pad = dp(20);
         final int screenWidth = getResources().getDisplayMetrics().widthPixels;
         // Landscape (or a tablet): title, status and Play on the left, the rest beside them.
@@ -113,14 +114,27 @@ public final class LauncherActivity extends Activity {
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setGravity(Gravity.START);
         header.addView(title, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        final TextView help = text("Help", 15);
+        // The game's language, with a globe on its left; the start menu follows it too.
+        final TextView language = text(Lang.NAMES[Lang.index()], 15);
+        language.setTypeface(MEDIUM);
+        language.setPadding(dp(14), dp(8), dp(18), dp(8));
+        language.setBackground(rounded(Color.TRANSPARENT, Color.TRANSPARENT, dp(18), STROKE));
+        language.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_language, 0, 0, 0);
+        language.setCompoundDrawablePadding(dp(6));
+        language.setContentDescription(Lang.t("Language"));
+        language.setOnClickListener(v -> chooseLanguage());
+        final LinearLayout.LayoutParams languageParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        languageParams.rightMargin = dp(8);
+        header.addView(language, languageParams);
+        final TextView help = text(Lang.t("Help"), 15);
         help.setTypeface(MEDIUM);
         help.setPadding(dp(18), dp(8), dp(18), dp(8));
         help.setBackground(rounded(Color.TRANSPARENT, Color.TRANSPARENT, dp(18), STROKE));
         help.setOnClickListener(v -> showHelp());
         header.addView(help);
         intro.addView(header, matchWidth(0));
-        final TextView subtitle = text("New Super Mario Bros. Wii, recompiled to run natively", 15);
+        final TextView subtitle = text(Lang.t("New Super Mario Bros. Wii, recompiled to run natively"), 15);
         subtitle.setGravity(Gravity.START);
         subtitle.setTextColor(MUTED);
         intro.addView(subtitle, matchWidth(dp(2)));
@@ -132,77 +146,77 @@ public final class LauncherActivity extends Activity {
         status.setBackground(rounded(SURFACE, SURFACE, dp(16), 0));
         intro.addView(status, matchWidth(dp(20)));
 
-        play = button("Play", true);
+        play = button(Lang.t("Play"), true);
         play.setOnClickListener(v -> startActivity(GameActivity.intent(this)));
         intro.addView(play, matchWidth(dp(14)));
 
-        final LinearLayout updates = card("Updates");
-        updateCheck = button("Check for Updates", false);
+        final LinearLayout updates = card(Lang.t("Updates"));
+        updateCheck = button(Lang.t("Check for Updates"), false);
         updateCheck.setOnClickListener(v -> checkForUpdates(false));
         updates.addView(updateCheck, matchWidth(dp(10)));
-        autoUpdate = toggle(updates, "Auto Update", "On: opening the app installs the latest release from "
-                + "GitHub when there is one. Your saves, settings and game files are kept.", v -> {
+        autoUpdate = toggle(updates, Lang.t("Auto Update"), Lang.t("On: opening the app installs the latest release from "
+                + "GitHub when there is one. Your saves, settings and game files are kept."), v -> {
                     settings.setAutoUpdate(!settings.autoUpdate());
                     updateAutoUpdateButton();
                 });
         updateAutoUpdateButton();
 
-        final LinearLayout options = card("Options");
-        final Button settingsButton = button("Settings", false);
+        final LinearLayout options = card(Lang.t("Options"));
+        final Button settingsButton = button(Lang.t("Settings"), false);
         settingsButton.setOnClickListener(v -> SettingsMenu.show(this));
         options.addView(settingsButton, matchWidth(dp(10)));
-        final Button devices = button("Tailscale & LAN Devices", false);
+        final Button devices = button(Lang.t("Tailscale & LAN Devices"), false);
         devices.setOnClickListener(v -> DevicesDialog.show(this));
         options.addView(devices, matchWidth(dp(10)));
-        skip = toggle(options, "Skip Start Menu", "On: opening the app goes straight into the game. "
-                + "In the game, the phone's Back gesture and Start Menu bring you back here.", v -> {
+        skip = toggle(options, Lang.t("Skip Start Menu"), Lang.t("On: opening the app goes straight into the game. "
+                + "In the game, the phone's Back gesture and Start Menu bring you back here."), v -> {
                     settings.setSkipStartMenu(!settings.skipStartMenu());
                     updateSkipButton();
                 });
         updateSkipButton();
-        mainProcess = toggle(options, "Xiaomi Mode", "On: the game runs in the app's main process. For "
+        mainProcess = toggle(options, Lang.t("Xiaomi Mode"), Lang.t("On: the game runs in the app's main process. For "
                 + "Xiaomi, Redmi and POCO phones (on by default there), whose system closes the game's own "
-                + "process and leaves a black screen.", v -> {
+                + "process and leaves a black screen."), v -> {
                     settings.setGameInMainProcess(!settings.gameInMainProcess());
                     showToggle(mainProcess, settings.gameInMainProcess());
                 });
         showToggle(mainProcess, settings.gameInMainProcess());
 
-        final LinearLayout gameData = card("Game Data");
+        final LinearLayout gameData = card(Lang.t("Game Data"));
         // How to get the game files, the same steps KartPad gives, until a game is imported.
         final LinearLayout stepsBox = new LinearLayout(this);
         stepsBox.setOrientation(LinearLayout.VERTICAL);
-        final TextView stepsTitle = text("Get the game files (once)", 18);
+        final TextView stepsTitle = text(Lang.t("Get the game files (once)"), 18);
         stepsTitle.setTypeface(Typeface.DEFAULT_BOLD);
         stepsTitle.setGravity(Gravity.START);
         stepsBox.addView(stepsTitle);
-        final TextView stepsText = text(
+        final TextView stepsText = text(Lang.t(
                 "1. In Dolphin on a computer, right-click New Super Mario Bros. Wii and choose Properties.\n"
                 + "2. Open Filesystem, right-click the disc at the top and choose Extract Entire Disc.\n"
                 + "3. Copy that folder (or a zip of it) to this phone.\n"
                 + "4. Tap Import from Extracted Game Data Folder\u2026 or Import Game Data Zip\u2026 below and choose it.\n\n"
-                + "Use the USA disc, revision 1 (SMNE01): Dolphin shows the revision under Properties > Info.", 15);
+                + "Use the USA disc, revision 1 (SMNE01): Dolphin shows the revision under Properties > Info."), 15);
         stepsText.setGravity(Gravity.START);
         stepsText.setPadding(0, dp(6), 0, dp(14));
         stepsText.setLineSpacing(dp(3), 1f);
         stepsBox.addView(stepsText);
         steps = stepsBox;
         gameData.addView(stepsBox, matchWidth(dp(10)));
-        final TextView importHelp = text("Import your own New Super Mario Bros. Wii (USA, SMNE01) once. "
+        final TextView importHelp = text(Lang.t("Import your own New Super Mario Bros. Wii (USA, SMNE01) once. "
                 + "Easiest: the folder Dolphin's Extract Entire Disc makes (DATA, or the folder that holds it), "
-                + "or a zip of that folder. Your saves are kept.", 13);
+                + "or a zip of that folder. Your saves are kept."), 13);
         importHelp.setGravity(Gravity.START);
         importHelp.setTextColor(MUTED);
         gameData.addView(importHelp, matchWidth(dp(8)));
-        final Button importFolder = button("Import from Extracted Game Data Folder\u2026", false);
+        final Button importFolder = button(Lang.t("Import from Extracted Game Data Folder\u2026"), false);
         importFolder.setOnClickListener(v -> startActivityForResult(
                 new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQUEST_IMPORT));
         gameData.addView(importFolder, matchWidth(dp(12)));
-        final Button importZip = button("Import Game Data Zip\u2026", false);
+        final Button importZip = button(Lang.t("Import Game Data Zip\u2026"), false);
         importZip.setOnClickListener(v -> pickZip());
         gameData.addView(importZip, matchWidth(dp(10)));
 
-        final Button downloadLogs = button("Download Logs (For Github Reports)", false);
+        final Button downloadLogs = button(Lang.t("Download Logs (For Github Reports)"), false);
         downloadLogs.setOnClickListener(v -> LogExport.pickDestination(this, REQUEST_LOGS));
 
         final TextView version = text("NSMBW " + versionText(), 13);
@@ -265,13 +279,20 @@ public final class LauncherActivity extends Activity {
             return;
         }
         intent.removeExtra(EXTRA_RESTART_GAME);
-        status.setText("Starting the LAN game...");
+        status.setText(Lang.t("Starting the LAN game..."));
         main.postDelayed(() -> startActivity(GameActivity.intent(this)), 700);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        // The game's Language tab may have changed the language since this screen was drawn.
+        final int shown = Lang.index();
+        Lang.load(this);
+        if (Lang.index() != shown) {
+            recreate();
+            return;
+        }
         refresh();
         // Back from "Allow from this source": carry on with the update that was waiting for it.
         if (waitingUpdate != null && Updater.canInstall(this)) {
@@ -294,7 +315,7 @@ public final class LauncherActivity extends Activity {
         }
         updating = true;
         updateCheck.setEnabled(false);
-        updateCheck.setText("Checking for updates\u2026");
+        updateCheck.setText(Lang.t("Checking for updates\u2026"));
         new Thread(() -> {
             Updater.Release found = null;
             String failure = null;
@@ -308,15 +329,15 @@ public final class LauncherActivity extends Activity {
             main.post(() -> {
                 updating = false;
                 updateCheck.setEnabled(true);
-                updateCheck.setText("Check for Updates");
+                updateCheck.setText(Lang.t("Check for Updates"));
                 final String installed = Updater.installedVersion(this);
                 if (release != null && Updater.isNewer(release.version, installed)) {
                     startUpdate(release);
                 } else if (!automatic) {
-                    final String message = error != null ? "Couldn't check for updates: " + error
-                            : release == null ? "The latest release has no Android download."
-                            : "You have the latest version (" + installed + ").";
-                    new AlertDialog.Builder(this).setMessage(message).setPositiveButton("OK", null).show();
+                    final String message = error != null ? Lang.f("Couldn't check for updates: %s", error)
+                            : release == null ? Lang.t("The latest release has no Android download.")
+                            : Lang.f("You have the latest version (%s).", installed);
+                    new AlertDialog.Builder(this).setMessage(message).setPositiveButton(Lang.t("OK"), null).show();
                 } else if (skipAfterCheck) {
                     openGame();
                 }
@@ -327,15 +348,15 @@ public final class LauncherActivity extends Activity {
     private void startUpdate(Updater.Release release) {
         if (!Updater.canInstall(this)) {
             new AlertDialog.Builder(this)
-                    .setTitle("NSMBW " + release.version + " is available")
-                    .setMessage("To install updates, let NSMBW install apps: turn on Allow from this source "
-                            + "on the next screen, then come back here.")
-                    .setPositiveButton("Open Settings", (d, w) -> {
+                    .setTitle(Lang.f("NSMBW %s is available", release.version))
+                    .setMessage(Lang.t("To install updates, let NSMBW install apps: turn on Allow from this source "
+                            + "on the next screen, then come back here."))
+                    .setPositiveButton(Lang.t("Open Settings"), (d, w) -> {
                         waitingUpdate = release;
                         startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                                 Uri.parse("package:" + getPackageName())));
                     })
-                    .setNegativeButton("Not Now", (d, w) -> {
+                    .setNegativeButton(Lang.t("Not Now"), (d, w) -> {
                         if (skipAfterCheck) {
                             openGame();
                         }
@@ -344,14 +365,14 @@ public final class LauncherActivity extends Activity {
             return;
         }
         final ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        final TextView label = text("Downloading\u2026", 14);
+        final TextView label = text(Lang.t("Downloading\u2026"), 14);
         final LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(24), dp(16), dp(24), dp(8));
         box.addView(bar);
         box.addView(label);
         final AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Updating to NSMBW " + release.version).setView(box).setCancelable(false).show();
+                .setTitle(Lang.f("Updating to NSMBW %s", release.version)).setView(box).setCancelable(false).show();
         new Thread(() -> {
             String failure = null;
             try {
@@ -360,8 +381,7 @@ public final class LauncherActivity extends Activity {
                     if (total > 0) {
                         bar.setMax(1000);
                         bar.setProgress((int) (done * 1000 / total));
-                        label.setText(String.format(Locale.US, "Downloading\u2026 %d of %d MB",
-                                done >> 20, total >> 20));
+                        label.setText(Lang.f("Downloading\u2026 %d of %d MB", done >> 20, total >> 20));
                     }
                 }));
             } catch (Exception e) {
@@ -371,14 +391,14 @@ public final class LauncherActivity extends Activity {
             main.post(() -> {
                 dialog.dismiss();
                 if (error != null) {
-                    new AlertDialog.Builder(this).setMessage("The update failed: " + error)
-                            .setPositiveButton("OK", (d, w) -> {
+                    new AlertDialog.Builder(this).setMessage(Lang.f("The update failed: %s", error))
+                            .setPositiveButton(Lang.t("OK"), (d, w) -> {
                                 if (skipAfterCheck) {
                                     openGame();
                                 }
                             }).show();
                 } else {
-                    status.setText("Installing NSMBW " + release.version + "\u2026");
+                    status.setText(Lang.f("Installing NSMBW %s\u2026", release.version));
                 }
             });
         }, "update-download").start();
@@ -402,11 +422,11 @@ public final class LauncherActivity extends Activity {
         final boolean present = AppFiles.hasGameData(this);
         final String problem = present ? AppFiles.gameProblem(AppFiles.gameDir(this)) : null;
         if (!present) {
-            showStatus("No game data yet. Import the folder Dolphin made, or a zip of it.", AMBER);
+            showStatus(Lang.t("No game data yet. Import the folder Dolphin made, or a zip of it."), AMBER);
         } else if (problem != null) {
-            showStatus("The imported game can't be played. " + problem, ACCENT);
+            showStatus(Lang.f("The imported game can't be played. %s", problem), ACCENT);
         } else {
-            showStatus("Game data is installed and checked.", GREEN);
+            showStatus(Lang.t("Game data is installed and checked."), GREEN);
         }
         play.setEnabled(present && problem == null);
         steps.setVisibility(present && problem == null ? View.GONE : View.VISIBLE);
@@ -417,12 +437,12 @@ public final class LauncherActivity extends Activity {
         final LinearLayout column = new LinearLayout(this);
         column.setOrientation(LinearLayout.VERTICAL);
         column.setPadding(dp(24), dp(16), dp(24), dp(16));
-        section(column, "1. Import New Super Mario Bros. Wii", DOLPHIN_STEPS);
-        section(column, "2. Play", "Tap Play. For LAN play, move up to the Couch button at the top right of the save file screen and switch it to LAN; "
-                + "every player imports their own game.");
-        section(column, "Stuck on a step?", "The GitHub page covers the supported game, the steps above "
-                + "and common problems.");
-        column.addView(link("Setup Guide on GitHub", v -> openWeb(PROJECT_URL + "#getting-the-game-files")));
+        section(column, Lang.t("1. Import New Super Mario Bros. Wii"), Lang.t(DOLPHIN_STEPS));
+        section(column, Lang.t("2. Play"), Lang.t("Tap Play. For LAN play, move up to the Couch button at the top right of the save file screen and switch it to LAN; "
+                + "every player imports their own game."));
+        section(column, Lang.t("Stuck on a step?"), Lang.t("The GitHub page covers the supported game, the steps above "
+                + "and common problems."));
+        column.addView(link(Lang.t("Setup Guide on GitHub"), v -> openWeb(PROJECT_URL + "#getting-the-game-files")));
         final TextView version = text("NSMBW " + versionText(), 13);
         version.setGravity(Gravity.START);
         version.setTextColor(Color.rgb(170, 178, 186));
@@ -430,8 +450,23 @@ public final class LauncherActivity extends Activity {
         column.addView(version);
         final ScrollView scroll = new ScrollView(this);
         scroll.addView(column);
-        new AlertDialog.Builder(this).setTitle("Getting Started").setView(scroll)
-                .setPositiveButton("Done", null).show();
+        new AlertDialog.Builder(this).setTitle(Lang.t("Getting Started")).setView(scroll)
+                .setPositiveButton(Lang.t("Done"), null).show();
+    }
+
+    /** The Language button: sets the game's language and redraws this screen in it. */
+    private void chooseLanguage() {
+        new AlertDialog.Builder(this)
+                .setTitle(Lang.t("Language"))
+                .setSingleChoiceItems(Lang.NAMES, Lang.index(), (dialog, which) -> {
+                    dialog.dismiss();
+                    if (which != Lang.index()) {
+                        Lang.set(this, which);
+                        recreate();
+                    }
+                })
+                .setNegativeButton(Lang.t("Cancel"), null)
+                .show();
     }
 
     private void section(LinearLayout column, String title, String body) {
@@ -450,7 +485,7 @@ public final class LauncherActivity extends Activity {
         try {
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
         } catch (ActivityNotFoundException e) {
-            new AlertDialog.Builder(this).setMessage(url).setPositiveButton("OK", null).show();
+            new AlertDialog.Builder(this).setMessage(url).setPositiveButton(Lang.t("OK"), null).show();
         }
     }
 
@@ -495,15 +530,17 @@ public final class LauncherActivity extends Activity {
             try {
                 final int sessions = LogExport.write(this, destination, appVersion);
                 message = sessions == 0
-                        ? "Saved, but there are no game logs yet: play once, then download them again."
-                        : "Saved the logs of the last " + sessions + " game session" + (sessions == 1 ? "" : "s")
-                        + ". Attach the zip to your GitHub issue.";
+                        ? Lang.t("Saved, but there are no game logs yet: play once, then download them again.")
+                        : sessions == 1
+                        ? Lang.t("Saved the logs of the last game session. Attach the zip to your GitHub issue.")
+                        : Lang.f("Saved the logs of the last %d game sessions. Attach the zip to your GitHub issue.",
+                                sessions);
             } catch (IOException | RuntimeException e) {
-                message = "Could not save the logs: " + e.getMessage();
+                message = Lang.f("Could not save the logs: %s", e.getMessage());
             }
             final String text = message;
             runOnUiThread(() -> new AlertDialog.Builder(this).setMessage(text)
-                    .setPositiveButton("OK", null).show());
+                    .setPositiveButton(Lang.t("OK"), null).show());
         }, "LogExport").start();
     }
 
@@ -521,14 +558,14 @@ public final class LauncherActivity extends Activity {
 
     private void runImport(ImportJob job) {
         final ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        final TextView label = text("Looking at the game files…", 14);
+        final TextView label = text(Lang.t("Looking at the game files…"), 14);
         final LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(24), dp(16), dp(24), dp(8));
         box.addView(bar);
         box.addView(label);
         final AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Importing game data").setView(box).setCancelable(false).show();
+                .setTitle(Lang.t("Importing game data")).setView(box).setCancelable(false).show();
 
         new Thread(() -> {
             String result;
@@ -543,13 +580,13 @@ public final class LauncherActivity extends Activity {
                 }));
             } catch (Exception e) {
                 AppFiles.deleteRecursively(stagingDir());
-                result = "Import failed: " + e.getMessage() + "\n\nNothing was changed.";
+                result = Lang.f("%s\n\nNothing was changed.", Lang.f("Import failed: %s", e.getMessage()));
             }
             final String message = result;
             main.post(() -> {
                 dialog.dismiss();
                 refresh();
-                new AlertDialog.Builder(this).setMessage(message).setPositiveButton("OK", null).show();
+                new AlertDialog.Builder(this).setMessage(message).setPositiveButton(Lang.t("OK"), null).show();
             });
         }, "game-import").start();
     }
@@ -562,13 +599,13 @@ public final class LauncherActivity extends Activity {
         final String problem = AppFiles.gameProblem(root);
         if (problem != null) {
             AppFiles.deleteRecursively(staging);
-            return problem + "\n\nNothing was changed.";
+            return Lang.f("%s\n\nNothing was changed.", problem);
         }
         final File game = AppFiles.gameDir(this);
         AppFiles.deleteRecursively(game);
         if (!root.renameTo(game)) throw new IOException("cannot move the imported data into place");
         AppFiles.deleteRecursively(staging);
-        return "Imported " + fileCount + " files. Tap Play to start.";
+        return Lang.f("Imported %d files. Tap Play to start.", fileCount);
     }
 
     /** A folder from the document picker: copied into the staging folder, checked, then swapped in. */
@@ -581,15 +618,15 @@ public final class LauncherActivity extends Activity {
                 if (e.directory && e.name.equalsIgnoreCase("DATA") && looksLikeGame(resolver, tree, e.id)) nested = e.id;
             }
             if (nested == null) {
-                return "That folder is not an extracted game: it needs files/ and sys/ (or a DATA folder holding "
-                        + "them), as Dolphin's Extract Entire Disc makes.";
+                return Lang.t("That folder is not an extracted game: it needs files/ and sys/ (or a DATA folder holding "
+                        + "them), as Dolphin's Extract Entire Disc makes.");
             }
             rootId = nested;
         }
         // Which game and revision, before copying anything.
         final String problem = treeProblem(resolver, tree, rootId);
         if (problem != null) {
-            return problem + "\n\nNothing was changed.";
+            return Lang.f("%s\n\nNothing was changed.", problem);
         }
         final List<String[]> files = new ArrayList<>();  // {documentId, relative path}
         collect(resolver, tree, rootId, "", files);
@@ -605,7 +642,7 @@ public final class LauncherActivity extends Activity {
                 if (in == null) throw new IOException("cannot read " + files.get(i)[1]);
                 AppFiles.copy(in, out);
             }
-            progress.update(i + 1, files.size(), (i + 1) + " of " + files.size() + " files");
+            progress.update(i + 1, files.size(), Lang.f("%d of %d files", i + 1, files.size()));
         }
         return install(staging, files.size());
     }
@@ -623,12 +660,12 @@ public final class LauncherActivity extends Activity {
             }
         }
         if (bootId == null) {
-            return "That folder has no sys/boot.bin, so the game can't be identified.";
+            return Lang.t("That folder has no sys/boot.bin, so the game can't be identified.");
         }
         final byte[] header = new byte[8];
         try (InputStream in = resolver.openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, bootId))) {
             if (in == null || AppFiles.readFully(in, header) < header.length) {
-                return "That folder's sys/boot.bin is too short, so the game can't be identified.";
+                return Lang.t("That folder's sys/boot.bin is too short, so the game can't be identified.");
             }
         }
         return AppFiles.headerProblem(header);
@@ -666,10 +703,9 @@ public final class LauncherActivity extends Activity {
                     ++count;
                     if (size > 0) {
                         final int permille = (int) Math.min(1000, counted.count * 1000 / size);
-                        progress.update(permille, 1000, String.format(Locale.ROOT, "%d of %d MB",
-                                counted.count >> 20, size >> 20));
+                        progress.update(permille, 1000, Lang.f("%d of %d MB", counted.count >> 20, size >> 20));
                     } else {
-                        progress.update(0, 0, count + " files");
+                        progress.update(0, 0, Lang.f("%d files", count));
                     }
                 }
             }
@@ -677,8 +713,8 @@ public final class LauncherActivity extends Activity {
         final File root = findGameRoot(staging, 3);
         if (root == null) {
             AppFiles.deleteRecursively(staging);
-            return "That zip doesn't hold an extracted game: zip the folder Dolphin's Extract Entire Disc made "
-                    + "(the one with files and sys in it).\n\nNothing was changed.";
+            return Lang.f("%s\n\nNothing was changed.", Lang.t("That zip doesn't hold an extracted game: zip the "
+                    + "folder Dolphin's Extract Entire Disc made (the one with files and sys in it)."));
         }
         return install(root, count);
     }
@@ -875,7 +911,7 @@ public final class LauncherActivity extends Activity {
     }
 
     private void showToggle(TextView pill, boolean on) {
-        pill.setText(on ? "On" : "Off");
+        pill.setText(Lang.t(on ? "On" : "Off"));
         pill.setTextColor(on ? Color.WHITE : MUTED);
         final GradientDrawable shape = new GradientDrawable();
         shape.setCornerRadius(dp(17));

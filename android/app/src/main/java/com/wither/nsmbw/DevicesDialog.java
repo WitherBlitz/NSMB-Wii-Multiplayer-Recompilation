@@ -101,31 +101,31 @@ final class DevicesDialog {
             if (own.length() > 0) own.append('\n');
             own.append(address).append(address.startsWith("100.") ? "  (Tailscale)" : "  (Wi-Fi)");
         }
-        column.addView(label(activity, "This phone", 17, true));
-        column.addView(label(activity, own.length() > 0 ? own.toString() : "No network", 15, false));
-        column.addView(label(activity, "Rooms on your Wi-Fi are found by themselves. Over Tailscale, PCs find "
+        column.addView(label(activity, Lang.t("This phone"), 17, true));
+        column.addView(label(activity, own.length() > 0 ? own.toString() : Lang.t("No network"), 15, false));
+        column.addView(label(activity, Lang.t("Rooms on your Wi-Fi are found by themselves. Over Tailscale, PCs find "
                 + "every device, and devices that have played together find each other. To find another "
-                + "phone the first time, add its Tailscale name or address here (or it adds yours).", 13, false));
+                + "phone the first time, add its Tailscale name or address here (or it adds yours)."), 13, false));
 
-        column.addView(label(activity, "Devices asked for rooms", 17, true));
+        column.addView(label(activity, Lang.t("Devices asked for rooms"), 17, true));
         final List<String> devices = readDevices(activity);
         if (devices.isEmpty()) {
-            column.addView(label(activity, "None yet", 15, false));
+            column.addView(label(activity, Lang.t("None yet"), 15, false));
         }
         final AlertDialog[] dialog = new AlertDialog[1];
         for (String device : devices) {
             final TextView row = label(activity, device + "   ✕", 15, false);
             row.setPadding(0, Math.round(8 * density), 0, Math.round(8 * density));
             row.setOnClickListener(v -> new AlertDialog.Builder(activity)
-                    .setMessage("Stop asking " + device + " for rooms?")
-                    .setPositiveButton("Remove", (d, w) -> {
+                    .setMessage(Lang.f("Stop asking %s for rooms?", device))
+                    .setPositiveButton(Lang.t("Remove"), (d, w) -> {
                         final List<String> list = readDevices(activity);
                         list.remove(device);
                         writeDevices(activity, list);
                         dialog[0].dismiss();
                         show(activity);
                     })
-                    .setNegativeButton("Cancel", null)
+                    .setNegativeButton(Lang.t("Cancel"), null)
                     .show());
             column.addView(row);
         }
@@ -133,16 +133,16 @@ final class DevicesDialog {
         final ScrollView scroll = new ScrollView(activity);
         scroll.addView(column);
         dialog[0] = new AlertDialog.Builder(activity)
-                .setTitle("Tailscale & LAN Devices")
+                .setTitle(Lang.t("Tailscale & LAN Devices"))
                 .setView(scroll)
-                .setPositiveButton("Add Device…", (d, w) -> askToAdd(activity))
-                .setNegativeButton("Done", null)
+                .setPositiveButton(Lang.t("Add Device…"), (d, w) -> askToAdd(activity))
+                .setNegativeButton(Lang.t("Done"), null)
                 .show();
     }
 
     private static void askToAdd(Activity activity) {
         final EditText input = new EditText(activity);
-        input.setHint("e.g. s26-ultra or 100.84.140.32");
+        input.setHint(Lang.t("e.g. s26-ultra or 100.84.140.32"));
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         input.setSingleLine(true);
         final float density = activity.getResources().getDisplayMetrics().density;
@@ -152,11 +152,11 @@ final class DevicesDialog {
         box.addView(input, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
         new AlertDialog.Builder(activity)
-                .setTitle("Add a Device")
-                .setMessage("Its Tailscale name (as in the Tailscale app) or address. It is asked for rooms "
-                        + "from now on.")
+                .setTitle(Lang.t("Add a Device"))
+                .setMessage(Lang.t("Its Tailscale name (as in the Tailscale app) or address. It is asked for rooms "
+                        + "from now on."))
                 .setView(box)
-                .setPositiveButton("Add", (d, w) -> {
+                .setPositiveButton(Lang.t("Add"), (d, w) -> {
                     final String text = input.getText().toString().replaceAll("\\s+", "");
                     final List<String> list = readDevices(activity);
                     if (!text.isEmpty() && !text.startsWith("#") && !list.contains(text)) {
@@ -165,7 +165,7 @@ final class DevicesDialog {
                     }
                     show(activity);
                 })
-                .setNegativeButton("Cancel", (d, w) -> show(activity))
+                .setNegativeButton(Lang.t("Cancel"), (d, w) -> show(activity))
                 .show();
     }
 

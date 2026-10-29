@@ -27,14 +27,14 @@ final class SettingsMenu {
     }
 
     private void showMain() {
-        final String[] items = {"Display", "Controls"};
+        final String[] items = {Lang.t("Display"), Lang.t("Controls")};
         new AlertDialog.Builder(activity)
-                .setTitle("Settings")
+                .setTitle(Lang.t("Settings"))
                 .setItems(items, (dialog, which) -> {
                     if (which == 0) showDisplayMenu();
                     else showControlsMenu();
                 })
-                .setNegativeButton("Done", null)
+                .setNegativeButton(Lang.t("Done"), null)
                 .show();
     }
 
@@ -48,16 +48,16 @@ final class SettingsMenu {
 
     private void showDisplayMenu() {
         final String[] items = {
-            "Aspect Ratio: " + aspectLabel(settings.aspectMode()),
-            "Render Resolution: " + AppSettings.resolutionLabel(settings.resolutionScale()),
-            "Performance Monitor: " + (settings.performanceMonitor() ? "On" : "Off"),
-            "Spinning Coins: " + (settings.spinningCoins() ? "On" : "Off"),
-            "V-Sync: " + (settings.vsync() ? "On" : "Off"),
-            "Graphics Compatibility: " + gpuCompatLabel(settings.gpuCompat()),
-            "Renderer: " + AppSettings.rendererLabel(settings.graphicsApi()),
+            Lang.t("Aspect Ratio") + ": " + aspectLabel(settings.aspectMode()),
+            Lang.t("Render Resolution") + ": " + AppSettings.resolutionLabel(settings.resolutionScale()),
+            Lang.t("Performance Monitor") + ": " + onOff(settings.performanceMonitor()),
+            Lang.t("Spinning Coins") + ": " + onOff(settings.spinningCoins()),
+            Lang.t("V-Sync") + ": " + onOff(settings.vsync()),
+            Lang.t("Graphics Compatibility") + ": " + gpuCompatLabel(settings.gpuCompat()),
+            Lang.t("Renderer") + ": " + Lang.t(AppSettings.rendererLabel(settings.graphicsApi())),
         };
         new AlertDialog.Builder(activity)
-                .setTitle("Display")
+                .setTitle(Lang.t("Display"))
                 .setItems(items, (dialog, which) -> {
                     if (which == 0) showAspectChoice();
                     else if (which == 1) showResolutionChoice();
@@ -71,7 +71,7 @@ final class SettingsMenu {
                     else if (which == 5) showGpuCompatChoice();
                     else showRendererChoice();
                 })
-                .setNegativeButton("Back", (dialog, which) -> showMain())
+                .setNegativeButton(Lang.t("Back"), (dialog, which) -> showMain())
                 .show();
     }
 
@@ -81,27 +81,56 @@ final class SettingsMenu {
      */
     private void showRendererChoice() {
         final String[] labels = {
-            "Automatic (recommended): Vulkan, else OpenGL ES",
+            Lang.t("Automatic (recommended): Vulkan, else OpenGL ES"),
             "Vulkan",
             "OpenGL ES 3.1+",
         };
+        if (!AppSettings.OPENGLES_AVAILABLE) {
+            labels[2] = Lang.t("OpenGL ES 3.1+ (in a later version)");
+        }
         final int selected = java.util.Arrays.asList(AppSettings.RENDERERS).indexOf(settings.graphicsApi());
+        // OpenGL ES, while it's walled off: greyed out, and a tap on it does nothing.
+        final android.widget.ArrayAdapter<String> adapter = new android.widget.ArrayAdapter<String>(activity,
+                android.R.layout.select_dialog_singlechoice, labels) {
+            @Override
+            public boolean areAllItemsEnabled() {
+                return AppSettings.OPENGLES_AVAILABLE;
+            }
+
+            @Override
+            public boolean isEnabled(int position) {
+                return position != 2 || AppSettings.OPENGLES_AVAILABLE;
+            }
+
+            @Override
+            public android.view.View getView(int position, android.view.View convertView, android.view.ViewGroup parent) {
+                final android.view.View view = super.getView(position, convertView, parent);
+                view.setEnabled(isEnabled(position));
+                view.setAlpha(isEnabled(position) ? 1f : 0.38f);
+                return view;
+            }
+        };
         new AlertDialog.Builder(activity)
-                .setTitle("Renderer")
-                .setSingleChoiceItems(labels, Math.max(0, selected), (dialog, which) -> {
+                .setTitle(Lang.t("Renderer"))
+                .setSingleChoiceItems(adapter, Math.max(0, selected), (dialog, which) -> {
+                    if (!adapter.isEnabled(which)) return;
                     settings.setGraphicsApi(AppSettings.RENDERERS[which]);
                     save();
                     dialog.dismiss();
                     showDisplayMenu();
                 })
-                .setNegativeButton("Back", (dialog, which) -> showDisplayMenu())
+                .setNegativeButton(Lang.t("Back"), (dialog, which) -> showDisplayMenu())
                 .show();
     }
 
+    private static String onOff(boolean on) {
+        return Lang.t(on ? "On" : "Off");
+    }
+
     private static String gpuCompatLabel(int mode) {
-        if (mode == AppSettings.GPU_COMPAT_ON) return "On";
-        if (mode == AppSettings.GPU_COMPAT_OFF) return "Off";
-        return "Auto";
+        if (mode == AppSettings.GPU_COMPAT_ON) return Lang.t("On");
+        if (mode == AppSettings.GPU_COMPAT_OFF) return Lang.t("Off");
+        return Lang.t("Auto");
     }
 
     /**
@@ -110,41 +139,41 @@ final class SettingsMenu {
      */
     private void showGpuCompatChoice() {
         final String[] labels = {
-            "Auto (recommended): on for the GPUs that need it",
-            "On: always use the GPU fixes",
-            "Off: never use them",
+            Lang.t("Auto (recommended): on for the GPUs that need it"),
+            Lang.t("On: always use the GPU fixes"),
+            Lang.t("Off: never use them"),
         };
         new AlertDialog.Builder(activity)
-                .setTitle("Graphics Compatibility")
+                .setTitle(Lang.t("Graphics Compatibility"))
                 .setSingleChoiceItems(labels, settings.gpuCompat(), (dialog, which) -> {
                     settings.setGpuCompat(which);
                     save();
                     dialog.dismiss();
                     showDisplayMenu();
                 })
-                .setNegativeButton("Back", (dialog, which) -> showDisplayMenu())
+                .setNegativeButton(Lang.t("Back"), (dialog, which) -> showDisplayMenu())
                 .show();
     }
 
     private static String aspectLabel(int mode) {
         switch (mode) {
-            case AppSettings.ASPECT_4_3: return "Original 4:3";
+            case AppSettings.ASPECT_4_3: return Lang.t("Original 4:3");
             case AppSettings.ASPECT_16_9: return "16:9";
-            default: return "Fill Screen";
+            default: return Lang.t("Fill Screen");
         }
     }
 
     private void showAspectChoice() {
-        final String[] labels = {"Original 4:3", "16:9", "Fill Screen"};
+        final String[] labels = {Lang.t("Original 4:3"), "16:9", Lang.t("Fill Screen")};
         new AlertDialog.Builder(activity)
-                .setTitle("Aspect Ratio")
+                .setTitle(Lang.t("Aspect Ratio"))
                 .setSingleChoiceItems(labels, settings.aspectMode(), (dialog, which) -> {
                     settings.setAspectMode(which);
                     save();
                     dialog.dismiss();
                     showDisplayMenu();
                 })
-                .setNegativeButton("Back", (dialog, which) -> showDisplayMenu())
+                .setNegativeButton(Lang.t("Back"), (dialog, which) -> showDisplayMenu())
                 .show();
     }
 
@@ -180,27 +209,27 @@ final class SettingsMenu {
             if (Math.abs(scales[i] - settings.resolutionScale()) < 0.01f) selected = i;
         }
         new AlertDialog.Builder(activity)
-                .setTitle("Render Resolution")
+                .setTitle(Lang.t("Render Resolution"))
                 .setSingleChoiceItems(labels, selected, (dialog, which) -> {
                     settings.setResolutionScale(scales[which]);
                     save();
                     dialog.dismiss();
                     showDisplayMenu();
                 })
-                .setNegativeButton("Back", (dialog, which) -> showDisplayMenu())
+                .setNegativeButton(Lang.t("Back"), (dialog, which) -> showDisplayMenu())
                 .show();
     }
 
     private void showControlsMenu() {
         final String[] items = {
-            "Touch Controls: " + (settings.touchControls() ? "On" : "Off"),
-            "Touch Control Opacity: " + Math.round(settings.touchOpacity() * 100) + "%",
-            "Tilt (turn the phone): " + (settings.motionTilt() ? "On" : "Off"),
-            "Shake (jolt the phone): " + (settings.motionShake() ? "On" : "Off"),
-            "Vibration: " + (settings.haptics() ? "On" : "Off"),
+            Lang.t("Touch Controls") + ": " + onOff(settings.touchControls()),
+            Lang.t("Touch Control Opacity") + ": " + Math.round(settings.touchOpacity() * 100) + "%",
+            Lang.t("Tilt (turn the phone)") + ": " + onOff(settings.motionTilt()),
+            Lang.t("Shake (jolt the phone)") + ": " + onOff(settings.motionShake()),
+            Lang.t("Vibration") + ": " + onOff(settings.haptics()),
         };
         new AlertDialog.Builder(activity)
-                .setTitle("Controls")
+                .setTitle(Lang.t("Controls"))
                 .setItems(items, (dialog, which) -> {
                     switch (which) {
                         case 0: settings.setTouchControls(!settings.touchControls()); break;
@@ -215,7 +244,7 @@ final class SettingsMenu {
                     }
                     showControlsMenu();
                 })
-                .setNegativeButton("Back", (dialog, which) -> showMain())
+                .setNegativeButton(Lang.t("Back"), (dialog, which) -> showMain())
                 .show();
     }
 }
