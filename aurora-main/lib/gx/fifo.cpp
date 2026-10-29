@@ -141,6 +141,7 @@ GxThread& gx_thread() {
       }
     });
     state->thread.detach();
+    Log.info("GX thread started ({} hardware threads)", std::thread::hardware_concurrency());
     return state;
   }();
   return *t;
