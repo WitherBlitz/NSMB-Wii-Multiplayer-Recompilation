@@ -45,7 +45,7 @@ void SetSmartSpin(bool on);
 bool ReverseTilt();
 void SetReverseTilt(bool on);
 
-// Mouse Gyro QoL (desktop; on by default, idle while a controller or Wii Remote is connected): the
+// Mouse Gyro QoL (desktop; off by default, idle while a controller or Wii Remote is connected): the
 // mouse stands in for the remote's motion. Moved left or right, it tilts the remote that way for
 // 5 s (the tilting platforms); moved left and right quickly, it shakes. Saved as [keyboard] mouse_gyro.
 bool MouseGyro();

@@ -228,7 +228,7 @@ bool MouseGyro() {
 #else
     int on = g_mouseGyro.load(std::memory_order_relaxed);
     if (on < 0) {
-        on = RuntimeConfigFile::KeyboardBinding("mouse_gyro") == "false" ? 0 : 1;
+        on = RuntimeConfigFile::KeyboardBinding("mouse_gyro") == "true" ? 1 : 0;
         g_mouseGyro.store(on, std::memory_order_relaxed);
     }
     return on != 0;
