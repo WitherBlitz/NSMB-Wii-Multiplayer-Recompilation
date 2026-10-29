@@ -570,7 +570,7 @@ void GXEnd() {
     sWriteAttrComps = 0;
   }
   if (!aurora::gx::fifo::in_display_list()) {
-    aurora::gx::fifo::drain();
+    aurora::gx::fifo::flush_async();
   }
 }
 

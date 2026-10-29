@@ -78,8 +78,19 @@ void begin_display_list(uint8_t* buf, uint32_t size);
 uint32_t end_display_list();
 bool in_display_list();
 
-// Drain the internal FIFO buffer through the command processor
+// Drain the internal FIFO buffer through the command processor. With the GX thread on, this is a
+// full synchronization: everything queued so far has been decoded when it returns.
 void drain();
+
+// The GX thread (on with 4+ cores; NSMBW_GX_THREAD=0/1 forces it): decoding (process()) runs on a worker thread, in command order, while the
+// game thread carries on producing. Producers that only append commands call flush_async() where
+// they used to drain; anything that reads or writes decoded state directly calls drain() (or
+// sync_if_threaded()) first.
+bool threaded();
+// Hands what is buffered to the worker once enough has built up (threaded), else drains.
+void flush_async();
+// Waits for the worker to finish everything queued (threaded only; a no-op otherwise).
+void sync_if_threaded();
 
 // AuroraBeginCommandDigest: while on, process() and texture copies fold what they see into the digest.
 extern bool g_commandDigestOn;

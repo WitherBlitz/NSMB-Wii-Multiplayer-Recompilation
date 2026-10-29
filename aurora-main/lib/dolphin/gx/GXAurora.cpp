@@ -40,6 +40,7 @@ void GXInsertDebugMarker(const char* label) {
 }
 
 void AuroraSetViewportPolicy(AuroraViewportPolicy policy) {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   const bool changed = g_gxState.viewportPolicy != policy;
   if (changed) {
     // Finish commands using the old framebuffer mapping before changing it.
@@ -177,6 +178,7 @@ void GXRestoreViewportScissorRender() {
 }
 
 void GXSetTexCopySrcRender(u16 left, u16 top, u16 wd, u16 ht) {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   aurora::gx::g_gxState.texCopySrc = {left, top, wd, ht};
   aurora::gx::g_gxState.texCopySrcRenderSpace = true;
 }

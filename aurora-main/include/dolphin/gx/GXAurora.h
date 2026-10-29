@@ -63,6 +63,20 @@ extern "C" {
 
 #define GX_LOAD_AURORA_INVALIDATE_TEX_ALL 0x0035
 
+/*
+ * NSMBW: commands the GX thread (NSMBW_GX_THREAD=1) queues for state the game thread used to set
+ * on the decoded state directly.
+ */
+// A raw draw (submit_raw_draw): u8 primitive, u8 vertex format, u16 vertex count, u32 byte count,
+// then the vertices.
+#define GX_LOAD_AURORA_RAW_DRAW 0x0040
+// GXSetSourceVtxDesc: u8 attribute, u8 type.
+#define GX_LOAD_AURORA_SOURCE_VTXDESC 0x0041
+// GXSetZScaleOffset: f32 scale, f32 offset.
+#define GX_LOAD_AURORA_Z_SCALE_OFFSET 0x0042
+// GXSetScissorBoxOffset: s32 x, s32 y.
+#define GX_LOAD_AURORA_SCISSOR_OFFSET 0x0043
+
 
 /*
  * Debug marker stuff
@@ -113,6 +127,9 @@ uint64_t AuroraEndCommandDigest(void);
 // NSMBW: aurora's vertex descriptor (vcdLo, vcdHi), format `fmt`'s attribute table (vatA/B/C) and
 // normal type, as last set through the GX API.
 void AuroraGetVtxFormatRegs(uint32_t fmt, uint32_t out[6]);
+// NSMBW: with the GX thread (NSMBW_GX_THREAD=1), waits until it has decoded everything queued, so
+// memory a queued command points at may be reused. A no-op otherwise.
+void AuroraGxSync(void);
 // Time spent processing GX commands since start (NSMBW_LOG_FPS only; else 0).
 uint64_t AuroraGxProcessNanosTotal(void);
 // NSMBW: GXCopyTex calls and the new GPU textures they needed, since the last call (profiling).

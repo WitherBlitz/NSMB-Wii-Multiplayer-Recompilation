@@ -153,11 +153,20 @@ static inline void SETVAT(u32* va, u32* vb, u32* vc, GXAttr attr, GXCompCnt cnt,
   }
 }
 
+// These compare against the decoded state, which display lists can change behind the API's back.
+// NSMBW: with the GX thread the decoded state lags behind, so they always answer "differs": the
+// register is sent again, and the command processor drops a write that changes nothing.
 static inline bool AuroraVtxDescDiffers(GXAttr attr, GXAttrType type) {
+  if (aurora::gx::fifo::threaded()) {
+    return true;
+  }
   return attr >= GX_VA_PNMTXIDX && attr < GX_VA_MAX_ATTR && g_gxState.vtxDesc[attr] != type;
 }
 
 static inline bool AuroraVtxAttrFmtDiffers(GXVtxFmt vtxfmt, GXAttr attr, GXCompCnt cnt, GXCompType type, u8 frac) {
+  if (aurora::gx::fifo::threaded()) {
+    return true;
+  }
   if (vtxfmt < GX_VTXFMT0 || vtxfmt >= GX_MAX_VTXFMT || attr < GX_VA_POS || attr >= GX_VA_MAX_ATTR) {
     return true;
   }
@@ -190,6 +199,12 @@ void GXSetVtxDesc(GXAttr attr, GXAttrType type) {
 
 void GXSetSourceVtxDesc(GXAttr attr, GXAttrType type) {
   if (attr >= GX_VA_PNMTXIDX && attr < GX_VA_MAX_ATTR) {
+    if (aurora::gx::fifo::threaded()) {
+      GX_WRITE_AURORA(GX_LOAD_AURORA_SOURCE_VTXDESC);
+      GX_WRITE_U8(static_cast<u8>(attr));
+      GX_WRITE_U8(static_cast<u8>(type));
+      return;
+    }
     g_gxState.sourceVtxDesc[attr] = type;
   }
 }

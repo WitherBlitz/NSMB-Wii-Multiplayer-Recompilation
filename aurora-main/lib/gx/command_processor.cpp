@@ -685,8 +685,12 @@ uint32_t process(const u8* data, u32 size, bool bigEndian) {
     }
 
     case GX_LOAD_AURORA: {
-      if (!handle_aurora(data, pos, size, bigEndian)) {
-        return size;
+      try {
+        if (!handle_aurora(data, pos, size, bigEndian)) {
+          return size;
+        }
+      } catch (const gfx::StagingBatchFull&) {
+        return commandStart;  // a queued raw draw that did not fit: split, then retry it
       }
       break;
     }
@@ -1504,6 +1508,13 @@ static void handle_bp(u32 value, bool bigEndian) {
 }
 
 extern "C" void GXApplyBPReg(u8 reg, u32 value) {
+  // NSMBW: with the GX thread a BP write applied here would overtake everything still queued (the
+  // game's own FIFO writes of material texture registers landed on earlier draws), so it is queued.
+  if (threaded()) {
+    GX_WRITE_U8(CP_CMD_LOAD_BP_REG);
+    GX_WRITE_U32((static_cast<u32>(reg) << 24) | (value & 0x00FFFFFFu));
+    return;
+  }
   const bool wasDirty = g_gxState.stateDirty;
   handle_bp((static_cast<u32>(reg) << 24) | (value & 0x00FFFFFFu), true);
   if (MergeSuspectsOn()) note_write(0, 0x100 | reg, value & 0x00FFFFFFu, wasDirty);
@@ -2287,6 +2298,9 @@ static void merge_into(DrawData* lastDraw, GXPrimitive prim, u16 vtxCount, const
   }
 }
 
+static bool raw_draw_locked(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, uint16_t vtxCount,
+                            uint32_t vertexBytes, std::unique_lock<std::recursive_mutex>* lock);
+
 bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, uint16_t vtxCount,
                      uint32_t vertexBytes) {
   ZoneScoped;
@@ -2300,17 +2314,39 @@ bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, ui
   if (vertices == nullptr || vtxCount == 0 || vertexBytes == 0) {
     return false;
   }
-  if (g_commandDigestOn) UNLIKELY {
-    g_commandDigest = xxh3_hash_s(vertices, vertexBytes, g_commandDigest ^ (u32(prim) << 8 | u32(fmt)));
-  }
 
   if (__gx->dirtyState != 0) UNLIKELY {
     __GXSetDirtyState();
   }
 
+  // NSMBW: with the GX thread, the draw is queued behind everything before it, vertices and all.
+  if (threaded()) {
+    GX_WRITE_AURORA(GX_LOAD_AURORA_RAW_DRAW);
+    GX_WRITE_U8(static_cast<u8>(prim));
+    GX_WRITE_U8(static_cast<u8>(fmt));
+    GX_WRITE_U16(vtxCount);
+    GX_WRITE_U32(vertexBytes);
+    write_data(vertices, vertexBytes);
+    flush_async();
+    return true;
+  }
+  if (g_commandDigestOn) UNLIKELY {
+    g_commandDigest = xxh3_hash_s(vertices, vertexBytes, g_commandDigest ^ (u32(prim) << 8 | u32(fmt)));
+  }
+
   // Raw bridge draws consume live decoded GX state that is also maintained by the HLE producer.
   drain();
 
+  // This entry point bypasses process(), so it owns the renderer lock itself.
+  std::unique_lock gpuLock(aurora::renderer_gpu_mutex());
+  return raw_draw_locked(prim, fmt, vertices, vtxCount, vertexBytes, &gpuLock);
+}
+
+// A raw draw with the renderer lock held: from submit_raw_draw (`lock` set: a full staging batch is
+// split here) or from a queued GX_LOAD_AURORA_RAW_DRAW inside process() (`lock` null: a full batch
+// throws StagingBatchFull, and process() hands the command back to be split and retried).
+static bool raw_draw_locked(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, uint16_t vtxCount,
+                            uint32_t vertexBytes, std::unique_lock<std::recursive_mutex>* lock) {
   u32 vtxSize;
   if (g_gxState.lastVtxFmt == fmt) LIKELY {
     vtxSize = g_gxState.lastVtxSize;
@@ -2331,8 +2367,6 @@ bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, ui
 
   if (!has_complete_primitive(prim, vtxCount)) return true;
 
-  // This entry point bypasses process(), so it owns the renderer lock itself.
-  std::unique_lock gpuLock(aurora::renderer_gpu_mutex());
   // NSMBW: joins the last draw like a FIFO draw would (a run of tiles, glyphs or layout quads with
   // nothing changed between them is one draw). Not in the EFB scratch area below line 456, where the
   // game draws each animated tile frame and light texture before copying it out: merging there lost
@@ -2344,9 +2378,12 @@ bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, ui
     return true;
   }
   if (!admit_draw(prim, fmt, vtxCount, vertexBytes)) {
-    gpuLock.unlock();
+    if (lock == nullptr) {
+      throw gfx::StagingBatchFull{};
+    }
+    lock->unlock();
     gfx::split_staging_batch();
-    gpuLock.lock();
+    lock->lock();
     if (!admit_draw(prim, fmt, vtxCount, vertexBytes))
       throw gfx::StagingCapacityError("Raw draw does not fit after capacity submission");
   }
@@ -2667,6 +2704,32 @@ bool handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     pos += 8;
   } else if (subCmd == GX_LOAD_AURORA_INVALIDATE_TEX_ALL) {
     invalidate_static_texture_cache();
+  } else if (subCmd == GX_LOAD_AURORA_RAW_DRAW) {
+    CHECK(pos + 8 <= size, "GX_LOAD_AURORA_RAW_DRAW read overrun");
+    const auto prim = static_cast<GXPrimitive>(data[pos]);
+    const auto fmt = static_cast<GXVtxFmt>(data[pos + 1]);
+    const u16 vtxCount = read_u16(data + pos + 2, bigEndian);
+    const u32 vertexBytes = read_u32(data + pos + 4, bigEndian);
+    CHECK(pos + 8 + vertexBytes <= size, "GX_LOAD_AURORA_RAW_DRAW vertex overrun");
+    raw_draw_locked(prim, fmt, data + pos + 8, vtxCount, vertexBytes, nullptr);  // may throw StagingBatchFull
+    pos += 8 + vertexBytes;
+  } else if (subCmd == GX_LOAD_AURORA_SOURCE_VTXDESC) {
+    CHECK(pos + 2 <= size, "GX_LOAD_AURORA_SOURCE_VTXDESC read overrun");
+    const u8 attr = data[pos];
+    if (attr >= GX_VA_PNMTXIDX && attr < GX_VA_MAX_ATTR) {
+      g_gxState.sourceVtxDesc[attr] = static_cast<GXAttrType>(data[pos + 1]);
+    }
+    pos += 2;
+  } else if (subCmd == GX_LOAD_AURORA_Z_SCALE_OFFSET) {
+    CHECK(pos + 8 <= size, "GX_LOAD_AURORA_Z_SCALE_OFFSET read overrun");
+    g_gxState.zScale = read_f32(data + pos, bigEndian);
+    g_gxState.zOffset = read_f32(data + pos + 4, bigEndian);
+    pos += 8;
+  } else if (subCmd == GX_LOAD_AURORA_SCISSOR_OFFSET) {
+    CHECK(pos + 8 <= size, "GX_LOAD_AURORA_SCISSOR_OFFSET read overrun");
+    g_gxState.scissorOffsetX = static_cast<s32>(read_u32(data + pos, bigEndian));
+    g_gxState.scissorOffsetY = static_cast<s32>(read_u32(data + pos + 4, bigEndian));
+    pos += 8;
   } else if (subCmd == GX_LOAD_AURORA_DEBUG_GROUP_PUSH) {
     auto label = read_string(data, pos, size, bigEndian);
     gfx::push_debug_group(std::move(label));
@@ -2710,6 +2773,8 @@ extern "C" void AuroraTakeGxStats(uint64_t* processNanos, uint64_t* lockNanos, u
 extern "C" uint64_t AuroraTakeUnmergedDraws() {
   return aurora::gx::fifo::g_statUnmerged.exchange(0, std::memory_order_relaxed);
 }
+
+extern "C" void AuroraGxSync() { aurora::gx::fifo::sync_if_threaded(); }
 
 extern "C" void AuroraBeginCommandDigest() {
   aurora::gx::fifo::drain();

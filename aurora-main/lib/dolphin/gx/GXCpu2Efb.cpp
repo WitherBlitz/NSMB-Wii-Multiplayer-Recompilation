@@ -1,10 +1,12 @@
 #include "gx.hpp"
+#include "../../gx/fifo.hpp"
 
 #include "../../gfx/depth_peek.hpp"
 
 #include <dolphin/gx/GXCpu2Efb.h>
 
 void GXPeekZ(u16 x, u16 y, u32* z) {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   aurora::gfx::depth_peek::poll();
 
   if (z != nullptr) {

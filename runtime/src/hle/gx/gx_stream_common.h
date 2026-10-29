@@ -3,6 +3,12 @@
 #include "isa/big_endian.h"
 #include "gx_internal.h"
 
+#include <dolphin/gx/GXAurora.h>
+
+#include <cstdlib>
+#include <cstring>
+#include <vector>
+
 // Shared GX command-stream helpers used verbatim by gx_fifo.cpp, gx_dl.cpp and gx_vertex.cpp
 // instead of forked per-file copies; genuine per-caller differences are explicit parameters here.
 // Header-inline throughout: the shipped clang/llvm-mingw build has no LTO across runtime shards,
@@ -307,6 +313,34 @@ inline bool PackIndexedAttrData(const uint8_t* srcBase, uint32_t stride, uint32_
     return true;
 }
 
+// NSMBW_GX_THREAD=1: the GX thread decodes a list after the game has moved on, and the matrix
+// arrays an indexed load reads are rewritten as it goes (model after model), so aurora is handed a
+// copy taken now, which is what decoding at call time used to read. The copies live in a ring that
+// waits for the GX thread before it wraps.
+inline const uint8_t* SnapshotForGxThread(const uint8_t* data, uint32_t size) {
+    static const bool threaded = [] {
+        const char* value = std::getenv("NSMBW_GX_THREAD");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (!threaded || data == nullptr || size == 0) {
+        return data;
+    }
+    static std::vector<uint8_t> ring(8u << 20);
+    static size_t used = 0;
+    if (size > ring.size()) {
+        AuroraGxSync();
+        return data;
+    }
+    if (used + size > ring.size()) {
+        AuroraGxSync();
+        used = 0;
+    }
+    uint8_t* copy = ring.data() + used;
+    std::memcpy(copy, data, size);
+    used += (size + 31u) & ~size_t{31};
+    return copy;
+}
+
 // Binds the guest XF array (position/normal matrices, lights) a GX_LOAD_INDX_*
 // packet indexes into, so aurora can resolve the index itself.
 inline bool ApplyIndexedXfArrayForPacket(uint8_t cmd, uint32_t value) {
@@ -333,7 +367,7 @@ inline bool ApplyIndexedXfArrayForPacket(uint8_t cmd, uint32_t value) {
         return false;
     }
 
-    GXSetArray(static_cast<GXAttr>(attr), hostPtr, span, static_cast<uint8_t>(arr.stride));
+    GXSetArray(static_cast<GXAttr>(attr), SnapshotForGxThread(hostPtr, span), span, static_cast<uint8_t>(arr.stride));
     return true;
 }
 

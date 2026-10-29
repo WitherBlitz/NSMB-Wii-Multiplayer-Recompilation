@@ -331,6 +331,7 @@ void GXAdjustForOverscan(GXRenderModeObj* rmin, GXRenderModeObj* rmout, u16 hor,
 }
 
 void GXSetDispCopySrc(u16 left, u16 top, u16 wd, u16 ht) {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   g_gxState.dispCopySrc = {left, top, wd, ht};
   GX_WRITE_RAS_REG(0x49000000u | ((static_cast<u32>(top) & 0x3ffu) << 10) | (static_cast<u32>(left) & 0x3ffu));
   GX_WRITE_RAS_REG(0x4a000000u | (((static_cast<u32>(ht) - 1u) * 0x400u) & 0x000ffc00u) |
@@ -338,17 +339,20 @@ void GXSetDispCopySrc(u16 left, u16 top, u16 wd, u16 ht) {
 }
 
 void GXSetTexCopySrc(u16 left, u16 top, u16 wd, u16 ht) {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   g_gxState.texCopySrc = {left, top, wd, ht};
   g_gxState.texCopySrcRenderSpace = false;
 }
 
 void GXSetDispCopyDst(u16 wd, u16 ht) {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   g_gxState.dispCopyDstWidth = wd;
   g_gxState.dispCopyDstHeight = ht;
   GX_WRITE_RAS_REG(0x4d000000u | ((((static_cast<u32>(wd) & 0x7fffu) << 1) >> 5) & 0x3ffu));
 }
 
 void GXSetTexCopyDst(u16 wd, u16 ht, GXTexFmt fmt, GXBool mipmap) {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   g_gxState.texCopyFmt = fmt;
   g_gxState.texCopyDstWidth = wd;
   g_gxState.texCopyDstHeight = ht;
@@ -356,14 +360,17 @@ void GXSetTexCopyDst(u16 wd, u16 ht, GXTexFmt fmt, GXBool mipmap) {
 }
 
 void GXSetDispCopyFrame2Field(u32 mode) {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   g_gxState.dispCopyFrame2Field = mode & 3;
 }
 
 void GXSetCopyClamp(GXFBClamp clamp) {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   g_gxState.copyClamp = static_cast<GXFBClamp>(static_cast<u32>(clamp) & 3);
 }
 
 u32 GXSetDispCopyYScale(f32 vscale) {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   const u32 iScale = y_scale_to_integer(vscale);
   g_gxState.dispCopyYScale = vscale;
   GX_WRITE_RAS_REG(0x4e000000u | iScale);
@@ -372,6 +379,7 @@ u32 GXSetDispCopyYScale(f32 vscale) {
 }
 
 void GXSetCopyClear(GXColor color, u32 depth) {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   // BP 0x4F: clear color R + A
   u32 reg0 = 0;
   SET_REG_FIELD(0, reg0, 8, 0, color.r);
@@ -395,6 +403,7 @@ void GXSetCopyClear(GXColor color, u32 depth) {
 }
 
 void GXSetCopyFilter(GXBool aa, u8 sample_pattern[12][2], GXBool vf, u8 vfilter[7]) {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   g_gxState.copyFilterAa = aa;
   g_gxState.copyFilterVf = vf;
   if (sample_pattern) {
@@ -428,12 +437,14 @@ void GXSetCopyFilter(GXBool aa, u8 sample_pattern[12][2], GXBool vf, u8 vfilter[
 }
 
 void GXSetDispCopyGamma(GXGamma gamma) {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   g_gxState.dispCopyGamma = static_cast<GXGamma>(static_cast<u32>(gamma) & 3u);
   g_gxState.bpRegCache[0x52] = (g_gxState.bpRegCache[0x52] & ~(3u << 7)) |
                                ((static_cast<u32>(g_gxState.dispCopyGamma) & 3u) << 7);
 }
 
 void GXCopyDisp(void* dest, GXBool clear) {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   (void)dest;
   // Finish queued commands before this copy reads live EFB state.
   if (aurora::gx::fifo::get_buffer_size() != 0) {
@@ -473,6 +484,7 @@ std::atomic<bool> g_texturePatches{true};
 extern "C" void AuroraSetTexturePatches(bool enabled) { g_texturePatches.store(enabled, std::memory_order_relaxed); }
 
 void GXCopyTex(void* dest, GXBool clear) {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   g_statCopies.fetch_add(1, std::memory_order_relaxed);
   // Texture copies must see all earlier draws and state changes.
   if (aurora::gx::fifo::get_buffer_size() != 0) {
@@ -622,6 +634,7 @@ void GXCopyTex(void* dest, GXBool clear) {
 }
 
 void GXClearBoundingBox() {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   g_gxState.boundingBox = {1023, 0, 1023, 0};
   GX_WRITE_RAS_REG(0x550003FFu);
   GX_WRITE_RAS_REG(0x560003FFu);
@@ -629,6 +642,7 @@ void GXClearBoundingBox() {
 }
 
 void GXReadBoundingBox(u16* left, u16* right, u16* top, u16* bottom) {
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   if (left) {
     *left = g_gxState.boundingBox[0];
   }

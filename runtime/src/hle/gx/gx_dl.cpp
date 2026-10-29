@@ -3,6 +3,8 @@
 #include "gx_cp_decode.h"
 #include "isa/big_endian.h"
 
+#include <dolphin/gx/GXAurora.h>
+
 #include <cstdlib>
 #include <unordered_map>
 
@@ -1244,6 +1246,8 @@ static bool ApplyAuroraArraysForDisplayList(const std::array<uint32_t, GX_VA_MAX
             ApplyAuroraArrayIfChanged(gxAttr, hostPtr, span, static_cast<uint8_t>(arr.stride));
             continue;
         }
+        // The two scratch buffers take turns; a queued list may still point at the one reused here.
+        AuroraGxSync();
         auto& packed = s_packedArrays[attr][++s_packedArrayCursor[attr] & 1u];
         if (!PackIndexedAttrData(hostPtr, arr.stride, count, elemSize, packed)) {
             ok = false;
@@ -1278,7 +1282,8 @@ static bool ApplyAuroraIndexedXFArraysForDisplayList(const std::array<uint32_t, 
             ok = false;
             continue;
         }
-        ApplyAuroraArrayIfChanged(static_cast<GXAttr>(attr), hostPtr, span, static_cast<uint8_t>(arr.stride));
+        ApplyAuroraArrayIfChanged(static_cast<GXAttr>(attr), SnapshotForGxThread(hostPtr, span), span,
+                                  static_cast<uint8_t>(arr.stride));
     }
     return ok;
 }

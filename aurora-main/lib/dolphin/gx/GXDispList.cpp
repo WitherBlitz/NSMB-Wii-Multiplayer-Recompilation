@@ -64,6 +64,15 @@ void GXCallDisplayList(const void* data, u32 nbytes) {
     return;
   }
 
+  // NSMBW: with the GX thread, the list's bytes are queued (copied) like any other commands. What
+  // they point at (vertex arrays, matrices, textures in guest memory) is read when the worker
+  // decodes them, as the Wii's GPU reads it asynchronously too.
+  if (aurora::gx::fifo::threaded()) {
+    aurora::gx::fifo::write_data(data, nbytes);
+    aurora::gx::fifo::flush_async();
+    return;
+  }
+
   // Decode the display list immediately while its borrowed resources are valid.
   aurora::gx::fifo::drain();
   aurora::gx::fifo::process(static_cast<const u8*>(data), nbytes, true);
