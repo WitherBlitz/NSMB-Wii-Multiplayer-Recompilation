@@ -34,6 +34,9 @@ void Pointer(float x, float y, bool held);
 // True while a screen that taps can drive is up (the strap and title screens, the file select,
 // "Select Players", these menus): the Android app hides its on-screen remote then.
 bool TapScreenUp();
+// True while the player is playing: in a course or on the world map, with no pause menu, settings
+// window or other menu up. The Android app shows its hidden on-screen remote again on a tap then.
+bool Playing();
 // The settings window changed the render scale, the aspect or the FPS counter since the last call:
 // the Android app copies them into its own settings, which it writes to Config.toml at every start.
 // touchControls and renderer are -1 when unchanged; renderer is an index into the Video tab's list

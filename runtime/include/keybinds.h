@@ -39,7 +39,7 @@ bool Bound(int action, int scancode);
 bool SmartSpin();
 void SetSmartSpin(bool on);
 
-// Reverse Tilt QoL (off by default): every remote's tilt, from the phone's motion sensors, a
+// Reverse Tilt QoL (on by default): every remote's tilt, from the phone's motion sensors, a
 // controller or the keyboard, reaches the game mirrored, so a platform the player tilts goes the way
 // the phone or stick goes. Saved as [keyboard] reverse_tilt.
 bool ReverseTilt();

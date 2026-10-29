@@ -1573,8 +1573,10 @@ int RuntimeMain(int argc, char** argv) {
             {"auto", BACKEND_AUTO}, {"metal", BACKEND_METAL},
         }};
 #elif defined(__ANDROID__)
+        // NSMBW: OpenGL ES can't be picked for now (walled off for a later version); a saved
+        // "opengles" runs Vulkan.
         static constexpr std::array<GraphicsBackendEntry, 3> kGraphicsBackends{{
-            {"auto", BACKEND_AUTO}, {"vulkan", BACKEND_VULKAN}, {"opengles", BACKEND_OPENGLES},
+            {"auto", BACKEND_AUTO}, {"vulkan", BACKEND_VULKAN}, {"opengles", BACKEND_VULKAN},
         }};
 // only vulkan for linux
 #elif defined(__linux__)

@@ -203,6 +203,12 @@ JNIEXPORT jboolean JNICALL Java_com_wither_nsmbw_GameActivity_nativeTapScreen(JN
     return NetplayUi::TapScreenUp() ? JNI_TRUE : JNI_FALSE;
 }
 
+// GameActivity.nativePlaying: in a course or on the world map with no menu up (NetplayUi::Playing).
+JNIEXPORT jboolean JNICALL Java_com_wither_nsmbw_GameActivity_nativePlaying(JNIEnv*, jclass)
+{
+    return NetplayUi::Playing() ? JNI_TRUE : JNI_FALSE;
+}
+
 // GameActivity.nativeSetBackground: the app left the screen (true) or came back (false). Leaving, the
 // game writes a backup Quick Save (backup: the app left; not when the screen just turned off) and
 // pauses (host_suspend.h); nativeGamePaused says when it has.

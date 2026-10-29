@@ -105,6 +105,7 @@ void AddHitEvent(float x, float y, float w, float h, int cursor, uint32_t event)
 
 std::atomic<uint64_t> g_tap{0};  // a tap for the next frame: bit 63, then x and y as 16-bit fractions
 std::atomic<bool> g_tapScreen{false};
+std::atomic<bool> g_playing{false};
 std::atomic<uint64_t> g_pointer{0};  // Android's finger, packed like g_tap: bit 63 while it is held
 
 // The pointer as Draw sees it this frame, in screen pixels: the finger, else the left mouse button.
@@ -1106,7 +1107,8 @@ struct RendererChoice {
 #if defined(__APPLE__)
 constexpr RendererChoice kRenderers[] = {{"auto", "Automatic"}, {"metal", "Metal"}};
 #elif defined(__ANDROID__)
-constexpr RendererChoice kRenderers[] = {{"auto", "Automatic"}, {"vulkan", "Vulkan"}, {"opengles", "OpenGL ES"}};
+// OpenGL ES can't be picked for now (walled off for a later version); a saved one shows as Vulkan.
+constexpr RendererChoice kRenderers[] = {{"auto", "Automatic"}, {"vulkan", "Vulkan"}};
 #elif defined(_WIN32)
 constexpr RendererChoice kRenderers[] = {
     {"auto", "Automatic"}, {"d3d12", "Direct3D 12"}, {"vulkan", "Vulkan"}, {"d3d11", "Direct3D 11"}};
@@ -1117,7 +1119,12 @@ constexpr int kRendererCount = static_cast<int>(sizeof(kRenderers) / sizeof(kRen
 std::atomic<bool> g_rendererChanged{false};  // the Android app keeps the choice (TakeSettingsChange)
 
 int RendererIndex() {
+#if defined(__ANDROID__)
+    const std::string saved = settings_overlay::GraphicsApiChoice();
+    const std::string chosen = saved == "opengles" ? "vulkan" : saved;
+#else
     const std::string chosen = settings_overlay::GraphicsApiChoice();
+#endif
     for (int i = 0; i < kRendererCount; ++i) {
         if (chosen == kRenderers[i].configName) {
             return i;
@@ -2202,6 +2209,10 @@ bool TapScreenUp() {
     return g_tapScreen.load(std::memory_order_acquire);
 }
 
+bool Playing() {
+    return g_playing.load(std::memory_order_acquire);
+}
+
 bool TakeSettingsChange(float& renderScale, bool& showFps, int& aspect, bool& spinningCoins, bool& frameGraph,
                         bool& vsync, int& frameGraphSize, int& touchControls, int& renderer) {
     if (!g_settingsChanged.exchange(false)) {
@@ -2447,8 +2458,17 @@ void Draw() {
     DumpLayouts();
     ScriptedTaps();
     ImDrawList* list = ImGui::GetBackgroundDrawList();
+    // A pause menu: looked for every few frames (walking the object tree is not free).
+    static int pauseCheck = 0;
+    static int pauseKind = 0;
+    if (++pauseCheck % 6 == 0) {
+        pauseKind = GameMenus::PauseMenuKind();
+    }
     if (NetplaySession::Active()) {
         g_tapScreen.store(false, std::memory_order_release);
+        const uint16_t scene = GameMenus::CurrentScene();
+        g_playing.store((scene == kSceneStage || scene == kSceneWorldMap) && pauseKind == 0 && !Modal(),
+                        std::memory_order_release);
         DrawSession(list);
         return;
     }
@@ -2509,13 +2529,11 @@ void Draw() {
                players == GameMenus::SelectPlayers::Other) {
         Show(Screen::None);
     }
-    // The pause menus' gear: looked for every few frames (walking the object tree is not free).
-    static int pauseCheck = 0;
-    if (++pauseCheck % 6 == 0) {
-        const int kind = GameMenus::PauseMenuKind();
-        g_ui.pauseSettingsShown = scene == kSceneStage && kind == 2;
-        g_ui.menuSettingsShown = scene == kSceneWorldMap && kind == 1;
-        if (kind == 2) {
+    // The pause menus' gear.
+    if (pauseCheck % 6 == 0) {
+        g_ui.pauseSettingsShown = scene == kSceneStage && pauseKind == 2;
+        g_ui.menuSettingsShown = scene == kSceneWorldMap && pauseKind == 1;
+        if (pauseKind == 2) {
             DumpPanesOnce(GameMenus::PauseWindowObject(), "pause");
         }
     }
@@ -2554,9 +2572,12 @@ void Draw() {
     if (++titleCheck % 10 == 0) {
         title = scene == kSceneStage && GameMenus::HasProfile(kProfileOpeningTitle);
     }
-    g_tapScreen.store(Modal() || g_ui.toggleShown || scene == kSceneBoot || title ||
-                          (scene == kSceneGameSetup && players == GameMenus::SelectPlayers::Choosing),
-                      std::memory_order_release);
+    const bool tapScreen = Modal() || g_ui.toggleShown || scene == kSceneBoot || title ||
+                           (scene == kSceneGameSetup && players == GameMenus::SelectPlayers::Choosing);
+    g_tapScreen.store(tapScreen, std::memory_order_release);
+    g_playing.store((scene == kSceneStage || scene == kSceneWorldMap) && !title && !tapScreen && pauseKind == 0 &&
+                        g_ui.screen == Screen::None,
+                    std::memory_order_release);
     {
         const ImGuiIO& io = ImGui::GetIO();
         const uint64_t finger = g_pointer.load(std::memory_order_acquire);

@@ -82,7 +82,7 @@ bool in_display_list();
 // full synchronization: everything queued so far has been decoded when it returns.
 void drain();
 
-// The GX thread (on with 4+ cores; NSMBW_GX_THREAD=0/1 forces it): decoding (process()) runs on a worker thread, in command order, while the
+// The GX thread (on with 4+ cores, never on OpenGL; NSMBW_GX_THREAD=0/1 forces it): decoding (process()) runs on a worker thread, in command order, while the
 // game thread carries on producing. Producers that only append commands call flush_async() where
 // they used to drain; anything that reads or writes decoded state directly calls drain() (or
 // sync_if_threaded()) first.

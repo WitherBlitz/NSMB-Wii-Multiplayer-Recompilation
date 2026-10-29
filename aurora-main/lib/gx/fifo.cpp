@@ -2,6 +2,7 @@
 #include "command_processor.hpp"
 #include "../gfx/common.hpp"
 #include "../internal.hpp"
+#include "../webgpu/gpu.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -170,14 +171,18 @@ void hand_off() {
 
 bool threaded() {
   // On by default when there's a core to spare for it; NSMBW_GX_THREAD=0 or 1 forces it.
-  static const bool on = [] {
+  static const bool wanted = [] {
     const char* value = std::getenv("NSMBW_GX_THREAD");
     if (value != nullptr && value[0] != '\0') {
       return value[0] == '1';
     }
     return std::thread::hardware_concurrency() >= 4;
   }();
-  return on;
+  // Never on OpenGL (ES): its context belongs to one thread, so that renderer runs single-threaded.
+  // Off until the renderer is up, too; turning on later is safe, as nothing is left queued then.
+  const auto backend = webgpu::g_backendType;
+  return wanted && backend != wgpu::BackendType::Undefined && backend != wgpu::BackendType::Null &&
+         backend != wgpu::BackendType::OpenGL && backend != wgpu::BackendType::OpenGLES;
 }
 
 void flush_async() {

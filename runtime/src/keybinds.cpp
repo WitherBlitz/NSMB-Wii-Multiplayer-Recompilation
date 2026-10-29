@@ -211,7 +211,7 @@ void SetSmartSpin(bool on) {
 bool ReverseTilt() {
     int on = g_reverseTilt.load(std::memory_order_relaxed);
     if (on < 0) {
-        on = RuntimeConfigFile::KeyboardBinding("reverse_tilt") == "true" ? 1 : 0;
+        on = RuntimeConfigFile::KeyboardBinding("reverse_tilt") == "false" ? 0 : 1;
         g_reverseTilt.store(on, std::memory_order_relaxed);
     }
     return on != 0;
