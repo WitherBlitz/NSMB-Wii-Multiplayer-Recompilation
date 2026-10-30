@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cerrno>
+#include <cstdlib>
 
 #ifdef __linux__
 #include <linux/fs.h>
@@ -38,8 +39,18 @@ static int32_t WriteNandDataDir(uint32_t outPathPtr) {
 
 // fileInfoPtr -> fd -> live handle. Logs and returns null when the guest hands
 // us a descriptor that was never opened (or was already closed).
-// NSMBW bring-up: trace every NAND call (the async APIs forward to these synchronous ones).
-#define NSMBW_NAND_TRACE(...) RT_LOGF(RT_TAG_NAND, "[trace] " __VA_ARGS__)
+// Bring-up tracing is opt-in: the sync APIs are polled from the guest, so an
+// unconditional fprintf here costs more than the call itself.
+static bool NandTraceEnabled() {
+    static const bool enabled = std::getenv("NSMBW_NAND_TRACE") != nullptr;
+    return enabled;
+}
+#define NSMBW_NAND_TRACE(...)                                    \
+    do {                                                         \
+        if (NandTraceEnabled()) {                                \
+            RT_LOGF(RT_TAG_NAND, "[trace] " __VA_ARGS__);        \
+        }                                                        \
+    } while (0)
 
 static FileHandle* ResolveNandFileHandle(const char* who, uint32_t fileInfoPtr) {
     const int32_t fd = static_cast<int32_t>(Memory::Read32(fileInfoPtr));
