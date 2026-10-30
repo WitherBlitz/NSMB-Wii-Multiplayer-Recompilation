@@ -1,6 +1,7 @@
 // Native AX output control path. This replaces the translated AXOut AI callback
 // and __AXOutNewFrame bookkeeping. The DSP command list and mix still go through
 // AxDspHle; the guest user callback and the individual AX helpers stay on the CPU.
+#include "ax_next_frame_native.h"
 #include "ax_out_native.h"
 
 #include "abi_bridge.h"
@@ -125,7 +126,9 @@ void NativeAXOutNewFrame(CpuContext* ctx) {
     ctx->gpr[3] = kAxOutSBuffer;
     ctx->gpr[4] = kAxOutBuffer + outFrame * kAxFrameSize;
     ctx->gpr[5] = rmtStack;
-    func_801A0E90(ctx);  // __AXNextFrame
+    if (!AxNextFrameNative::Run(ctx)) {
+        func_801A0E90(ctx);  // __AXNextFrame
+    }
     ctx->gpr[1] = guestStack;
 
     uint32_t nextOutFrame = outFrame + 1u;
