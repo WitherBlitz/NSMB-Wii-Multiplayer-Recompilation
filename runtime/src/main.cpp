@@ -61,7 +61,15 @@
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <SDL3/SDL_messagebox.h>
 #endif
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+// SDL_MAIN_HANDLED is defined for the runtime, so this only declares SDL_RunApp.
+#include <SDL3/SDL_main.h>
+#endif
 
+#include "ios_app.h"
 #include "netplay_ui.h"
 #include "netplay_start.h"
 #include "netplay_session.h"
@@ -1660,6 +1668,9 @@ int RuntimeMain(int argc, char** argv) {
             std::exit(EXIT_FAILURE);
         }
 #endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+        IosApp::AttachToWindow(auroraInfo.window);
+#endif
         GraphicsInfo::Set(auroraInfo.gpuName != nullptr ? auroraInfo.gpuName : "", auroraInfo.gpuCompatActive);
         RT_LOG(RT_TAG_RUNTIME) << "graphics adapter: " << GraphicsInfo::Name() << ", compatibility fixes "
                   << (auroraInfo.gpuCompatActive ? "on" : "off") << std::endl;
@@ -1752,6 +1763,12 @@ int RuntimeMain(int argc, char** argv) {
 // SDL's Android activity loads libmain.so and runs the game through its exported SDL_main.
 extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char** argv) {
     return RuntimeMain(argc, argv);
+}
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+// UIKit owns the main thread on iOS: SDL starts UIApplicationMain with its own app delegate, which
+// calls RuntimeMain once the app has finished launching (still on the main thread).
+int main(int argc, char** argv) {
+    return SDL_RunApp(argc, argv, RuntimeMain, nullptr);
 }
 #else
 int main(int argc, char** argv) {

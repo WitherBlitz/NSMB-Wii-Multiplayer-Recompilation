@@ -1340,3 +1340,9 @@ PPC_NATIVE_OVERRIDE(801D0980, DVDCheckDevice_801643FC, int32_t, (), ());
 extern "C" int32_t DVDLowClearCoverInterrupt_80166964(uint32_t cb) { return 1; }
 PPC_NATIVE_OVERRIDE(801D3700, DVDLowClearCoverInterrupt_80166964, int32_t, (uint32_t cb), (cb));
 
+// main()'s first call. In some main.dol builds it branches to DVDCheckDiskBca (0x801D0CF0), which
+// reads the disc's burst cutting area and polls for a drive callback that never comes without a
+// drive, hanging boot on a black screen. main() ignores the result, so the check is skipped.
+extern "C" void DVDDiskCheck_80006780() {}
+PPC_NATIVE_OVERRIDE_VOID(80006780, DVDDiskCheck_80006780, (), ());
+

@@ -1,5 +1,6 @@
 #include "game_folder.h"
 
+#include "ios_app.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
 #include "runtime_product.h"
@@ -200,6 +201,11 @@ std::string Problem(const fs::path& root) {
 }
 
 bool EnsureConfigured() {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    // The app's own Documents/game, checked by the app (its container path changes with every
+    // install, so a saved folder from an earlier one is never right).
+    return IosApp::EnsureGameFolder();
+#endif
 #if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
     // A "game" folder next to the program needs no questions, and wins over the saved folder: every
     // install shares Documents\MarioWiiSaveData, so this is how two installs play two games (say the

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The guest's flat 4 GiB address space (runtime/src/guest_flat_memory_ios.cpp). Without it,
+	     iOS rarely has 4 GiB of contiguous address space to give. -->
+	<key>com.apple.developer.kernel.extended-virtual-addressing</key>
+	<true/>
+	<!-- Wii RAM, the game's caches and the GPU's resources together go past the default limit on
+	     phones with less memory. -->
+	<key>com.apple.developer.kernel.increased-memory-limit</key>
+	<true/>
+</dict>
+</plist>

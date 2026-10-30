@@ -1,3 +1,6 @@
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 #include "netplay_ui.h"
 
 #include "netplay/game_layout.h"
@@ -1142,7 +1145,7 @@ constexpr bool kVSyncRow = true;
 #else
 constexpr bool kVSyncRow = false;
 #endif
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
 constexpr bool kFullscreenRow = false;
 #else
 constexpr bool kFullscreenRow = true;

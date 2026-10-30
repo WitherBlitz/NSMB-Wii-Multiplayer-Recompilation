@@ -2,6 +2,7 @@
 
 #include "audio_backend.h"
 #include "det_clock.h"
+#include "ios_app.h"
 #include "guest_interrupt_context.h"
 #include "memory.h"
 #include "netplay/game_menus.h"
@@ -326,10 +327,24 @@ uint64_t OnRetrace() {
     const auto stopped = Clock::now();
     g_paused.store(true, std::memory_order_release);
     AudioBackend::Instance().SetDevicePaused(true);  // nothing plays, so nothing is streamed
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    // iOS runs the game on the main thread, and "back in the app" arrives on that thread's run loop:
+    // keep it turning instead of sleeping on the condition variable.
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            if (!g_pauseWanted) {
+                break;
+            }
+        }
+        IosApp::PumpWhilePaused();
+    }
+#else
     {
         std::unique_lock<std::mutex> lock(g_mutex);
         g_wake.wait(lock, [] { return !g_pauseWanted; });
     }
+#endif
     AudioBackend::Instance().SetDevicePaused(false);
     g_paused.store(false, std::memory_order_release);
     const uint64_t pausedNs =

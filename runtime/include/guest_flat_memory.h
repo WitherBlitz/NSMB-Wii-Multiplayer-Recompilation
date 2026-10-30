@@ -9,13 +9,26 @@
 #include <cstdint>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 namespace GuestFlat {
 
 // Fixed base so the emitted access is `[reg + imm64-in-register]` with no load
 // of a global.
 inline constexpr uint64_t kGuestSpaceSize = 0x1'0000'0000ull;
 inline constexpr size_t kGuestPageSize = 0x1000;
-#if defined(__x86_64__)
+#if (defined(__APPLE__) && TARGET_OS_IPHONE) || defined(MKW_TEST_DYNAMIC_GUEST_BASE)
+// iOS caps a process's virtual address space far below macOS's (tens of GiB, and only with the
+// extended-virtual-addressing entitlement), and the shared cache and the app's own mappings sit at
+// addresses that differ from launch to launch. No fixed address is reliably free, so the kernel
+// chooses where the 4 GiB space goes and translated code reads the base from this pointer. It is
+// set once, before any guest code runs, and never changes. MKW_TEST_DYNAMIC_GUEST_BASE builds the
+// same layout on macOS so tests/ios_guest_flat_memory_tests.cpp can run on a Mac.
+#define MKW_GUEST_FLAT_DYNAMIC_BASE 1
+extern uint8_t* g_flatGuestBase;
+#elif defined(__x86_64__)
 // 16 TiB: clear of the Windows ASan shadow (32 TiB) and of the usual image/heap
 // placement.
 inline constexpr uintptr_t kFixedFlatGuestBase = 0x0000'1000'0000'0000ull;
@@ -42,7 +55,11 @@ inline constexpr uintptr_t kFixedFlatGuestBase = 0x0000'0040'0000'0000ull;
 #error "guest_flat_memory.h has no fixed flat guest base chosen for this architecture"
 #endif
 
+#if defined(MKW_GUEST_FLAT_DYNAMIC_BASE)
+#define MKW_FLAT_GUEST_BASE (GuestFlat::g_flatGuestBase)
+#else
 #define MKW_FLAT_GUEST_BASE (reinterpret_cast<uint8_t*>(GuestFlat::kFixedFlatGuestBase))
+#endif
 
 enum class Backing {
     Owned,
