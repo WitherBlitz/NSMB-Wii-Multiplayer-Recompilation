@@ -71,6 +71,7 @@
 #include "abi_bridge.h"
 #include "guest_flat_memory.h"
 #include "gx_guest_write.h"
+#include "hle/audio/ax_out_native.h"
 #include "hle/audio/axfx_delay_native.h"
 #include "hle/audio/axfx_reverb_native.h"
 #include "memory.h"
@@ -1668,6 +1669,7 @@ int RuntimeMain(int argc, char** argv) {
         GxGuestWrite::InstallAuroraHooks();
         AxfxReverbNative::Install();
         AxfxDelayNative::Install();
+        AxOutNative::Install();
         DisplaySettings::OnFrameBoundary(auroraInfo.windowSize.native_fb_width,
                                          auroraInfo.windowSize.native_fb_height);
         settings_overlay::InitializeRuntimeSettings();
