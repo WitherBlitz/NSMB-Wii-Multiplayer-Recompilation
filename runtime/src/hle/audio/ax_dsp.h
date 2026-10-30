@@ -19,6 +19,11 @@ uint32_t ReadMailFromDSP();
 uint32_t AssertTask(uint32_t taskPtr);
 void ServiceDeferredCallbacks();
 
+// Runs one native FxDelay block on the AX/DSP worker when it is enabled. Returns false
+// when the worker is unavailable, so the caller can run the inline native or translated
+// path.
+bool RunDelayJob(uint32_t state, uint32_t buffers);
+
 // INVARIANT: no guest code may observe mix output before this returns. Called from
 // Audio_HLE_Tick before the AI DMA block reaches the backend and before the AI callback
 // runs __AXOutNewFrame, the two places guest code reads the mix's PB/output/aux data.

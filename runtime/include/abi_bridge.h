@@ -328,6 +328,7 @@ struct IndirectRawDispatchMemoEntry {
 };
 inline thread_local IndirectRawDispatchMemoEntry
     g_indirectRawDispatchMemo[kIndirectDispatchCacheEntries]{};
+inline thread_local uint32_t g_indirectRawDispatchMemoGeneration = 0;
 
 class TranslatedFunctionRegistry {
 public:
@@ -362,6 +363,12 @@ public:
             return nullptr;
         }
 
+        const uint32_t generation = runtimeRedirectGeneration_.load(std::memory_order_acquire);
+        if (generation != g_indirectRawDispatchMemoGeneration) {
+            ClearIndirectDispatchMemo();
+            g_indirectRawDispatchMemoGeneration = generation;
+        }
+
         auto& cached = g_indirectRawDispatchMemo[
             ((address >> 2) * 2654435761u) & (kIndirectDispatchCacheEntries - 1)];
         if (cached.valid && cached.address == address) {
@@ -382,9 +389,21 @@ public:
         if (runtimeRedirectCount_ < kMaxRuntimeRedirects) {
             runtimeRedirects_[runtimeRedirectCount_++] = record;
         }
+        // Every host thread that executes translated code has its own indirect-dispatch
+        // memo. Bump the generation so a thread that memoized the translated winner before
+        // this install clears it on its next indirect call.
+        runtimeRedirectGeneration_.fetch_add(1, std::memory_order_release);
+        ClearIndirectDispatchMemo();
+        g_indirectRawDispatchMemoGeneration = runtimeRedirectGeneration_.load(std::memory_order_acquire);
     }
 
 private:
+    static void ClearIndirectDispatchMemo() noexcept {
+        for (auto& entry : g_indirectRawDispatchMemo) {
+            entry = {};
+        }
+    }
+
     // Memo miss: resolve against the header-inline generated table first; only dynamically
     // registered records or a not-yet-published table fall through to the slow path.
     static MKW_PPC_NO_INLINE MKW_PPC_COLD const RawDispatchRecord* FindRawByAddressPtrMiss(
@@ -417,6 +436,7 @@ private:
     static constexpr size_t kMaxRuntimeRedirects = 4;
     inline static const RawDispatchRecord* runtimeRedirects_[kMaxRuntimeRedirects]{};
     inline static size_t runtimeRedirectCount_ = 0;
+    inline static std::atomic<uint32_t> runtimeRedirectGeneration_{0};
 };
 
 // Cold, profile-owned registration data is emitted in compact table shards.
