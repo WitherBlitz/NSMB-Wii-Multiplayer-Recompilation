@@ -293,10 +293,11 @@ else()
     add_subdirectory(${MKW_AURORA_DIR} ${CMAKE_BINARY_DIR}/aurora-build EXCLUDE_FROM_ALL)
     set(CMAKE_DISABLE_PRECOMPILE_HEADERS OFF)
 
-    # iOS builds SDL3 from source (aurora has no prebuilt iOS SDL). aurora enables OBJCXX after
-    # OBJC, and both claim the .m extension, so SDL's Objective-C sources would be compiled as
-    # Objective-C++ with aurora's C++20 flag. Name their language explicitly.
-    if(MKW_PLATFORM_IOS AND TARGET SDL3-static)
+    # When SDL3 is built from source (always on iOS, which has no prebuilt SDL; on macOS with
+    # AURORA_SDL3_PROVIDER=vendor), aurora enables OBJCXX after OBJC and both claim the .m
+    # extension, so SDL's Objective-C sources would be compiled as Objective-C++ with aurora's
+    # C++20 flag. Name their language explicitly.
+    if((MKW_PLATFORM_IOS OR MKW_PLATFORM_MACOS) AND TARGET SDL3-static)
         get_target_property(MKW_SDL_SOURCES SDL3-static SOURCES)
         get_target_property(MKW_SDL_SOURCE_DIR SDL3-static SOURCE_DIR)
         list(FILTER MKW_SDL_SOURCES INCLUDE REGEX "\\.m$")
