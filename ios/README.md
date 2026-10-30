@@ -90,6 +90,8 @@ line (the Android app's **Tailscale & LAN Devices** list).
   iOS can't relaunch an app, so it asks you to open it again.
 - **Early testing.** Tested on an iPhone 16 (A18, iOS 27): it boots, reaches the title screen
   and plays a level. The title screen runs at about 30 fps there (frames wait on presentation,
-  not on the game), which still needs looking into. LAN play and couch play with controllers have
-  not been tried on iOS yet.
+  not on the game), which still needs looking into.
+- **Tailscale play works across platforms.** An iPhone played with a Windows PC, and a Mac (macOS
+  arm64 build) with two Windows PCs. Rooms appear once each device lists the others in
+  `Netplay/hosts.txt`. Couch play with controllers hasn't been tried on iOS yet.
 - **No app icon is included.** Put a square PNG at `ios/AppIcon.png` and `ios/build-ios.sh` adds it.
