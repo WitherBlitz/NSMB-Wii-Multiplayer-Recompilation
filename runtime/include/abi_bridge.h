@@ -309,30 +309,45 @@ struct KnownTypedNativeCpuCall {
 
 #include "native_cpu_calls.inc"
 
-// Direct-mapped thread-local memo in front of the sorted registry lookup every bctrl performs;
-// a miss just re-runs the sorted lookup. 512 entries (12 KiB) covers the per-frame indirect
-// working set while staying L1/L2 resident, unlike 4096 which would thrash L2. Must stay a
-// power of two, the index masks with (size - 1).
+// Direct-mapped memo in front of the sorted registry lookup every bctrl performs; a miss just
+// re-runs the sorted lookup. 512 entries (12 KiB) covers the per-frame indirect working set while
+// staying L1/L2 resident, unlike 4096 which would thrash L2. Must stay a power of two, the
+// index masks with (size - 1).
 inline constexpr size_t kIndirectDispatchCacheEntries = 512;
 
-// Namespace-scope `inline thread_local`, not function-local `static thread_local`, to avoid a
-// thread-static init epoch check on every bctrl (same as g_currentCpuContext in ppc_runtime.h).
 struct IndirectResolvedDispatchMemoEntry {
     bool valid;
     uint32_t address;
     const TranslatedFunctionInfo* info;
 };
-inline thread_local IndirectResolvedDispatchMemoEntry
-    g_indirectResolvedDispatchMemo[kIndirectDispatchCacheEntries]{};
 
 struct IndirectRawDispatchMemoEntry {
     bool valid;
     uint32_t address;
     const RawDispatchRecord* record;
 };
-inline thread_local IndirectRawDispatchMemoEntry
-    g_indirectRawDispatchMemo[kIndirectDispatchCacheEntries]{};
-inline thread_local uint32_t g_indirectRawDispatchMemoGeneration = 0;
+
+// One memo set per CPU context. This used to be `thread_local`, but a TLS access from a shared
+// library on arm64 Android goes through `__tls_get_addr`, and the bctrl path read it three
+// times. The dispatcher already has the CpuContext, so it reaches the memo through the context
+// instead.
+struct IndirectDispatchMemo {
+    IndirectResolvedDispatchMemoEntry resolved[kIndirectDispatchCacheEntries]{};
+    IndirectRawDispatchMemoEntry raw[kIndirectDispatchCacheEntries]{};
+    uint32_t rawGeneration = 0;
+};
+
+// Binds `cpu` to a memo set on first use. Returns nullptr when the pool is exhausted, which
+// falls back to the uncached lookup.
+IndirectDispatchMemo* BindIndirectDispatchMemo(CpuContext* cpu);
+
+inline IndirectDispatchMemo* DispatchMemoFor(CpuContext* cpu) {
+    IndirectDispatchMemo* memo = cpu->dispatchMemo;
+    if (memo == nullptr) [[unlikely]] {
+        memo = BindIndirectDispatchMemo(cpu);
+    }
+    return memo;
+}
 
 class TranslatedFunctionRegistry {
 public:
@@ -343,11 +358,16 @@ public:
     }
     static std::optional<TranslatedFunctionInfo> FindNearestByAddress(uint32_t address);
     static inline const TranslatedFunctionInfo* FindByAddressPtr(uint32_t address) {
-        if (!lookupPublished_.load(std::memory_order_acquire)) {
+        return FindByAddressPtrSlow(address);
+    }
+
+    static inline const TranslatedFunctionInfo* FindByAddressPtr(uint32_t address,
+                                                                 IndirectDispatchMemo* memo) {
+        if (memo == nullptr || !lookupPublished_.load(std::memory_order_acquire)) {
             return FindByAddressPtrSlow(address);
         }
 
-        auto& cached = g_indirectResolvedDispatchMemo[
+        auto& cached = memo->resolved[
             ((address >> 2) * 2654435761u) & (kIndirectDispatchCacheEntries - 1)];
         if (cached.valid && cached.address == address) {
             return cached.info;
@@ -362,18 +382,22 @@ public:
     // generated-table binary search alongside it pushed the whole function past
     // the inliner's budget and out-of-lined the probe itself, which is the part
     // every bctrl executes.
-    static MKW_PPC_FORCE_INLINE const RawDispatchRecord* FindRawByAddressPtr(uint32_t address) {
+    static MKW_PPC_FORCE_INLINE const RawDispatchRecord* FindRawByAddressPtr(
+        uint32_t address, IndirectDispatchMemo* memo) {
         if (!lookupPublished_.load(std::memory_order_acquire)) {
             return nullptr;
         }
-
-        const uint32_t generation = runtimeRedirectGeneration_.load(std::memory_order_acquire);
-        if (generation != g_indirectRawDispatchMemoGeneration) {
-            ClearIndirectDispatchMemo();
-            g_indirectRawDispatchMemoGeneration = generation;
+        if (memo == nullptr) [[unlikely]] {
+            return FindRawByAddressPtrSlow(address);
         }
 
-        auto& cached = g_indirectRawDispatchMemo[
+        const uint32_t generation = runtimeRedirectGeneration_.load(std::memory_order_acquire);
+        if (generation != memo->rawGeneration) {
+            ClearIndirectDispatchMemo(*memo);
+            memo->rawGeneration = generation;
+        }
+
+        auto& cached = memo->raw[
             ((address >> 2) * 2654435761u) & (kIndirectDispatchCacheEntries - 1)];
         if (cached.valid && cached.address == address) {
             return cached.record;
@@ -394,16 +418,14 @@ public:
             runtimeRedirects_[runtimeRedirectCount_++] = record;
         }
         // Every host thread that executes translated code has its own indirect-dispatch
-        // memo. Bump the generation so a thread that memoized the translated winner before
+        // memo. Bump the generation so a context that memoized the translated winner before
         // this install clears it on its next indirect call.
         runtimeRedirectGeneration_.fetch_add(1, std::memory_order_release);
-        ClearIndirectDispatchMemo();
-        g_indirectRawDispatchMemoGeneration = runtimeRedirectGeneration_.load(std::memory_order_acquire);
     }
 
 private:
-    static void ClearIndirectDispatchMemo() noexcept {
-        for (auto& entry : g_indirectRawDispatchMemo) {
+    static void ClearIndirectDispatchMemo(IndirectDispatchMemo& memo) noexcept {
+        for (auto& entry : memo.raw) {
             entry = {};
         }
     }
@@ -643,12 +665,13 @@ inline void InvokeIndirectJump(uint32_t target, CpuContext* ctx) {
     // This is essential for tail calls via bctr where the 'this' pointer (r3)
     // must be passed correctly to the target function.
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
-    if (TryDispatchRawCpuTarget(TranslatedFunctionRegistry::FindRawByAddressPtr(target), cpu)) {
+    IndirectDispatchMemo* memo = DispatchMemoFor(cpu);
+    if (TryDispatchRawCpuTarget(TranslatedFunctionRegistry::FindRawByAddressPtr(target, memo), cpu)) {
         return;
     }
 
     // Cold fallback for dynamically registered or signature-only targets.
-    const auto* info = TranslatedFunctionRegistry::FindByAddressPtr(target);
+    const auto* info = TranslatedFunctionRegistry::FindByAddressPtr(target, memo);
     if (info) {
         if (TryDispatchResolvedCpuTarget(info, cpu)) {
             return;
@@ -691,10 +714,11 @@ inline void InvokeIndirectCpu(uint32_t target, CpuContext* ctx) {
         ReportMissingCpuTarget(target, cpu);
     }
     ApplyRuntimeCallOptions(target, cpu);
-    if (TryDispatchRawCpuTarget(TranslatedFunctionRegistry::FindRawByAddressPtr(target), cpu)) {
+    IndirectDispatchMemo* memo = DispatchMemoFor(cpu);
+    if (TryDispatchRawCpuTarget(TranslatedFunctionRegistry::FindRawByAddressPtr(target, memo), cpu)) {
         return;
     }
-    if (TryDispatchResolvedCpuTarget(TranslatedFunctionRegistry::FindByAddressPtr(target), cpu)) {
+    if (TryDispatchResolvedCpuTarget(TranslatedFunctionRegistry::FindByAddressPtr(target, memo), cpu)) {
         return;
     }
     ReportMissingCpuTarget(target, cpu);

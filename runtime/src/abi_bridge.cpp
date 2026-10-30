@@ -30,7 +30,8 @@ static_assert(offsetof(CpuContext, hid2) == 448);
 static_assert(offsetof(CpuContext, srr0) == 452);
 static_assert(offsetof(CpuContext, srr1) == 456);
 static_assert(offsetof(CpuContext, msr) == 460);
-static_assert(sizeof(CpuContext) == 464);
+static_assert(offsetof(CpuContext, dispatchMemo) == 464);
+static_assert(sizeof(CpuContext) == 472);
 
 namespace {
 std::vector<TranslatedFunctionInfo>& Registry() {
@@ -465,6 +466,25 @@ std::optional<TranslatedFunctionInfo> TranslatedFunctionRegistry::FindNearestByA
 
 namespace {
 CpuContext g_persistentCpu{};
+
+// One memo per context that runs translated code: the guest host thread, the interrupt
+// contexts it builds, and the guest fibers. All fibers of one host thread could share, but a
+// per-context slot keeps the binding trivial and the pool is small enough to stay resident.
+constexpr size_t kMaxIndirectDispatchMemos = 32;
+IndirectDispatchMemo g_indirectDispatchMemos[kMaxIndirectDispatchMemos];
+std::atomic<uint32_t> g_boundIndirectDispatchMemos{0};
+}
+
+IndirectDispatchMemo* BindIndirectDispatchMemo(CpuContext* cpu) {
+    uint32_t index = g_boundIndirectDispatchMemos.load(std::memory_order_relaxed);
+    while (index < kMaxIndirectDispatchMemos &&
+           !g_boundIndirectDispatchMemos.compare_exchange_weak(index, index + 1,
+                                                              std::memory_order_relaxed)) {
+    }
+    IndirectDispatchMemo* memo =
+        index < kMaxIndirectDispatchMemos ? &g_indirectDispatchMemos[index] : nullptr;
+    cpu->dispatchMemo = memo;
+    return memo;
 }
 
 CpuContext& GetPersistentCpuContext() {

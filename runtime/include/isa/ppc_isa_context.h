@@ -24,6 +24,8 @@ union PPC_FPR {
     } paired;
 };
 
+struct IndirectDispatchMemo;
+
 // PowerPC CPU Context
 struct CpuContext {
     // Standard GPRs
@@ -51,6 +53,11 @@ struct CpuContext {
     uint32_t srr0;      // Save/Restore Register 0
     uint32_t srr1;      // Save/Restore Register 1
     uint32_t msr;       // Machine State Register
+
+    // Per-context indirect-dispatch memo. The dispatcher already holds this context, so the
+    // bctrl path reaches its cache without thread-local storage, which a shared library on
+    // arm64 Android resolves through __tls_get_addr.
+    IndirectDispatchMemo* dispatchMemo = nullptr;
 };
 
 inline thread_local CpuContext* g_currentCpuContext = nullptr;
