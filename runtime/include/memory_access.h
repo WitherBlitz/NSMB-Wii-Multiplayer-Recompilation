@@ -112,6 +112,20 @@ MKW_MEMORY_FORCE_INLINE bool FlatWriteNeedsPolicy(uint32_t address) {
 MKW_MEMORY_FORCE_INLINE uint32_t ConvertPpcDoubleToSingleBits(double value) {
     uint64_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
+    // A value that is exactly a widened single narrows to that single, in one step instead of
+    // the bit-level rules below. Nearly everything stfs stores is one (the result of a
+    // single-precision op or an lfs load). Compared on the bits so NaNs and signed zeros qualify.
+    {
+        const float narrowed = static_cast<float>(value);
+        const double widened = static_cast<double>(narrowed);
+        uint64_t widenedBits = 0;
+        std::memcpy(&widenedBits, &widened, sizeof(widenedBits));
+        if (widenedBits == bits) [[likely]] {
+            uint32_t narrowedBits = 0;
+            std::memcpy(&narrowedBits, &narrowed, sizeof(narrowedBits));
+            return narrowedBits;
+        }
+    }
     const uint32_t exponent = static_cast<uint32_t>((bits >> 52) & 0x7FFu);
     // The subnormal-single arm applies to exactly the exponents 874..896; every
     // other exponent takes the plain sign/exponent/fraction narrowing below.
