@@ -122,7 +122,11 @@ public sealed partial class CxxLinearCodeGenerator
 
         {
             var context = new GuestFlagLivenessContext(guestAbiContracts, modOverridableCallTargets);
-            var liveness = GuestFlagLivenessAnalyzer.Analyze(function, cfg, context, GuestFlagState.All);
+            // The PPC ABI makes CR2-CR4 nonvolatile and everything else volatile, so a compare that
+            // writes CR0/1/5-7 and returns without another read of that field is dead: the caller
+            // cannot rely on it. Seeding every field live rejected most compares in the game.
+            var liveness = GuestFlagLivenessAnalyzer.Analyze(
+                function, cfg, context, GuestFlagState.Cr(0b0001_1100));
             var fusedCompareSites = new HashSet<(string Block, int Index)>();
 
             {
