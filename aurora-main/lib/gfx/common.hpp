@@ -339,6 +339,13 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
 
 void begin_offscreen(uint32_t width, uint32_t height);
 void end_offscreen();
+// NSMBW: render a scratch EFB workspace strip (below the visible EFB lines) into its own small
+// target. GX texture copies of that strip then split this target instead of the full EFB pass.
+// `efbRect` is the strip in render-target pixels; the origin is fractional because the logical to
+// target scale is not integral.
+void begin_strip_target(ClipRect efbRect, float originX, float originY);
+void end_strip_target();
+bool is_strip_target_active() noexcept;
 bool is_offscreen() noexcept;
 uint32_t get_sample_count() noexcept;
 void clear_caches() noexcept;

@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <mutex>
@@ -260,6 +261,14 @@ static RenderPass& push_render_pass(RenderPass&& pass) {
 // The producer may build the next frame's GX stream while the worker prepares the target, and
 // this is the only renderer-owned property that path queries, so publish it explicitly.
 static std::atomic_bool g_inOffscreen{false};
+// NSMBW: scratch strips live below the visible EFB lines. They are rendered into a small offscreen
+// target so a GX texture copy does not have to split (store/load) the full EFB pass.
+static std::atomic_bool g_inStripTarget{false};
+static float g_stripOriginX = 0.f;
+static float g_stripOriginY = 0.f;
+static uint32_t g_stripEfbWidth = 0;
+static uint32_t g_stripEfbHeight = 0;
+static ClipRect g_stripEfbRect{};
 static std::optional<RenderPass> g_suspendedEfbPass;
 static Viewport g_suspendedEfbViewport;
 static ClipRect g_suspendedEfbScissor;
@@ -513,6 +522,10 @@ Vec2<uint32_t> get_frame_buffer_size() noexcept {
 // Render-thread only: the frame worker recycles g_renderPasses in end_frame, so an off-thread
 // read is a use-after-free rather than a stale value. Use get_frame_buffer_size() instead.
 Vec2<uint32_t> get_render_target_size() noexcept {
+  if (g_inStripTarget) {
+    // Logical coordinates and pipelines keep using the EFB geometry while the strip pass is open.
+    return {g_stripEfbWidth, g_stripEfbHeight};
+  }
   if (g_currentRenderPass < g_renderPasses.size()) {
     const auto& size = g_renderPasses[g_currentRenderPass].targetSize;
     return {size.width, size.height};
@@ -522,17 +535,27 @@ Vec2<uint32_t> get_render_target_size() noexcept {
 
 static Viewport g_cachedViewport;
 void set_viewport(const Viewport& cmd) noexcept {
-  if (cmd != g_cachedViewport) {
-    push_command(CommandType::SetViewport, Command::Data{.setViewport = cmd});
-    g_cachedViewport = cmd;
+  Viewport vp = cmd;
+  if (g_inStripTarget) {
+    vp.left -= g_stripOriginX;
+    vp.top -= g_stripOriginY;
+  }
+  if (vp != g_cachedViewport) {
+    push_command(CommandType::SetViewport, Command::Data{.setViewport = vp});
+    g_cachedViewport = vp;
   }
 }
 
 static ClipRect g_cachedScissor;
 void set_scissor(const ClipRect& cmd) noexcept {
-  if (cmd != g_cachedScissor) {
-    push_command(CommandType::SetScissor, Command::Data{.setScissor = cmd});
-    g_cachedScissor = cmd;
+  ClipRect sc = cmd;
+  if (g_inStripTarget) {
+    sc.x -= static_cast<int32_t>(std::lround(g_stripOriginX));
+    sc.y -= static_cast<int32_t>(std::lround(g_stripOriginY));
+  }
+  if (sc != g_cachedScissor) {
+    push_command(CommandType::SetScissor, Command::Data{.setScissor = sc});
+    g_cachedScissor = sc;
   }
 }
 
@@ -593,6 +616,16 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
     Log.warn("Dropping resolve pass without an active render pass");
     return;
   }
+  if (g_inStripTarget) {
+    // Copies outside the scratch strip (the display copy, atlases) read the EFB, not the scratch
+    // target. Resume the EFB pass first so the resolve sees the real frame.
+    const bool inside = rect.x >= g_stripEfbRect.x && rect.y >= g_stripEfbRect.y &&
+                        rect.x + rect.width <= g_stripEfbRect.x + g_stripEfbRect.width &&
+                        rect.y + rect.height <= g_stripEfbRect.y + g_stripEfbRect.height;
+    if (!inside) {
+      end_strip_target();
+    }
+  }
   ensure_staging_space({0, 2 * staging_uniform_bytes(48), 0, 0});
   auto& prevPass = g_renderPasses[g_currentRenderPass];
   const auto targetWidth = static_cast<int32_t>(prevPass.targetSize.width);
@@ -605,6 +638,19 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
                                ? *sourceRectPixels
                                : Vec4<float>{static_cast<float>(rect.x), static_cast<float>(rect.y),
                                              static_cast<float>(rect.width), static_cast<float>(rect.height)};
+  if (g_inStripTarget) {
+    // The strip pass target is the EFB strip, so the copy source rect moves to strip-local space.
+    const auto originX = static_cast<int32_t>(std::lround(g_stripOriginX));
+    const auto originY = static_cast<int32_t>(std::lround(g_stripOriginY));
+    rect.x -= originX;
+    rect.y -= originY;
+    sourceRect = {
+        sourceRect.x() - g_stripOriginX,
+        sourceRect.y() - g_stripOriginY,
+        sourceRect.z(),
+        sourceRect.w(),
+    };
+  }
   if (targetWidth > 0 && targetHeight > 0) {
     const int32_t left = std::clamp(rect.x, 0, targetWidth - 1);
     const int32_t top = std::clamp(rect.y, 0, targetHeight - 1);
@@ -743,7 +789,9 @@ void queue_palette_conv(tex_palette_conv::ConvRequest req) {
   g_renderPasses[g_currentRenderPass].paletteConvs.push_back(std::move(req));
 }
 
-bool is_offscreen() noexcept { return g_inOffscreen; }
+bool is_offscreen() noexcept { return g_inOffscreen && !g_inStripTarget; }
+
+bool is_strip_target_active() noexcept { return g_inStripTarget; }
 
 uint32_t get_sample_count() noexcept {
   if (!has_current_render_pass()) {
@@ -863,6 +911,57 @@ void begin_offscreen(uint32_t width, uint32_t height) {
   push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
 }
 
+void begin_strip_target(ClipRect efbRect, float originX, float originY) {
+  ZoneScoped;
+  CHECK(!g_inOffscreen, "begin_strip_target called inside an offscreen pass");
+  CHECK(g_currentRenderPass != UINT32_MAX, "begin_strip_target called outside of a frame");
+
+  const auto efbSize = get_render_target_size();
+  g_stripEfbWidth = efbSize.x;
+  g_stripEfbHeight = efbSize.y;
+  g_stripEfbRect = efbRect;
+  g_stripOriginX = originX;
+  g_stripOriginY = originY;
+
+  auto offscreenEntry = get_offscreen_textures(efbRect.width, efbRect.height);
+  g_offscreenColor = std::move(offscreenEntry.color);
+  g_offscreenDepth = std::move(offscreenEntry.depth);
+
+  const auto savedViewport = g_cachedViewport;
+  RenderPass newPass{
+      .colorView = g_offscreenColor.view,
+      .depthView = g_offscreenDepth.view,
+      .copySourceTexture = g_offscreenColor.texture,
+      .copySourceView = g_offscreenColor.view,
+      .copySourceDepthView = g_offscreenDepth.view,
+      .targetSize = {static_cast<uint32_t>(efbRect.width), static_cast<uint32_t>(efbRect.height), 1},
+      .msaaSamples = 1,
+      .clearColorValue = gx::g_gxState.clearColor,
+      .clearDepthValue = gx::clear_depth_value(),
+      .clearColor = true,
+      .clearDepth = true,
+  };
+  // Append the scratch pass after the EFB pass that is open now. That pass keeps its own clear
+  // flag, so the EFB clears exactly once per frame instead of once per scratch entry.
+  push_render_pass(std::move(newPass));
+  ++g_currentRenderPass;
+
+  g_inOffscreen = true;
+  g_inStripTarget = true;
+  static const bool logStrip = std::getenv("NSMBW_LOG_STRIP") != nullptr;
+  if (logStrip) {
+    std::fprintf(stderr, "[strip] begin rect %d,%d %dx%d origin %.2f,%.2f efb %ux%u vp %.1f,%.1f %.1fx%.1f\n",
+                 efbRect.x, efbRect.y, efbRect.width, efbRect.height, originX, originY, g_stripEfbWidth,
+                 g_stripEfbHeight, savedViewport.left, savedViewport.top, savedViewport.width,
+                 savedViewport.height);
+  }
+  g_cachedViewport = {savedViewport.left - originX, savedViewport.top - originY, savedViewport.width,
+                      savedViewport.height, savedViewport.znear, savedViewport.zfar};
+  g_cachedScissor = {0, 0, efbRect.width, efbRect.height};
+  push_command(CommandType::SetViewport, Command::Data{.setViewport = g_cachedViewport});
+  push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
+}
+
 void end_offscreen() {
   ZoneScoped;
   CHECK(g_inOffscreen, "end_offscreen called without begin_offscreen");
@@ -890,8 +989,48 @@ void end_offscreen() {
   push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
 }
 
+void end_strip_target() {
+  ZoneScoped;
+  CHECK(g_inStripTarget, "end_strip_target called without begin_strip_target");
+  g_inStripTarget = false;
+  g_inOffscreen = false;
+  g_offscreenColor = {};
+  g_offscreenDepth = {};
+
+  // Continue on the EFB, loading what the pre-strip pass left there.
+  auto& pass = push_render_pass(RenderPass{});
+  pass.clearColor = false;
+  pass.clearDepth = false;
+  ++g_currentRenderPass;
+  set_efb_targets(g_renderPasses[g_currentRenderPass]);
+
+  // A new pass starts from the default viewport/scissor, so push the current logical mapping
+  // unconditionally instead of relying on the GX state early-outs.
+  const auto mapped = gx::map_logical_render_state();
+  g_cachedViewport = mapped.viewport;
+  g_cachedScissor = mapped.scissor;
+  push_command(CommandType::SetViewport, Command::Data{.setViewport = g_cachedViewport});
+  push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
+}
+
 template <>
 void push_draw_command(gx::DrawData data) {
+  if (g_inStripTarget) {
+    const auto& sc = gx::g_gxState.renderScissor;
+    const bool inside = sc.x >= g_stripEfbRect.x && sc.y >= g_stripEfbRect.y &&
+                        sc.x + sc.width <= g_stripEfbRect.x + g_stripEfbRect.width &&
+                        sc.y + sc.height <= g_stripEfbRect.y + g_stripEfbRect.height;
+    if (!inside) {
+      // The first draw outside the scratch strip goes back to the EFB pass.
+      static const bool logStripEnd = std::getenv("NSMBW_LOG_STRIP") != nullptr;
+      if (logStripEnd) {
+        std::fprintf(stderr, "[strip] end at draw scissor %d,%d %dx%d rect %d,%d %dx%d\n", sc.x, sc.y,
+                     sc.width, sc.height, g_stripEfbRect.x, g_stripEfbRect.y, g_stripEfbRect.width,
+                     g_stripEfbRect.height);
+      }
+      end_strip_target();
+    }
+  }
   push_draw_command(ShaderDrawCommand{.type = ShaderType::GX, .gx = data});
 }
 
@@ -1188,6 +1327,8 @@ void abort_frame() noexcept {
   g_currentRenderPass = UINT32_MAX;
   discard_suspended_efb_pass();
   g_inOffscreen = false;
+  g_inStripTarget = false;
+  g_stripEfbRect = {};
   for (auto& array : gx::g_gxState.arrays) {
     array.cachedRange = {};
   }
@@ -1197,6 +1338,9 @@ void abort_frame() noexcept {
 
 static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
   ZoneScoped;
+  if (g_inStripTarget) {
+    end_strip_target();
+  }
   ASSERT(!advanceFrame || !g_inOffscreen, "end_frame called while offscreen rendering is active");
   if (advanceFrame) {
     gx::finalize_frame_interpolation();
