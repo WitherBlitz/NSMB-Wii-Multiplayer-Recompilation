@@ -86,14 +86,13 @@ PPC_NATIVE_OVERRIDE_VOID(801c59a0, GX__SetDispCopyDst_8016f4b8, (uint32_t w, uin
 // ============================================================================
 
 extern "C" void GX__SetTexCopySrc_8016f478(uint32_t l, uint32_t t, uint32_t w, uint32_t h) {
-    GXSetTexCopySrc((u16)l, (u16)t, (u16)w, (u16)h);
+    // Only the copy parameters the guest sets; the GX thread applies them with the copy itself.
     g_texCopyState.srcLeft=(u16)l; g_texCopyState.srcTop=(u16)t;
     g_texCopyState.srcWidth=(u16)w; g_texCopyState.srcHeight=(u16)h;
 }
 PPC_NATIVE_OVERRIDE_VOID(801c5960, GX__SetTexCopySrc_8016f478, (uint32_t l, uint32_t t, uint32_t w, uint32_t h), (l, t, w, h));
 
 extern "C" void GX__SetTexCopyDst_8016f4dc(uint32_t w, uint32_t h, uint32_t f, uint32_t m) {
-    GXSetTexCopyDst((u16)w, (u16)h, (GXTexFmt)f, (GXBool)m);
     g_texCopyState.dstWidth=(u16)w; g_texCopyState.dstHeight=(u16)h;
     g_texCopyState.dstFormat=f; g_texCopyState.dstMipmap=m;
 }
@@ -139,16 +138,11 @@ PPC_NATIVE_OVERRIDE_VOID(801c6150, GX__CopyDisp_8016fc38, (uint32_t da, uint32_t
 
 extern "C" void GX__CopyTex_8016fd74(uint32_t da, uint32_t c) {
     EnsureAuroraFrameActive();
-    // Match GX FIFO ordering: texture copies observe all prior draws.
-    GXDrawDone();
     const uint16_t rawSrcLeft = g_texCopyState.srcLeft;
     const uint16_t rawSrcTop = g_texCopyState.srcTop;
     const uint16_t rawSrcWidth = g_texCopyState.srcWidth;
     const uint16_t rawSrcHeight = g_texCopyState.srcHeight;
 
-    // Keep the source in guest EFB coordinates. Aurora maps it to the scaled
-    // EFB exactly once, matching Dolphin's ConvertEFBRectangle path.
-    GXSetTexCopySrc(rawSrcLeft, rawSrcTop, rawSrcWidth, rawSrcHeight);
     // EFB copies stay GPU-only except probe-sized ones (e.g. the 4x4 lens-flare depth probe),
     // which Aurora reads back asynchronously via efb_ram::schedule and land in guest RAM a frame
     // later. RISK: copies above the probe threshold, or on the offscreen list, are not
@@ -199,7 +193,11 @@ extern "C" void GX__CopyTex_8016fd74(uint32_t da, uint32_t c) {
                          rawSrcTop, rawSrcWidth, rawSrcHeight, da, lr, ra[0], ra[1], ra[2], ra[3]);
         }
     }
-    GXCopyTex(GuestToHostPtr(da), (GXBool)c);
+    // Queue the copy for the GX thread instead of joining the FIFO here: the copy is recorded in
+    // stream order, after every draw the guest queued before it, without stalling the game thread.
+    AuroraQueueTextureCopy(reinterpret_cast<uint64_t>(GuestToHostPtr(da)), c, g_texCopyState.dstFormat,
+                           g_texCopyState.dstMipmap, rawSrcLeft, rawSrcTop, rawSrcWidth, rawSrcHeight,
+                           g_texCopyState.dstWidth, g_texCopyState.dstHeight);
     // The extent the copy writes: a destination bigger than the source is a patch into a larger
     // texture (aurora sizes its copy the same way), not a claim on that whole texture's memory.
     const uint32_t copiedWidth = std::max<uint32_t>(rawSrcWidth >> (g_texCopyState.dstMipmap ? 1 : 0), 1);
@@ -208,6 +206,5 @@ extern "C" void GX__CopyTex_8016fd74(uint32_t da, uint32_t c) {
         da, GXGetTexBufferSize(std::min<uint32_t>(g_texCopyState.dstWidth, copiedWidth),
                                std::min<uint32_t>(g_texCopyState.dstHeight, copiedHeight),
                                g_texCopyState.dstFormat, GX_FALSE, 0));
-    GXSetTexCopySrc(rawSrcLeft, rawSrcTop, rawSrcWidth, rawSrcHeight);
 }
 PPC_NATIVE_OVERRIDE_VOID(801c6290, GX__CopyTex_8016fd74, (uint32_t da, uint32_t c), (da, c));

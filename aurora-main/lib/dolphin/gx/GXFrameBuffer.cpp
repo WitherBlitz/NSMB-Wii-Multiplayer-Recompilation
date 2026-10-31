@@ -483,9 +483,10 @@ void GXCopyDisp(void* dest, GXBool clear) {
 std::atomic<bool> g_texturePatches{true};
 extern "C" void AuroraSetTexturePatches(bool enabled) { g_texturePatches.store(enabled, std::memory_order_relaxed); }
 
+void copy_texture_now(void* dest, GXBool clear);
+
 void GXCopyTex(void* dest, GXBool clear) {
   aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
-  g_statCopies.fetch_add(1, std::memory_order_relaxed);
   // Texture copies must see all earlier draws and state changes.
   if (aurora::gx::fifo::get_buffer_size() != 0) {
     aurora::gx::fifo::drain();
@@ -497,6 +498,13 @@ void GXCopyTex(void* dest, GXBool clear) {
                             static_cast<int64_t>(g_gxState.texCopyFmt), g_gxState.texCopyHalfScale};
     aurora::gx::fifo::g_commandDigest = aurora::xxh3_hash_s(copy, sizeof(copy), aurora::gx::fifo::g_commandDigest);
   }
+  copy_texture_now(dest, clear);
+}
+
+// The copy itself, with the decoded state already set and the FIFO already joined. GXCopyTex calls
+// it on the producer; the queued GX_LOAD_AURORA_TEX_COPY runs it on the GX thread in stream order.
+void copy_texture_now(void* dest, GXBool clear) {
+  g_statCopies.fetch_add(1, std::memory_order_relaxed);
   const auto sourceRect = map_texture_copy_source(g_gxState.texCopySrc, g_gxState.texCopySrcRenderSpace);
   const auto rect = sourceRect.clearRect;
   // Keep guest dimensions for cache identity while preserving scaled GPU detail.
@@ -686,4 +694,35 @@ f32 GXGetYScaleFactor(u16 efbHeight, u16 xfbHeight) {
   return resultScale;
 }
 
+extern "C" void AuroraQueueTextureCopy(uint64_t dest, uint32_t clear, uint32_t format, uint32_t halfScale,
+                                        int32_t left, int32_t top, int32_t width, int32_t height,
+                                        uint32_t dstWidth, uint32_t dstHeight) {
+  GX_WRITE_AURORA(GX_LOAD_AURORA_TEX_COPY);
+  GX_WRITE_U64(dest);
+  GX_WRITE_U8(clear);
+  GX_WRITE_U16(static_cast<uint16_t>(left));
+  GX_WRITE_U16(static_cast<uint16_t>(top));
+  GX_WRITE_U16(static_cast<uint16_t>(width));
+  GX_WRITE_U16(static_cast<uint16_t>(height));
+  GX_WRITE_U16(static_cast<uint16_t>(dstWidth));
+  GX_WRITE_U16(static_cast<uint16_t>(dstHeight));
+  GX_WRITE_U8(format);
+  GX_WRITE_U8(halfScale);
+  aurora::gx::fifo::flush_async();
 }
+
+}
+
+namespace aurora::gx {
+void apply_queued_texture_copy(uint64_t dest, bool clear, uint16_t left, uint16_t top, uint16_t width,
+                               uint16_t height, uint16_t dstWidth, uint16_t dstHeight, uint32_t format,
+                               bool halfScale) {
+  g_gxState.texCopySrc = {left, top, width, height};
+  g_gxState.texCopySrcRenderSpace = false;
+  g_gxState.texCopyFmt = static_cast<GXTexFmt>(format);
+  g_gxState.texCopyDstWidth = dstWidth;
+  g_gxState.texCopyDstHeight = dstHeight;
+  g_gxState.texCopyHalfScale = halfScale;
+  copy_texture_now(reinterpret_cast<void*>(static_cast<uintptr_t>(dest)), clear ? GX_TRUE : GX_FALSE);
+}
+} // namespace aurora::gx

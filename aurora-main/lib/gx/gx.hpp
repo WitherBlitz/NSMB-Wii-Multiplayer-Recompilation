@@ -783,6 +783,12 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept;
 GXBindGroups build_bind_groups(const ShaderInfo& info) noexcept;
 void notify_copy_texture_created() noexcept;
 
+// Runs a texture copy whose parameters the producer captured when queueing it (GX_LOAD_AURORA_TEX_COPY).
+// Called on the GX thread inside a drain, so it must not join the FIFO.
+void apply_queued_texture_copy(uint64_t dest, bool clear, uint16_t left, uint16_t top, uint16_t width,
+                               uint16_t height, uint16_t dstWidth, uint16_t dstHeight, uint32_t format,
+                               bool halfScale);
+
 u8 comp_type_size(GXAttr attr, GXCompType type) noexcept;
 u8 comp_cnt_count(GXAttr attr, GXCompCnt cnt) noexcept;
 } // namespace aurora::gx

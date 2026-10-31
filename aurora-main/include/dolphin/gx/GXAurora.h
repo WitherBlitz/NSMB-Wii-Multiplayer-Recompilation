@@ -76,6 +76,17 @@ extern "C" {
 #define GX_LOAD_AURORA_Z_SCALE_OFFSET 0x0042
 // GXSetScissorBoxOffset: s32 x, s32 y.
 #define GX_LOAD_AURORA_SCISSOR_OFFSET 0x0043
+// EFB texture copy: u64 dest (host pointer), u8 clear, u16 left, u16 top, u16 width, u16 height,
+// u16 dst width, u16 dst height, u8 format, u8 half scale. Captured when the producer queues it so
+// the copy can run on the GX thread in stream order instead of joining the FIFO at every copy.
+#define GX_LOAD_AURORA_TEX_COPY 0x0044
+
+// NSMBW: queues an EFB texture copy for the GX thread. `dest` is the guest texture's host pointer
+// (GuestToHostPtr), the identity GXLoadTexObj looks the copy up by. The destination object stays
+// GPU-side like GXCopyTex's; the guest sees its RAM bytes only when something reads them back.
+void AuroraQueueTextureCopy(uint64_t dest, uint32_t clear, uint32_t format, uint32_t halfScale,
+                            int32_t left, int32_t top, int32_t width, int32_t height,
+                            uint32_t dstWidth, uint32_t dstHeight);
 
 
 /*
