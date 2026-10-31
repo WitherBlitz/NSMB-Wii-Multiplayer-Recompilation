@@ -195,6 +195,20 @@ struct RenderPass {
     uint32_t x = 0, y = 0, width = 0, height = 0;
   };
   std::vector<Patch> patches;
+  // NSMBW scratch strips: copies of this pass's target that are resolved after the pass ends.
+  // Consecutive GXCopyTex calls read the same strip content, so one pass split serves the group.
+  struct DeferredResolve {
+    TextureHandle target;
+    GXTexFmt format = GX_TF_RGBA8;
+    ClipRect rect;
+    Range uniformRange;
+    bool needsConversion = false;
+    bool needsShaderSampling = false;
+    bool linearSampling = false;
+    bool forceOpaqueAlpha = false;
+    std::vector<Patch> patches;
+  };
+  std::vector<DeferredResolve> deferred;
 };
 static std::vector<RenderPass> g_renderPasses;
 static u32 g_currentRenderPass = UINT32_MAX;
@@ -585,23 +599,31 @@ bool add_resolve_patch(const TextureHandle& source, TextureHandle dst, uint32_t 
       x + width > dst->size.width || y + height > dst->size.height || g_currentRenderPass >= g_renderPasses.size()) {
     return false;
   }
-  // The pass that resolves `source`: the most recent one with it as its target.
+  // One scratch texture per patch size: the blits and copies are encoded in order.
+  static absl::flat_hash_map<uint64_t, TextureHandle> natives;
+  auto& native = natives[(static_cast<uint64_t>(width) << 32) | height];
+  if (!native) {
+    native = new_conv_texture(width, height, GX_TF_RGBA8, "GX resolve patch");
+  }
+  const std::array blitUniform{
+      0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 64.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f,
+  };
+  auto makePatch = [&]() {
+    return RenderPass::Patch{std::move(dst), native, push_uniform(blitUniform), x, y, width, height};
+  };
+  // The pass or deferred resolve that produces `source`: the most recent one with it as its target.
   for (size_t i = g_currentRenderPass + 1; i-- > 0;) {
     auto& pass = g_renderPasses[i];
-    if (pass.resolveTarget != source) {
-      continue;
+    if (pass.resolveTarget == source) {
+      pass.patches.push_back(makePatch());
+      return true;
     }
-    // One scratch texture per patch size: the blits and copies are encoded in order.
-    static absl::flat_hash_map<uint64_t, TextureHandle> natives;
-    auto& native = natives[(static_cast<uint64_t>(width) << 32) | height];
-    if (!native) {
-      native = new_conv_texture(width, height, GX_TF_RGBA8, "GX resolve patch");
+    for (auto it = pass.deferred.rbegin(); it != pass.deferred.rend(); ++it) {
+      if (it->target == source) {
+        it->patches.push_back(makePatch());
+        return true;
+      }
     }
-    const std::array blitUniform{
-        0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 64.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f,
-    };
-    pass.patches.push_back({std::move(dst), native, push_uniform(blitUniform), x, y, width, height});
-    return true;
   }
   return false;
 }
@@ -670,6 +692,49 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
     const float srcRight = std::clamp(sourceRect.x() + sourceRect.z(), srcLeft, srcW);
     const float srcBottom = std::clamp(sourceRect.y() + sourceRect.w(), srcTop, srcH);
     sourceRect = {srcLeft, srcTop, std::max(srcRight - srcLeft, 1.0f), std::max(srcBottom - srcTop, 1.0f)};
+  }
+  if (g_inStripTarget && !gx::is_depth_format(resolveFormat) && !halfScale) {
+    // Defer the resolve: the strip content stays valid until the next draw, so consecutive copies
+    // can share one pass split instead of splitting the strip once per copy. The copy clear is
+    // skipped: it only clears scratch the next strip draw or the next strip entry overwrites.
+    const std::array<u32, 3> filter =
+        copyFilterCoefficients != nullptr ? *copyFilterCoefficients : std::array<u32, 3>{0, 64, 0};
+    const bool filterActive = filter[0] != 0 || filter[1] != 64 || filter[2] != 0;
+    const auto samplingPlan =
+        make_resolve_sampling_plan(texture, resolveFormat, rect, sourceRect, halfScale, filterActive,
+                                   forceOpaqueAlpha);
+    const float srcW = static_cast<float>(targetWidth);
+    const float srcH = static_cast<float>(targetHeight);
+    const float clampTopPixels = clampTop ? sourceRect.y() : 0.0f;
+    const float clampBottomPixels = clampBottom ? sourceRect.y() + sourceRect.w() : srcH;
+    const float clampTopUv = (clampTopPixels + 0.5f) / srcH;
+    const float clampBottomUv = (clampBottomPixels - 0.5f) / srcH;
+    const std::array resolveUniform{
+        sourceRect.x() / srcW,
+        sourceRect.y() / srcH,
+        sourceRect.z() / srcW,
+        sourceRect.w() / srcH,
+        static_cast<float>(filter[0]),
+        static_cast<float>(filter[1]),
+        static_cast<float>(filter[2]),
+        filterActive ? 1.0f : 0.0f,
+        forceOpaqueAlpha ? 1.0f : 0.0f,
+        std::max(copyFilterRowStride, 1.0f),
+        clampTopUv,
+        clampBottomUv,
+    };
+    prevPass.requireReadyPipelines |= persistentCopy;
+    prevPass.deferred.push_back(RenderPass::DeferredResolve{
+        .target = std::move(texture),
+        .format = resolveFormat,
+        .rect = rect,
+        .uniformRange = push_uniform(resolveUniform),
+        .needsConversion = samplingPlan.needsConversion,
+        .needsShaderSampling = samplingPlan.needsShaderSampling,
+        .linearSampling = samplingPlan.usesLinearSampling,
+        .forceOpaqueAlpha = forceOpaqueAlpha,
+    });
+    return;
   }
   prevPass.resolveTarget = std::move(texture);
   prevPass.requireReadyPipelines |= persistentCopy;
@@ -1013,6 +1078,34 @@ void end_strip_target() {
   push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
 }
 
+// NSMBW: end the current strip segment before a draw changes its content. The pending resolves
+// are encoded after that pass, then a continuation pass takes the draw.
+static void flush_strip_resolves() {
+  if (!g_inStripTarget || g_currentRenderPass >= g_renderPasses.size()) {
+    return;
+  }
+  auto& pass = g_renderPasses[g_currentRenderPass];
+  if (pass.deferred.empty()) {
+    return;
+  }
+  RenderPass continuation{
+      .colorView = pass.colorView,
+      .resolveView = pass.resolveView,
+      .depthView = pass.depthView,
+      .copySourceTexture = pass.copySourceTexture,
+      .copySourceView = pass.copySourceView,
+      .copySourceDepthView = pass.copySourceDepthView,
+      .targetSize = pass.targetSize,
+      .msaaSamples = pass.msaaSamples,
+      .clearColor = false,
+      .clearDepth = false,
+  };
+  push_render_pass(std::move(continuation));
+  ++g_currentRenderPass;
+  push_command(CommandType::SetViewport, Command::Data{.setViewport = g_cachedViewport});
+  push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
+}
+
 template <>
 void push_draw_command(gx::DrawData data) {
   if (g_inStripTarget) {
@@ -1029,6 +1122,8 @@ void push_draw_command(gx::DrawData data) {
                      g_stripEfbRect.height);
       }
       end_strip_target();
+    } else {
+      flush_strip_resolves();
     }
   }
   push_draw_command(ShaderDrawCommand{.type = ShaderType::GX, .gx = data});
@@ -1636,6 +1731,60 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
                                      .sampleFilter = tex_copy_conv::SampleFilter::Linear,
                                  });
         patch.dst->materialize();  // a static texture (TextureRef::lazy)
+        const wgpu::TexelCopyTextureInfo src{.texture = patch.native->texture};
+        const wgpu::TexelCopyTextureInfo dst{
+            .texture = patch.dst->texture,
+            .origin = wgpu::Origin3D{.x = patch.x, .y = patch.y},
+        };
+        const wgpu::Extent3D size{.width = patch.width, .height = patch.height, .depthOrArrayLayers = 1};
+        cmd.CopyTextureToTexture(&src, &dst, &size);
+      }
+    }
+    // NSMBW: strip copies deferred until the segment ended. All of them read the strip color that
+    // the pass just produced, so one split serves the whole copy group.
+    for (const auto& op : passInfo.deferred) {
+      if (!op.target) {
+        continue;
+      }
+      const tex_copy_conv::ConvRequest convReq{
+          .fmt = op.format,
+          .srcView = passInfo.copySourceView,
+          .uniformRange = op.uniformRange,
+          .dst = op.target,
+          .sampleFilter = op.linearSampling ? tex_copy_conv::SampleFilter::Linear
+                                            : tex_copy_conv::SampleFilter::Nearest,
+          .forceOpaqueAlpha = op.forceOpaqueAlpha,
+      };
+      if (op.needsConversion) {
+        tex_copy_conv::run(cmd, convReq);
+      } else if (op.needsShaderSampling) {
+        tex_copy_conv::blit(cmd, convReq);
+      } else {
+        const wgpu::TexelCopyTextureInfo src{
+            .texture = passInfo.copySourceTexture,
+            .origin = wgpu::Origin3D{.x = static_cast<uint32_t>(std::max(op.rect.x, 0)),
+                                     .y = static_cast<uint32_t>(std::max(op.rect.y, 0))},
+        };
+        const wgpu::TexelCopyTextureInfo dst{.texture = op.target->texture};
+        const wgpu::Extent3D size{
+            .width = static_cast<uint32_t>(op.rect.width),
+            .height = static_cast<uint32_t>(op.rect.height),
+            .depthOrArrayLayers = 1,
+        };
+        cmd.CopyTextureToTexture(&src, &dst, &size);
+      }
+      for (const auto& patch : op.patches) {
+        if (!patch.dst || !patch.native) {
+          continue;
+        }
+        tex_copy_conv::blit(cmd, tex_copy_conv::ConvRequest{
+                                     .fmt = GX_TF_RGBA8,
+                                     .srcView = op.target->sampleTextureView,
+                                     .uniformRange = patch.uniformRange,
+                                     .dst = patch.native,
+                                     .sampleFilter = tex_copy_conv::SampleFilter::Linear,
+                                 });
+        patch.dst->materialize();
         const wgpu::TexelCopyTextureInfo src{.texture = patch.native->texture};
         const wgpu::TexelCopyTextureInfo dst{
             .texture = patch.dst->texture,
