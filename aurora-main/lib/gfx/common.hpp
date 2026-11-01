@@ -283,6 +283,10 @@ bool begin_frame();
 bool resume_frame();
 void abort_frame() noexcept;
 void end_frame(const wgpu::CommandEncoder& cmd);
+// Frame end in two steps: the seal moves the frame's CPU-recorded data aside so the producer can
+// reuse its buffers, and the staging copy into the GPU buffer runs later, after SEALED.
+void seal_staging_buffers();
+void emit_staging_buffers(const wgpu::CommandEncoder& cmd);
 void end_batch(const wgpu::CommandEncoder& cmd);
 uint32_t current_frame() noexcept;
 

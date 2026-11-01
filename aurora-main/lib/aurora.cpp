@@ -1587,7 +1587,8 @@ void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
   // Probe-sized CPU-consumed copies read back asynchronously. Their downscale blits push uniforms,
   // so prepare them while the producer's staging buffers are still mapped.
   gfx::efb_ram::seal_async_downloads();
-  gfx::end_frame(ctx.encoder);
+  // Move the frame's CPU data aside; the staging copy into the GPU buffer runs after SEALED.
+  gfx::seal_staging_buffers();
   gfx::g_stats.presentedFrameCount = 0;
   gfx::g_stats.interpolatedFrameCount = 0;
   // Latched before the producer's next gfx::begin_frame() calls
@@ -1861,6 +1862,7 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
 #endif
     overlapEncode = ctx.interpolationActive || !serialEncode;
     if (!overlapEncode) {
+      gfx::emit_staging_buffers(ctx.encoder);
       presentationJobs = encode_sealed_frame(sealedFrame, ctx);
     }
     encoded = WorkerClock::now();
@@ -1917,6 +1919,7 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
   if (overlapEncode) {
     // Mutex-free: the producer drains and records the next frame in parallel, taking the renderer
     // mutex per drain, and this phase never takes it.
+    gfx::emit_staging_buffers(ctx.encoder);
     presentationJobs = encode_sealed_frame(sealedFrame, ctx);
     publish_presentations(std::move(presentationJobs), ctx.interpolationActive);
     if (imguiNewFrameOwed) {
@@ -1952,6 +1955,7 @@ void end_frame_impl(bool pumpEvents, bool drainFifo) {
   {
     std::lock_guard gpuLock(g_rendererGpuMutex);
     seal_frame_locked(sealedFrame, ctx);
+    gfx::emit_staging_buffers(ctx.encoder);
     presentationJobs = encode_sealed_frame(sealedFrame, ctx);
   }
   publish_presentations(std::move(presentationJobs), ctx.interpolationActive);

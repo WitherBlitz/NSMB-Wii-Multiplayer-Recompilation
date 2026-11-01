@@ -493,6 +493,17 @@ struct OffscreenCacheEntry {
 static absl::flat_hash_map<OffscreenCacheKey, OffscreenCacheEntry> g_offscreenCache;
 std::vector<TextureUpload> g_textureUploads;
 
+// The sealed frame's recorded data, moved off the producer's buffers at the seal. The worker copies
+// it into the mapped staging buffer after SEALED, so the producer's decode never waits for the GPU
+// to release that buffer.
+struct FrameBuffers {
+  ByteBuffer verts, uniforms, indices, storage, textureUpload;
+  std::vector<TextureUpload> textureUploads;
+};
+static FrameBuffers s_pendingFrame;
+static bool s_pendingFrameValid = false;
+
+
 static inline void push_command(CommandType type, const Command::Data& data) {
   if (!has_current_render_pass())
     UNLIKELY {
@@ -1376,7 +1387,10 @@ static bool begin_frame_impl(bool clearEfb, bool capacityResume = false) {
     }
   }
   ++g_stagingEpoch;
-  g_recordingSnapshotSlot = currentStagingBuffer;
+  // The frame sealed just before this one still owns the current staging slot until the worker
+  // stages it; this frame records into the next one.
+  g_recordingSnapshotSlot =
+      s_pendingFrameValid ? (currentStagingBuffer + 1) % FrameSlotCount : currentStagingBuffer;
   // The frame's vertex/uniform/index data is recorded into CPU buffers and copied into the mapped
   // staging buffer at the seal (end_batch_impl), so recording never waits for the GPU.
   g_drawCallCount = 0;
@@ -1444,6 +1458,115 @@ void abort_frame() noexcept {
   }
   webgpu::clear_present_source_override();
   end_pipeline_frame();
+}
+
+void seal_staging_buffers() {
+  ZoneScoped;
+  if (g_inStripTarget) {
+    end_strip_target();
+  }
+  ASSERT(!g_inOffscreen, "end_frame called while offscreen rendering is active");
+  gx::finalize_frame_interpolation();
+  g_uniforms.append_zeroes(gx::MaxUniformSize);  // Pad the end of the buffer
+  const auto used = staging_usage();
+  for (unsigned i = 0; i < used.size(); ++i) g_stagingHighWater[i] = std::max(g_stagingHighWater[i], used[i]);
+  g_stats.drawCallCount = g_drawCallCount;
+  g_stats.mergedDrawCallCount = g_mergedDrawCallCount;
+  flush_deferred_texture_writes();  // the static textures this frame loaded (TextureRef::lazy)
+  ASSERT(!s_pendingFrameValid, "a sealed frame is still waiting to be staged");
+  std::swap(g_verts, s_pendingFrame.verts);
+  std::swap(g_uniforms, s_pendingFrame.uniforms);
+  std::swap(g_indices, s_pendingFrame.indices);
+  std::swap(g_storage, s_pendingFrame.storage);
+  if constexpr (UseTextureBuffer) {
+    std::swap(g_textureUpload, s_pendingFrame.textureUpload);
+    std::swap(g_textureUploads, s_pendingFrame.textureUploads);
+  }
+  s_pendingFrameValid = true;
+  g_currentRenderPass = UINT32_MAX;
+  for (auto& array : gx::g_gxState.arrays) {
+    array.cachedRange = {};
+  }
+  end_pipeline_frame();
+  ++g_frameIndex;
+}
+
+void emit_staging_buffers(const wgpu::CommandEncoder& cmd) {
+  ZoneScopedN("Emit staging buffers");
+  if (!s_pendingFrameValid) {
+    return;
+  }
+  s_pendingFrameValid = false;
+  if (!wait_for_staging_map()) {
+    // The map was aborted (device loss). Drop this frame's data but keep the staging rotation
+    // consistent so the next frame starts from a known state.
+    g_stagingBuffers[currentStagingBuffer].Unmap();
+    s_mappingState.reset();
+    s_pendingFrame.verts.clear();
+    s_pendingFrame.uniforms.clear();
+    s_pendingFrame.indices.clear();
+    s_pendingFrame.storage.clear();
+    s_pendingFrame.textureUpload.clear();
+    s_pendingFrame.textureUploads.clear();
+    currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();
+    map_staging_buffer();
+    return;
+  }
+  uint64_t bufferOffset = 0;
+  const auto stageBuffer = [&](ByteBuffer& buf, uint64_t size) {
+    const auto writeSize = buf.size();
+    if (writeSize > 0) {
+      std::memcpy(g_stagingBuffers[currentStagingBuffer].GetMappedRange(bufferOffset, AURORA_ALIGN(writeSize, 4)),
+                  buf.data(), writeSize);
+      buf.clear();
+    }
+    bufferOffset += size;
+    return static_cast<uint32_t>(writeSize);
+  };
+  g_stats.lastVertSize = stageBuffer(s_pendingFrame.verts, VertexBufferSize);
+  g_stats.lastUniformSize = stageBuffer(s_pendingFrame.uniforms, UniformBufferSize);
+  g_stats.lastIndexSize = stageBuffer(s_pendingFrame.indices, IndexBufferSize);
+  g_stats.lastStorageSize = stageBuffer(s_pendingFrame.storage, StorageBufferSize);
+  if constexpr (UseTextureBuffer) {
+    g_stats.lastTextureUploadSize = s_pendingFrame.textureUpload.size();
+    if (!s_pendingFrame.textureUpload.empty()) {
+      std::memcpy(g_stagingBuffers[currentStagingBuffer].GetMappedRange(bufferOffset, TextureUploadSize),
+                  s_pendingFrame.textureUpload.data(), s_pendingFrame.textureUpload.size());
+    }
+  }
+  g_stagingBuffers[currentStagingBuffer].Unmap();
+  s_mappingState.reset();
+  {
+    uint64_t offset = 0;
+    const auto copyOut = [&](uint32_t writeSize, wgpu::Buffer& out, uint64_t size) {
+      if (writeSize > 0) {
+        cmd.CopyBufferToBuffer(g_stagingBuffers[currentStagingBuffer], offset, out, 0, AURORA_ALIGN(writeSize, 4));
+      }
+      offset += size;
+    };
+    copyOut(g_stats.lastVertSize, g_vertexBuffer, VertexBufferSize);
+    copyOut(g_stats.lastUniformSize, g_uniformBuffer, UniformBufferSize);
+    copyOut(g_stats.lastIndexSize, g_indexBuffer, IndexBufferSize);
+    copyOut(g_stats.lastStorageSize, g_storageBuffer, StorageBufferSize);
+  }
+  if constexpr (UseTextureBuffer) {
+    for (const auto& item : s_pendingFrame.textureUploads) {
+      const wgpu::TexelCopyBufferInfo buf{
+          .layout =
+              wgpu::TexelCopyBufferLayout{
+                  .offset = item.layout.offset + bufferOffset,
+                  .bytesPerRow = AURORA_ALIGN(item.layout.bytesPerRow, 256),
+                  .rowsPerImage = item.layout.rowsPerImage,
+              },
+          .buffer = g_stagingBuffers[currentStagingBuffer],
+      };
+      cmd.CopyBufferToTexture(&buf, &item.tex, &item.size);
+    }
+    s_pendingFrame.textureUploads.clear();
+    s_pendingFrame.textureUpload.clear();
+  }
+  currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();
+  map_staging_buffer();
 }
 
 static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
