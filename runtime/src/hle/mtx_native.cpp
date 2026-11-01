@@ -3,20 +3,18 @@
 // destination may alias either input.
 #include "hle_stubs.h"
 #include "memory.h"
+#include "memory_access.h"
 
 #include <cstdint>
 
-extern "C" void PSMTXConcat_HLE(CpuContext* ctx) {
-    const uint32_t a = ctx->gpr[3];
-    const uint32_t b = ctx->gpr[4];
-    const uint32_t ab = ctx->gpr[5];
+extern "C" void PSMTXConcat_HLE_801c0540(uint32_t a, uint32_t b, uint32_t ab) {
 
     float av[12];
     float bv[12];
     float out[12];
     for (int i = 0; i < 12; ++i) {
-        av[i] = Memory::ReadFloat32(a + static_cast<uint32_t>(i) * 4u);
-        bv[i] = Memory::ReadFloat32(b + static_cast<uint32_t>(i) * 4u);
+        av[i] = MemoryInline::FlatReadFloat32(a + static_cast<uint32_t>(i) * 4u);
+        bv[i] = MemoryInline::FlatReadFloat32(b + static_cast<uint32_t>(i) * 4u);
     }
 
     for (int row = 0; row < 3; ++row) {
@@ -45,8 +43,8 @@ extern "C" void PSMTXConcat_HLE(CpuContext* ctx) {
     }
 
     for (int i = 0; i < 12; ++i) {
-        Memory::WriteFloat32(ab + static_cast<uint32_t>(i) * 4u, out[i]);
+        MemoryInline::FlatWriteFloat32(ab + static_cast<uint32_t>(i) * 4u, out[i]);
     }
 }
 
-PPC_NATIVE_OVERRIDE_VOID(801C0540, PSMTXConcat_HLE, (CpuContext* ctx), (ctx));
+PPC_NATIVE_OVERRIDE_VOID(801C0540, PSMTXConcat_HLE_801c0540, (uint32_t a, uint32_t b, uint32_t ab), (a, b, ab));

@@ -42,7 +42,7 @@
 inline double PpcFusedMulAdd(double a, double b, double c)
 {
 #if MKW_SOFT_FMA
-    return PpcSoftFma::Fma(a, b, c, g_mkwHostNiActive);
+    return PpcSoftFma::Fma(a, b, c, MkwHostNiActiveInline());
 #else
     return std::fma(a, b, c);
 #endif
@@ -203,17 +203,12 @@ inline double PpcPackPairedInline(float ps0, float ps1)
 }
 
 // FPSCR[NI] is modeled by MXCSR FTZ/DAZ, so arithmetic output flushing compiles to nothing.
-// Two cases still need a software check against the mirrored bit (not STMXCSR, too hot):
-// double->single conversion (CVTSD2SS isn't covered by FTZ) and raw lane pass-through moves.
-inline bool MkwHostNiActiveInline() noexcept
-{
-    return g_mkwHostNiActive;
-}
-
+// Two cases still need a software check against the NI state: double->single conversion
+// (CVTSD2SS isn't covered by FTZ) and raw lane pass-through moves.
 inline float PpcForceSingleValueSlowInline(double value)
 {
     // FPSCR[NI] flushes an exact pre-round single-subnormal even when rounding would promote it
-    // to the smallest normal. g_mkwNiFlushThreshold (2^-126 active, 0.0 inactive) turns the
+    // to the smallest normal. MkwNiFlushThresholdInline (2^-126 active, 0.0 inactive) turns the
     // flush into a branchless mask: a set compare lane keeps just the sign bit, a clear lane
     // passes the value to the double->float conversion. DAZ/FZ (set exactly when NI is) makes
     // the compare itself treat a subnormal as zero, matching the mask's answer.
@@ -221,14 +216,14 @@ inline float PpcForceSingleValueSlowInline(double value)
     const __m128d v = _mm_set_sd(value);
     const __m128d signMask = _mm_set_sd(-0.0);
     const __m128d magnitude = _mm_andnot_pd(signMask, v);
-    const __m128d flush = _mm_cmplt_sd(magnitude, _mm_set_sd(g_mkwNiFlushThreshold));
+    const __m128d flush = _mm_cmplt_sd(magnitude, _mm_set_sd(MkwNiFlushThresholdInline()));
     const __m128d kept = _mm_andnot_pd(_mm_andnot_pd(signMask, flush), v);
     return static_cast<float>(_mm_cvtsd_f64(kept));
 #elif defined(__aarch64__)
     const float64x1_t v = vdup_n_f64(value);
     const uint64x1_t signMask = vdup_n_u64(0x8000000000000000ULL);
     const float64x1_t magnitude = vreinterpret_f64_u64(vbic_u64(vreinterpret_u64_f64(v), signMask));
-    const uint64x1_t flush = vclt_f64(magnitude, vdup_n_f64(g_mkwNiFlushThreshold));
+    const uint64x1_t flush = vclt_f64(magnitude, vdup_n_f64(MkwNiFlushThresholdInline()));
     const uint64x1_t signOnly = vand_u64(vreinterpret_u64_f64(v), signMask);
     const uint64x1_t kept = vbsl_u64(flush, signOnly, vreinterpret_u64_f64(v));
     return static_cast<float>(vget_lane_f64(vreinterpret_f64_u64(kept), 0));
@@ -244,6 +239,10 @@ inline float PpcForceSingleValueInline(double value)
     // keeps the sign); NaN and infinity never flush. That keeps the flush mask off the dependency
     // chain of every single-precision op: about a fifth of the time in AX's reverb on a phone.
     const float converted = static_cast<float>(value);
+    // The flush below only exists to serve FPSCR[NI]. With NI inactive the conversion is the
+    // whole operation, so skip the bitcast to a GPR and the range test entirely.
+    if (!MkwHostNiActiveInline())
+        return converted;
     if ((PpcBitCastToU32Inline(converted) & 0x7FFFFFFFu) - 1u < 0x00800000u) [[unlikely]]
         return PpcForceSingleValueSlowInline(value);
     return converted;
@@ -500,14 +499,34 @@ inline double PpcAccurateSingleMaddIntermediateInline(double a, double c, double
     return result;
 }
 
+// True when `value` is exactly a widened single. Compared on the bits, so it holds for signed
+// zeros and NaNs too, and when the operand visibly came from a float the compiler folds the
+// whole test away.
+inline bool PpcIsWidenedSingleInline(double value, float& narrowed)
+{
+    narrowed = static_cast<float>(value);
+    return PpcBitCastToU64Inline(static_cast<double>(narrowed)) == PpcBitCastToU64Inline(value);
+}
+
+// fmuls rounds its second operand to 25 significant bits before multiplying. A widened single
+// has at most 24, so the rounding is the identity for it - and that is nearly every operand the
+// game multiplies. Taking that case first lets the compiler see a plain float x float product
+// instead of the bit-twiddling rounding on every multiply; other operands go through it exactly
+// as before. Results are bit-identical to the rounding path for every non-NaN operand.
 inline double PpcFmulsInline(double a, double c)
 {
+    float single;
+    if (PpcIsWidenedSingleInline(c, single)) [[likely]]
+        return static_cast<double>(PpcForceSingleValueInline(a * static_cast<double>(single)));
     return static_cast<double>(
         PpcForceSingleValueInline(a * PpcForce25BitInline(c)));
 }
 
 inline double PpcFmulsNoNiInline(double a, double c)
 {
+    float single;
+    if (PpcIsWidenedSingleInline(c, single)) [[likely]]
+        return static_cast<double>(static_cast<float>(a * static_cast<double>(single)));
     return static_cast<double>(static_cast<float>(a * PpcForce25BitInline(c)));
 }
 
@@ -645,7 +664,7 @@ inline PpcPairVec PpcFmaddPairInline(PpcPairVec multiplicand, PpcPairVec multipl
     _mm_store_ps(n, multiplier);
     _mm_store_ps(a, addend);
     for (int lane = 0; lane < 4; ++lane) {
-        m[lane] = PpcSoftFma::Fmaf(m[lane], n[lane], a[lane], g_mkwHostNiActive);
+        m[lane] = PpcSoftFma::Fmaf(m[lane], n[lane], a[lane], MkwHostNiActiveInline());
     }
     return _mm_load_ps(m);
 #elif defined(__x86_64__)
@@ -669,7 +688,7 @@ inline PpcPairVec PpcFmsubPairInline(PpcPairVec multiplicand, PpcPairVec multipl
         // vfmsub returns a sole NaN subtractor as it is: negating it first would flip its sign.
         m[lane] = std::isnan(c[lane]) && !std::isnan(m[lane]) && !std::isnan(n[lane])
                       ? c[lane] + c[lane]
-                      : PpcSoftFma::Fmaf(m[lane], n[lane], -c[lane], g_mkwHostNiActive);
+                      : PpcSoftFma::Fmaf(m[lane], n[lane], -c[lane], MkwHostNiActiveInline());
     }
     return _mm_load_ps(m);
 #elif defined(__x86_64__)

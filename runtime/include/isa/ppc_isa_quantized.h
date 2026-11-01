@@ -283,11 +283,15 @@ inline void PpcWritePairPsqInline(uint32_t addr, T first, T second)
 // The flat reservation makes every 32-bit guest address a host address; a pending-deferred
 // (EFB) page is PAGE_NOACCESS so the load faults through the vectored handler instead of
 // reading stale bytes, and unmapped pages commit on demand, same as MemoryInline::Flat* loads.
+// The reservation base is never zero and the sum cannot wrap a 64-bit pointer; saying so drops
+// the null test the callers would otherwise carry on every paired load.
 MKW_PPC_FORCE_INLINE const uint8_t* PpcTryGetPsqReadableHostInline(uint32_t addr)
 {
     if (GuestFlat::RequiresCheckedAccess()) [[unlikely]]
         return nullptr;
-    return MKW_FLAT_GUEST_BASE + addr;
+    const uint8_t* host = MKW_FLAT_GUEST_BASE + addr;
+    if (host == nullptr) MKW_PPC_UNREACHABLE();
+    return host;
 }
 
 // Same reduction for stores. Still refuses a 32-bit address wrap (one host access can't
@@ -295,16 +299,22 @@ MKW_PPC_FORCE_INLINE const uint8_t* PpcTryGetPsqReadableHostInline(uint32_t addr
 // stored value and a null result must preserve the cold GX FIFO dispatch path byte for byte.
 // The old 1 MiB page-cross refusal is gone since the whole 4 GiB is now contiguous; deferred,
 // executable, and unmapped pages still trap.
+MKW_PPC_FORCE_INLINE bool PpcPsqStoreNeedsSlowPathInline(uint32_t addr)
+{
+    // An 8-byte store needs the slow path when it wraps the 32-bit address space or when either
+    // end lies in the MMIO window 0xCC000000..0xCDFFFFFF, i.e. addr in 0xCBFFFFF9..0xCDFFFFFF.
+    return (addr - 0xCBFFFFF9u) < 0x02000007u || addr > UINT32_MAX - 7u;
+}
+
 MKW_PPC_FORCE_INLINE uint8_t* PpcTryGetPsqWritableHostInline(uint32_t addr)
 {
     if (GuestFlat::RequiresCheckedAccess()) [[unlikely]]
         return nullptr;
-    if (addr > UINT32_MAX - 7u) [[unlikely]]
+    if (PpcPsqStoreNeedsSlowPathInline(addr)) [[unlikely]]
         return nullptr;
-    if (MemoryInline::FlatWriteNeedsPolicy(addr) ||
-        MemoryInline::FlatWriteNeedsPolicy(addr + 7u)) [[unlikely]]
-        return nullptr;
-    return MKW_FLAT_GUEST_BASE + addr;
+    uint8_t* host = MKW_FLAT_GUEST_BASE + addr;
+    if (host == nullptr) MKW_PPC_UNREACHABLE();
+    return host;
 }
 
 inline double PpcLoadPairPsqFloatFastInline(uint32_t addr)

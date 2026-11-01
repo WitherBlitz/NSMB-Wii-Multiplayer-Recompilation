@@ -38,6 +38,13 @@ inline constexpr bool MkwStateFreeAbiEnabled(uint32_t) noexcept
 #define MKW_PPC_NO_INLINE __attribute__((noinline))
 #define MKW_PPC_INTERNAL_CALL
 #endif
+
+#if defined(_MSC_VER)
+#define MKW_PPC_UNREACHABLE() __assume(0)
+#else
+#define MKW_PPC_UNREACHABLE() __builtin_unreachable()
+#endif
+
 #define MKW_PPC_ALWAYS_INLINE_BODY __attribute__((always_inline))
 #define MKW_PPC_COLD __attribute__((cold))
 

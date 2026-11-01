@@ -308,6 +308,9 @@ struct KnownNativeCpuCall {
 template <uint32_t Target>
 struct KnownTypedNativeCpuCall {
     static constexpr bool kAvailable = false;
+    // True for natives that never see the CpuContext and cannot run guest code; the direct
+    // dispatcher calls those without the nonvolatile-register guard.
+    static constexpr bool kLeaf = false;
 };
 
 #include "native_cpu_calls.inc"
@@ -647,6 +650,11 @@ inline void InvokeDirectCpuInContext(CpuContext* ctx) {
             PpcNonvolatileFprGuard fprGuard(cpu, KnownNativeCpuCall<Target>::kNonvolatileFprWriteMask);
             KnownNativeCpuCall<Target>::Entry(cpu);
         }
+        return;
+    }
+
+    if constexpr (KnownTypedNativeCpuCall<Target>::kLeaf) {
+        KnownTypedNativeCpuCall<Target>::Invoke(cpu);
         return;
     }
 
