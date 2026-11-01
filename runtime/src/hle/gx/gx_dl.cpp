@@ -793,8 +793,12 @@ struct DlMayContainDrawVisitor {
 
     bool OnNop(uint8_t) { return true; }
     bool OnBpReg(const uint8_t*, uint32_t) { return true; }
-    // An array base/stride write means the list is setting up indexed geometry.
-    bool OnCpReg(const uint8_t*, uint8_t reg, uint32_t) { return !(reg >= 0xA0 && reg <= 0xBF); }
+    // Vertex descriptor/format and array writes (0x50, 0x60, 0x70-0xBF) change the layout the
+    // list's vertices are read with. Route them through the full scan so the HLE vertex state,
+    // and the applied-state generation, tracks them instead of leaving aurora changed behind it.
+    bool OnCpReg(const uint8_t*, uint8_t reg, uint32_t) {
+        return reg != 0x50 && reg != 0x60 && !(reg >= 0x70 && reg <= 0xBF);
+    }
     bool OnXfReg(const uint8_t*, uint32_t) { return true; }
     bool OnIndexedXf(const uint8_t*, uint8_t, uint32_t) { return true; }
     bool OnInvalidateVertexCache(uint8_t) { return true; }
@@ -1060,6 +1064,21 @@ static std::array<AppliedArrayState, GX_VA_MAX_ATTR> s_appliedArrays{};
 // memoized republish below can never observe a stale match.
 static bool s_appliedVtxStateMatchesHle = false;
 static uint32_t s_appliedVtxStateGeneration = 0;
+// Value of HleGxState::auroraVtxPublishEpoch when the mirror last republished the descriptor.
+// Any GXBegin publish in between means aurora now holds the expanded direct stream instead.
+static uint32_t s_appliedAuroraVtxEpoch = 0;
+
+// The mirror is an exact copy of HLE vertex state at the recorded generation.
+static bool AppliedVtxStateMatchesHle() {
+    return s_appliedVtxStateMatchesHle && s_appliedVtxDescValid && s_appliedVtxAttrFmtValid &&
+           s_appliedVtxStateGeneration == g_hleGxState.vtxStateGeneration;
+}
+
+// Same, and no begin path has republished aurora's descriptor since.
+static bool AppliedVtxDescStillLive() {
+    return AppliedVtxStateMatchesHle() &&
+           s_appliedAuroraVtxEpoch == g_hleGxState.auroraVtxPublishEpoch;
+}
 
 static void InvalidateAppliedAuroraState() {
     s_appliedVtxDescValid = false;
@@ -1073,8 +1092,7 @@ static void InvalidateAppliedAuroraState() {
 static void SyncAppliedVtxStateFromHleReal() {
     // skip the republish only when the mirror is already an exact copy of
     // HLE state
-    if (s_appliedVtxStateMatchesHle && s_appliedVtxDescValid && s_appliedVtxAttrFmtValid &&
-        s_appliedVtxStateGeneration == g_hleGxState.vtxStateGeneration) {
+    if (AppliedVtxStateMatchesHle()) {
         return;
     }
     // Both mirrors are dense arrays of the same trivially copyable element types
@@ -1119,6 +1137,9 @@ static bool AuroraVtxDescMatchesLive(GXAttr attr, GXAttrType expected) {
 
 
 static void ApplyAuroraVtxDesc() {
+    if (AppliedVtxDescStillLive()) {
+        return;
+    }
     const bool hadValidState = s_appliedVtxDescValid;
     if (!hadValidState) {
         s_appliedVtxStateMatchesHle = false;
@@ -1145,6 +1166,7 @@ static void ApplyAuroraVtxDesc() {
         }
     }
     s_appliedVtxDescValid = true;
+    s_appliedAuroraVtxEpoch = g_hleGxState.auroraVtxPublishEpoch;
 }
 
 // Size of one element of the guest array an indexed attribute reads from. An
@@ -1157,6 +1179,9 @@ static uint32_t GetIndexedAttrElementSizeBytes(GXAttr attr, const VtxAttrFmt& fm
 }
 
 static void ApplyAuroraVtxAttrFmt(GXVtxFmt fmt) {
+    if (AppliedVtxStateMatchesHle()) {
+        return;
+    }
     const bool hadValidState = s_appliedVtxAttrFmtValid;
     // Rows other than `fmt` keep their contents and every write below copies
     // g_hleGxState, so an already-matching mirror still matches. Only the rebuild
@@ -1164,16 +1189,25 @@ static void ApplyAuroraVtxAttrFmt(GXVtxFmt fmt) {
     if (!hadValidState) {
         s_appliedVtxStateMatchesHle = false;
     }
+    const auto& hleRow = g_hleGxState.vtxAttrFmt[fmt];
+    // This runs for every drawing display list and nearly always finds the row
+    // already published. A whole-row compare is exact: the copy at the end below
+    // keeps every attribute, including the ones the loop does not publish.
+    if (hadValidState &&
+        std::memcmp(s_appliedVtxAttrFmt[fmt], hleRow, sizeof(hleRow)) == 0) {
+        return;
+    }
     for (int attr = 0; attr < 26; ++attr) {
         if (attr == GX_VA_NBT) continue;
         if (IsMatrixIndexAttr(static_cast<GXAttr>(attr))) continue;
-        const auto& f = g_hleGxState.vtxAttrFmt[fmt][attr];
+        const auto& f = hleRow[attr];
         if (hadValidState && SameVtxAttrFmt(s_appliedVtxAttrFmt[fmt][attr], f)) {
             continue;
         }
         GXSetVtxAttrFmt(fmt, static_cast<GXAttr>(attr), f.cnt, f.type, f.frac);
         s_appliedVtxAttrFmt[fmt][attr] = f;
     }
+    std::memcpy(s_appliedVtxAttrFmt[fmt], hleRow, sizeof(hleRow));
     s_appliedVtxAttrFmtValid = true;
 }
 
@@ -1299,6 +1333,15 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
     try {
         const uint8_t* list = static_cast<const uint8_t*>(GuestToHostPtr(listAddr, nbytes));
         if (!list) return;
+        // The bytes are first read when the stream is copied to the GX worker, by which time they
+        // have usually left the cache since last frame. Ask for the first lines now.
+        MKW_PREFETCH(list);
+        MKW_PREFETCH(list + 64);
+        MKW_PREFETCH(list + 128);
+        MKW_PREFETCH(list + 192);
+        if (!IsDisplayListActive()) {
+            GxServiceDeferredTimingFromDisplayList();
+        }
 
         const bool allowScanCache = nbytes <= kDlScanCacheMaxEntryBytes;
         const uint64_t scanLayoutHash = allowScanCache ? HashScanLayoutState() : 0;

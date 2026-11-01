@@ -535,6 +535,7 @@ bool TryGetOrExtractTexObjMeta(uint32_t addr, TexObjMeta& outMeta) {
         const bool extractedUsable = IsUsableTexObjMeta(extracted);
         if (extractedUsable) {
             QueueTexObjIntervalUpdate(*slot);
+            slot->loadValidated = false;
             static_cast<TexObjMeta&>(*slot) = extracted;
             MarkTexObjSyncedLocked(*slot);
             outMeta = extracted;
@@ -557,6 +558,7 @@ bool TryGetOrExtractTexObjMeta(uint32_t addr, TexObjMeta& outMeta) {
 // queues the interval-index patch and re-captures the guest shadow before that happens.
 TexObjMeta& GetTexObjMeta(uint32_t addr) {
     TexObjSlot& slot = FindOrCreateTexObjSlot(addr);
+    slot.loadValidated = false;
     QueueTexObjIntervalUpdate(slot);
     MarkTexObjSyncedLocked(slot);
     return slot;
@@ -604,6 +606,7 @@ GXTexObj* GetHostTexObj(uint32_t addr) {
 
 GXTexObj* CreateHostTexObj(uint32_t addr) {
     TexObjSlot& slot = FindOrCreateTexObjSlot(addr);
+    slot.loadValidated = false;
     // GXInitTexObj/GXInitTexObjCI land here and rewrite the entire guest struct,
     // resetting the LOD/filter words the HLE does not mirror into this cache.
     // The shadow captured before that rewrite mismatches afterwards, so the

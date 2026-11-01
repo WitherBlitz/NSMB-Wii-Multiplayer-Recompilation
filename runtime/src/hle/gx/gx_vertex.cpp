@@ -293,6 +293,10 @@ void ServiceDeferredTimingDuringGxWork() {
             // and Aurora work until the native GX call has unwound.
             VI_HLE_ProcessRetracesDeferred(8);
             OS_HLE_ProcessAlarmsDeferred(8);
+            // Audio blocks come due every 3 ms. Without a pump in the drawing phase they pile up
+            // and are handled back to back at the next idle point, each waiting for the mix worker
+            // to finish the previous one. Handled here, the mix runs alongside the drawing.
+            Audio_HLE_PollDeferred();
         } else if (TryGetCpuContext() != nullptr) {
             // Same interrupt isolation as the deferred paths above: this GX call
             // is mid-execution of a translated function, so the retrace
@@ -306,6 +310,16 @@ void ServiceDeferredTimingDuringGxWork() {
     }
     g_inGxBeginOrFifo = false;
 }
+}
+
+// The same service for the display-list path: 3D models are drawn with display lists and never
+// reach GX__Begin, so a frame's whole model pass used to go by without a pump. Called a few
+// hundred times a frame; the clock is only read every eighth call.
+void GxServiceDeferredTimingFromDisplayList() {
+    static thread_local uint32_t calls = 0;
+    if ((++calls & 7u) == 0) {
+        ServiceDeferredTimingDuringGxWork();
+    }
 }
 
 extern "C" void GX__Begin_8016f0f0(uint32_t t, uint32_t vf, uint32_t nv) {

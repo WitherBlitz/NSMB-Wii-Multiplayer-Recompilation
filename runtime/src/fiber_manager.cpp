@@ -8,6 +8,14 @@
 
 // Defined in hle/os/os_sleep.cpp; the sleep-timer table is file-local there.
 
+// The interrupt-enable state belongs to the guest thread, like the rest of its context. The HLE
+// keeps one flag for every thread; a thread that sleeps saves and restores it around its own
+// sleep, but one switched away from without asking (the sound thread woken by an audio block)
+// would come back with whatever the other thread left behind, usually "disabled". Carry it
+// across the switch so deferred retraces, alarms and audio blocks stay deliverable.
+bool OS_HLE_InterruptsEnabled() noexcept;
+extern "C" int32_t OS__RestoreInterrupts_801a65d4(int32_t level);
+
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -411,8 +419,10 @@ void GuestFiberManager::SwitchToThread(uint32_t guestThreadAddr, CpuContext* cpu
         MkwApplyHostNiMode(cpu->fpscr);
     }
 
-    // Switch to the target fiber (the target fiber will load its own context)
+    // Switch to the target fiber (the target fiber will load its own context).
+    const bool interruptsEnabledAtSwitch = OS_HLE_InterruptsEnabled();
     HostContext::Switch(fiberHandle);
+    OS__RestoreInterrupts_801a65d4(interruptsEnabledAtSwitch ? 1 : 0);
 
     // When we return here, the fiber that issued SwitchToThread has resumed.
     // That does not automatically mean the previous guest thread became runnable

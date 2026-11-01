@@ -55,6 +55,9 @@ bool is_offscreen() noexcept;
 
 // --- Constants ---
 constexpr uint32_t kGXDataPtrAddr = 0x8042E188;     // __GXData (NSMBW)
+constexpr uint32_t kGXDataBpSentOffset = 0x02;      // __GXData.bpSent
+constexpr uint32_t kGXDataDirtyStateOffset = 0x5FC;  // __GXData.dirtyState
+constexpr uint32_t kGXDataDirtySuTexRegs = 1u;       // dirtyState bit 0: SU tex regs
 constexpr uint32_t kDlFifoAddr = 0x803904D0;        // DisplayListFifo (NSMBW)
 constexpr uint32_t kDlWritePtrAddr = 0x803904E4;    // DisplayListFifo + 0x14
 constexpr uint32_t kDlCountAddr = 0x803904EC;       // DisplayListFifo + 0x1C
@@ -152,6 +155,12 @@ struct TexObjSlot : TexObjMeta {
     uint64_t guestShadow[4] = {0, 0, 0, 0};
     bool hasGuestShadow = false;
 
+    // Set by GX__LoadTexObj when a full load finished with the metadata now in this slot
+    // (validated, sanitized, host object built, pixels uploaded); cleared by every writer of the
+    // slot. While it holds and the guest struct still matches guestShadow, the next load only
+    // has to bind.
+    bool loadValidated = false;
+
     // DCStoreRange interval-index bookkeeping: what this slot currently
     // contributes to g_texObjIntervals, so a pending update that turns out to
     // be a no-op costs a compare instead of an erase + insert.
@@ -233,6 +242,10 @@ struct HleGxState {
     // this state (gx_dl.cpp's applied-state mirror) use it to detect that a
     // republish would be a no-op.
     uint32_t vtxStateGeneration = 0;
+    // Bumped whenever a GXBegin path republishes aurora's vertex registers from
+    // this state. Those paths expand indexed attributes into a direct stream, so
+    // after one aurora no longer holds what gx_dl.cpp's mirror last published.
+    uint32_t auroraVtxPublishEpoch = 0;
     struct VtxArray {
         uint32_t base = 0;
         uint32_t stride = 0;
@@ -298,6 +311,9 @@ struct GxDisplayListState {
 extern GxDisplayListState g_dlRecordState;
 
 inline bool IsDisplayListActive() noexcept { return g_dlRecordState.active; }
+
+// gx_vertex.cpp: keeps VI retraces, alarms and audio moving while a frame's display lists are drawn.
+void GxServiceDeferredTimingFromDisplayList();
 
 // Mirrors GX__BeginDisplayList_80172e00's guest-side initialization.
 void BeginDisplayListRecording(uint32_t listAddr, uint32_t sizeBytes);

@@ -396,6 +396,7 @@ struct AuroraVtxPublishOptions {
 };
 
 inline void PublishAuroraVtxState(GXVtxFmt fmt, const AuroraVtxPublishOptions& options) {
+    ++g_hleGxState.auroraVtxPublishEpoch;
     for (int attr = 0; attr < 26; ++attr) {
         if (!options.includeNbt && attr == GX_VA_NBT) {
             continue;
