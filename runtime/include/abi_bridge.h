@@ -19,6 +19,9 @@
 #include <type_traits>
 
 inline void InvokeIndirectCpu(uint32_t target, CpuContext* ctx);
+// Same, for callers that already run in `ctx` (generated code and everything it calls).
+inline void InvokeIndirectCpuInContext(uint32_t target, CpuContext* cpu);
+inline void InvokeIndirectJumpInContext(uint32_t target, CpuContext* cpu);
 
 // Some game-facing runtime options alter arguments at well-defined ABI
 // boundaries. Keep this independent of the dispatch mechanism: generated
@@ -502,7 +505,11 @@ public:
     }
 };
 
-MKW_PPC_FORCE_INLINE bool TryDispatchResolvedCpuTarget(const TranslatedFunctionInfo* info, CpuContext* cpu) {
+// `contextCurrent` is true when the caller already runs in `cpu` (generated code and anything it
+// calls); the general entry points probe the thread-local context first and skip this dispatch's
+// probe. Same for the two dispatchers below.
+MKW_PPC_FORCE_INLINE bool TryDispatchResolvedCpuTarget(const TranslatedFunctionInfo* info, CpuContext* cpu,
+                                                       bool contextCurrent) {
     if (!info || !info->rawCpuInvoker) {
         return false;
     }
@@ -510,7 +517,7 @@ MKW_PPC_FORCE_INLINE bool TryDispatchResolvedCpuTarget(const TranslatedFunctionI
     RecompMod::ScopedTranslatedExecutionAddress translatedExecution(info->address);
     PpcNonvolatileFprGuard fprGuard(cpu, NonvolatileFprGuardMaskFor(info));
     PpcNonvolatileGprGuard gprGuard(cpu, ShouldPreserveNonvolatileGprsForRawCpuCall(info));
-    if (TryGetCpuContext() != cpu) {
+    if (!contextCurrent && TryGetCpuContext() != cpu) {
         CpuContextScope scope(cpu);
         info->rawCpuInvoker(cpu);
         return true;
@@ -519,14 +526,15 @@ MKW_PPC_FORCE_INLINE bool TryDispatchResolvedCpuTarget(const TranslatedFunctionI
     return true;
 }
 
-inline bool TryDispatchRawCpuTarget(const RawDispatchRecord* record, CpuContext* cpu) {
+inline bool TryDispatchRawCpuTarget(const RawDispatchRecord* record, CpuContext* cpu,
+                                    bool contextCurrent) {
     if (!record || !record->entry) {
         return false;
     }
     RecompMod::ScopedTranslatedExecutionAddress translatedExecution(record->address);
     PpcNonvolatileGprGuard gprGuard(cpu, record->preserveNonvolatileGprs);
     PpcNonvolatileFprGuard fprGuard(cpu, record->nonvolatileFprWriteMask);
-    if (TryGetCpuContext() != cpu) {
+    if (!contextCurrent && TryGetCpuContext() != cpu) {
         CpuContextScope scope(cpu);
         record->entry(cpu);
     } else {
@@ -536,7 +544,7 @@ inline bool TryDispatchRawCpuTarget(const RawDispatchRecord* record, CpuContext*
 }
 
 template <uint32_t Target>
-inline void DispatchKnownTranslatedCpuTargetStatic(CpuContext* cpu) {
+inline void DispatchKnownTranslatedCpuTargetStatic(CpuContext* cpu, bool contextCurrent = false) {
     const auto invokeKnownTranslated = [&]() {
         KnownTranslatedCpuCall<Target>::Entry(cpu);
     };
@@ -544,7 +552,7 @@ inline void DispatchKnownTranslatedCpuTargetStatic(CpuContext* cpu) {
     // A statically resolved, non-overridable translated call already running
     // in this CpuContext needs no registry, context, or diagnostic target
     // transition. This is the normal generated-to-generated hot path.
-    if (TryGetCpuContext() == cpu) {
+    if (contextCurrent || TryGetCpuContext() == cpu) {
         if constexpr (KnownTranslatedCpuCall<Target>::kNonvolatileFprWriteMask == 0) {
             invokeKnownTranslated();
             return;
@@ -624,69 +632,69 @@ inline bool IsBaseTranslatedCpuTargetActive() {
     return active;
 }
 
+// The normal generated-to-generated form: the caller already runs in `cpu`. The general entry
+// point below keeps a thread-local context probe for host-thread callers and then delegates here.
 template <uint32_t Target>
-inline void InvokeDirectCpu(CpuContext* ctx) {
+inline void InvokeDirectCpuInContext(CpuContext* ctx) {
     static_assert(Target != 0, "InvokeDirectCpu cannot target address 0");
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
     ApplyRuntimeCallOptions(Target, cpu);
     if constexpr (KnownNativeCpuCall<Target>::kAvailable) {
-        const auto invokeKnownNative = [&]() {
-            PpcNonvolatileGprGuard gprGuard(cpu);
-            if (TryGetCpuContext() != cpu) {
-                CpuContextScope scope(cpu);
-                KnownNativeCpuCall<Target>::Entry(cpu);
-                return;
-            }
-            KnownNativeCpuCall<Target>::Entry(cpu);
-        };
+        PpcNonvolatileGprGuard gprGuard(cpu);
         if constexpr (KnownNativeCpuCall<Target>::kNonvolatileFprWriteMask == 0) {
-            invokeKnownNative();
+            KnownNativeCpuCall<Target>::Entry(cpu);
         } else {
             PpcNonvolatileFprGuard fprGuard(cpu, KnownNativeCpuCall<Target>::kNonvolatileFprWriteMask);
-            invokeKnownNative();
+            KnownNativeCpuCall<Target>::Entry(cpu);
         }
         return;
     }
 
     if constexpr (KnownTypedNativeCpuCall<Target>::kAvailable) {
         PpcNonvolatileGprGuard gprGuard(cpu);
-        if (TryGetCpuContext() != cpu) {
-            CpuContextScope scope(cpu);
-            KnownTypedNativeCpuCall<Target>::Invoke(cpu);
-        } else {
-            KnownTypedNativeCpuCall<Target>::Invoke(cpu);
-        }
+        KnownTypedNativeCpuCall<Target>::Invoke(cpu);
         return;
     }
 
     if constexpr (KnownTranslatedCpuCall<Target>::kAvailable) {
-        DispatchKnownTranslatedCpuTargetStatic<Target>(cpu);
+        DispatchKnownTranslatedCpuTargetStatic<Target>(cpu, /*contextCurrent=*/true);
         return;
     }
 
     const auto* registeredInfo = ResolveDirectCpuTargetInfoCached<Target>();
-    if (TryDispatchResolvedCpuTarget(registeredInfo, cpu)) {
+    if (TryDispatchResolvedCpuTarget(registeredInfo, cpu, /*contextCurrent=*/true)) {
         return;
     }
 
     ReportMissingCpuTarget(Target, cpu);
 }
 
-// Indirect jump (bctr without link) - used for switch tables.
-inline void InvokeIndirectJump(uint32_t target, CpuContext* ctx) {
-    // Use the caller's context, not the persistent global context!
-    // This is essential for tail calls via bctr where the 'this' pointer (r3)
-    // must be passed correctly to the target function.
+template <uint32_t Target>
+inline void InvokeDirectCpu(CpuContext* ctx) {
+    static_assert(Target != 0, "InvokeDirectCpu cannot target address 0");
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
+    if (TryGetCpuContext() == cpu) {
+        InvokeDirectCpuInContext<Target>(cpu);
+        return;
+    }
+    CpuContextScope scope(cpu);
+    InvokeDirectCpuInContext<Target>(cpu);
+}
+
+// Indirect jump (bctr without link) - used for switch tables.
+// The caller's context, not the persistent global context, is essential for tail calls via bctr
+// where the 'this' pointer (r3) must be passed correctly to the target function.
+inline void InvokeIndirectJumpInContext(uint32_t target, CpuContext* cpu) {
     IndirectDispatchMemo* memo = DispatchMemoFor(cpu);
-    if (TryDispatchRawCpuTarget(TranslatedFunctionRegistry::FindRawByAddressPtr(target, memo), cpu)) {
+    if (TryDispatchRawCpuTarget(TranslatedFunctionRegistry::FindRawByAddressPtr(target, memo), cpu,
+                                /*contextCurrent=*/true)) {
         return;
     }
 
     // Cold fallback for dynamically registered or signature-only targets.
     const auto* info = TranslatedFunctionRegistry::FindByAddressPtr(target, memo);
     if (info) {
-        if (TryDispatchResolvedCpuTarget(info, cpu)) {
+        if (TryDispatchResolvedCpuTarget(info, cpu, /*contextCurrent=*/true)) {
             return;
         }
     }
@@ -721,20 +729,41 @@ inline void InvokeIndirectJump(uint32_t target, CpuContext* ctx) {
     std::exit(EXIT_FAILURE);
 }
 
-inline void InvokeIndirectCpu(uint32_t target, CpuContext* ctx) {
+inline void InvokeIndirectJump(uint32_t target, CpuContext* ctx) {
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
+    if (TryGetCpuContext() == cpu) {
+        InvokeIndirectJumpInContext(target, cpu);
+        return;
+    }
+    CpuContextScope scope(cpu);
+    InvokeIndirectJumpInContext(target, cpu);
+}
+
+inline void InvokeIndirectCpuInContext(uint32_t target, CpuContext* cpu) {
     if (target == 0) {
         ReportMissingCpuTarget(target, cpu);
     }
     ApplyRuntimeCallOptions(target, cpu);
     IndirectDispatchMemo* memo = DispatchMemoFor(cpu);
-    if (TryDispatchRawCpuTarget(TranslatedFunctionRegistry::FindRawByAddressPtr(target, memo), cpu)) {
+    if (TryDispatchRawCpuTarget(TranslatedFunctionRegistry::FindRawByAddressPtr(target, memo), cpu,
+                                /*contextCurrent=*/true)) {
         return;
     }
-    if (TryDispatchResolvedCpuTarget(TranslatedFunctionRegistry::FindByAddressPtr(target, memo), cpu)) {
+    if (TryDispatchResolvedCpuTarget(TranslatedFunctionRegistry::FindByAddressPtr(target, memo), cpu,
+                                     /*contextCurrent=*/true)) {
         return;
     }
     ReportMissingCpuTarget(target, cpu);
+}
+
+inline void InvokeIndirectCpu(uint32_t target, CpuContext* ctx) {
+    CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
+    if (TryGetCpuContext() == cpu) {
+        InvokeIndirectCpuInContext(target, cpu);
+        return;
+    }
+    CpuContextScope scope(cpu);
+    InvokeIndirectCpuInContext(target, cpu);
 }
 
 template <typename Signature>

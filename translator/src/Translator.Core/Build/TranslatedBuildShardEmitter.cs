@@ -672,20 +672,29 @@ public static partial class TranslatedBuildShardEmitter
         return DirectCallRegex().Replace(source, match =>
         {
             var address = ParseHexUInt32(match.Groups["address"].Value);
+            if (RequiresGenericDirectCall(address))
+            {
+                return match.Value;
+            }
+
             if (!traits.TryGetValue(address, out var trait) ||
                 !trait.Available ||
                 trait.NonvolatileFprWriteMask != 0 ||
                 trait.MustRemainDynamicallyDispatchable ||
                 trait.WinnerSymbol is null ||
-                trait.WinnerKind.Equals("native", StringComparison.OrdinalIgnoreCase) ||
-                RequiresGenericDirectCall(address))
+                trait.WinnerKind.Equals("native", StringComparison.OrdinalIgnoreCase))
             {
-                return match.Value;
+                // A translated body always runs with its CpuContext bound, so the generic
+                // entry point's thread-local probe is redundant here.
+                return GenericDirectCallToInContext(match.Value);
             }
 
             return $"MKW_STATIC_TRANSLATED_CALL(0x{address:X8}u, {trait.WinnerSymbol}, ctx)";
         });
     }
+
+    private static string GenericDirectCallToInContext(string call) =>
+        call.Replace("InvokeDirectCpu<", "InvokeDirectCpuInContext<", StringComparison.Ordinal);
 
     private static bool RequiresGenericDirectCall(uint address) => address switch
     {
