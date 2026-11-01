@@ -103,7 +103,10 @@ static void process_buffer(const uint8_t* data, uint32_t size) {
 // NSMBW: the GX thread (see threaded()). Buffers of commands are decoded on it in the order the
 // game thread queued them; the game thread waits for it only where it needs decoded state.
 namespace {
-constexpr uint32_t kHandOffBytes = 16 * 1024;  // queue a buffer once this much has built up
+// Queue a buffer once this much has built up. The guest's frame ends with a drain that waits
+// for the decode of everything still queued, so this is the size of the serial tail: smaller
+// batches decode earlier and in parallel with the producer.
+constexpr uint32_t kHandOffBytes = 4 * 1024;
 
 struct GxThread {
   std::thread thread;
