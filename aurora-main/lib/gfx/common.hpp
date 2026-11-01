@@ -287,6 +287,7 @@ void end_frame(const wgpu::CommandEncoder& cmd);
 // reuse its buffers, and the staging copy into the GPU buffer runs later, after SEALED.
 void seal_staging_buffers();
 void emit_staging_buffers(const wgpu::CommandEncoder& cmd);
+void fill_staging_buffer();
 void end_batch(const wgpu::CommandEncoder& cmd);
 uint32_t current_frame() noexcept;
 

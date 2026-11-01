@@ -1651,6 +1651,9 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
       .label = "Presentation slot command buffer",
   };
   const auto submitEncodedSlot = [&](wgpu::CommandEncoder& target, bool releaseMetalFXOutput = true) {
+    // The staging copy commands are already in this encoder; fill the buffer they read before it is
+    // finished. That puts the map wait after the draw recording instead of before it.
+    gfx::fill_staging_buffer();
     const auto buffer = target.Finish(&cmdBufDescriptor);
     std::lock_guard submitLock(g_queueSubmitMutex);
     g_queue.Submit(1, &buffer);

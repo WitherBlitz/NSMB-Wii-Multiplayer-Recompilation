@@ -499,6 +499,7 @@ std::vector<TextureUpload> g_textureUploads;
 struct FrameBuffers {
   ByteBuffer verts, uniforms, indices, storage, textureUpload;
   std::vector<TextureUpload> textureUploads;
+  uint32_t vertSize = 0, uniformSize = 0, indexSize = 0, storageSize = 0, textureSize = 0;
 };
 static FrameBuffers s_pendingFrame;
 static bool s_pendingFrameValid = false;
@@ -1496,65 +1497,33 @@ void emit_staging_buffers(const wgpu::CommandEncoder& cmd) {
   if (!s_pendingFrameValid) {
     return;
   }
-  s_pendingFrameValid = false;
-  if (!wait_for_staging_map()) {
-    // The map was aborted (device loss). Drop this frame's data but keep the staging rotation
-    // consistent so the next frame starts from a known state.
-    g_stagingBuffers[currentStagingBuffer].Unmap();
-    s_mappingState.reset();
-    s_pendingFrame.verts.clear();
-    s_pendingFrame.uniforms.clear();
-    s_pendingFrame.indices.clear();
-    s_pendingFrame.storage.clear();
-    s_pendingFrame.textureUpload.clear();
-    s_pendingFrame.textureUploads.clear();
-    currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();
-    map_staging_buffer();
-    return;
-  }
-  uint64_t bufferOffset = 0;
-  const auto stageBuffer = [&](ByteBuffer& buf, uint64_t size) {
-    const auto writeSize = buf.size();
-    if (writeSize > 0) {
-      std::memcpy(g_stagingBuffers[currentStagingBuffer].GetMappedRange(bufferOffset, AURORA_ALIGN(writeSize, 4)),
-                  buf.data(), writeSize);
-      buf.clear();
-    }
-    bufferOffset += size;
-    return static_cast<uint32_t>(writeSize);
-  };
-  g_stats.lastVertSize = stageBuffer(s_pendingFrame.verts, VertexBufferSize);
-  g_stats.lastUniformSize = stageBuffer(s_pendingFrame.uniforms, UniformBufferSize);
-  g_stats.lastIndexSize = stageBuffer(s_pendingFrame.indices, IndexBufferSize);
-  g_stats.lastStorageSize = stageBuffer(s_pendingFrame.storage, StorageBufferSize);
+  // Only the copy commands are recorded here; the frame's bytes still live in the CPU buffers. They
+  // are copied into the staging buffer by fill_staging_buffer() after the draw recording, so the
+  // wait for the GPU to release that buffer overlaps with the encode instead of preceding it.
+  s_pendingFrame.vertSize = static_cast<uint32_t>(s_pendingFrame.verts.size());
+  s_pendingFrame.uniformSize = static_cast<uint32_t>(s_pendingFrame.uniforms.size());
+  s_pendingFrame.indexSize = static_cast<uint32_t>(s_pendingFrame.indices.size());
+  s_pendingFrame.storageSize = static_cast<uint32_t>(s_pendingFrame.storage.size());
   if constexpr (UseTextureBuffer) {
-    g_stats.lastTextureUploadSize = s_pendingFrame.textureUpload.size();
-    if (!s_pendingFrame.textureUpload.empty()) {
-      std::memcpy(g_stagingBuffers[currentStagingBuffer].GetMappedRange(bufferOffset, TextureUploadSize),
-                  s_pendingFrame.textureUpload.data(), s_pendingFrame.textureUpload.size());
+    s_pendingFrame.textureSize = static_cast<uint32_t>(s_pendingFrame.textureUpload.size());
+  }
+  uint64_t offset = 0;
+  const auto copyOut = [&](uint32_t writeSize, wgpu::Buffer& out, uint64_t size) {
+    if (writeSize > 0) {
+      cmd.CopyBufferToBuffer(g_stagingBuffers[currentStagingBuffer], offset, out, 0, AURORA_ALIGN(writeSize, 4));
     }
-  }
-  g_stagingBuffers[currentStagingBuffer].Unmap();
-  s_mappingState.reset();
-  {
-    uint64_t offset = 0;
-    const auto copyOut = [&](uint32_t writeSize, wgpu::Buffer& out, uint64_t size) {
-      if (writeSize > 0) {
-        cmd.CopyBufferToBuffer(g_stagingBuffers[currentStagingBuffer], offset, out, 0, AURORA_ALIGN(writeSize, 4));
-      }
-      offset += size;
-    };
-    copyOut(g_stats.lastVertSize, g_vertexBuffer, VertexBufferSize);
-    copyOut(g_stats.lastUniformSize, g_uniformBuffer, UniformBufferSize);
-    copyOut(g_stats.lastIndexSize, g_indexBuffer, IndexBufferSize);
-    copyOut(g_stats.lastStorageSize, g_storageBuffer, StorageBufferSize);
-  }
+    offset += size;
+  };
+  copyOut(s_pendingFrame.vertSize, g_vertexBuffer, VertexBufferSize);
+  copyOut(s_pendingFrame.uniformSize, g_uniformBuffer, UniformBufferSize);
+  copyOut(s_pendingFrame.indexSize, g_indexBuffer, IndexBufferSize);
+  copyOut(s_pendingFrame.storageSize, g_storageBuffer, StorageBufferSize);
   if constexpr (UseTextureBuffer) {
     for (const auto& item : s_pendingFrame.textureUploads) {
       const wgpu::TexelCopyBufferInfo buf{
           .layout =
               wgpu::TexelCopyBufferLayout{
-                  .offset = item.layout.offset + bufferOffset,
+                  .offset = item.layout.offset + offset,
                   .bytesPerRow = AURORA_ALIGN(item.layout.bytesPerRow, 256),
                   .rowsPerImage = item.layout.rowsPerImage,
               },
@@ -1562,9 +1531,59 @@ void emit_staging_buffers(const wgpu::CommandEncoder& cmd) {
       };
       cmd.CopyBufferToTexture(&buf, &item.tex, &item.size);
     }
-    s_pendingFrame.textureUploads.clear();
-    s_pendingFrame.textureUpload.clear();
   }
+}
+
+void fill_staging_buffer() {
+  ZoneScopedN("Fill staging buffer");
+  if (!s_pendingFrameValid) {
+    return;
+  }
+  s_pendingFrameValid = false;
+  const auto clearPending = [] {
+    s_pendingFrame.verts.clear();
+    s_pendingFrame.uniforms.clear();
+    s_pendingFrame.indices.clear();
+    s_pendingFrame.storage.clear();
+    s_pendingFrame.textureUpload.clear();
+    s_pendingFrame.textureUploads.clear();
+  };
+  if (!wait_for_staging_map()) {
+    // The map was aborted (device loss). Drop this frame's data but keep the staging rotation
+    // consistent so the next frame starts from a known state.
+    g_stagingBuffers[currentStagingBuffer].Unmap();
+    s_mappingState.reset();
+    clearPending();
+    currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();
+    map_staging_buffer();
+    return;
+  }
+  uint64_t bufferOffset = 0;
+  const auto stage = [&](ByteBuffer& buf, uint32_t writeSize, uint64_t size) {
+    if (writeSize > 0) {
+      std::memcpy(g_stagingBuffers[currentStagingBuffer].GetMappedRange(bufferOffset, AURORA_ALIGN(writeSize, 4)),
+                  buf.data(), writeSize);
+    }
+    bufferOffset += size;
+  };
+  stage(s_pendingFrame.verts, s_pendingFrame.vertSize, VertexBufferSize);
+  stage(s_pendingFrame.uniforms, s_pendingFrame.uniformSize, UniformBufferSize);
+  stage(s_pendingFrame.indices, s_pendingFrame.indexSize, IndexBufferSize);
+  stage(s_pendingFrame.storage, s_pendingFrame.storageSize, StorageBufferSize);
+  if constexpr (UseTextureBuffer) {
+    if (s_pendingFrame.textureSize > 0) {
+      std::memcpy(g_stagingBuffers[currentStagingBuffer].GetMappedRange(bufferOffset, TextureUploadSize),
+                  s_pendingFrame.textureUpload.data(), s_pendingFrame.textureSize);
+    }
+  }
+  g_stats.lastVertSize = s_pendingFrame.vertSize;
+  g_stats.lastUniformSize = s_pendingFrame.uniformSize;
+  g_stats.lastIndexSize = s_pendingFrame.indexSize;
+  g_stats.lastStorageSize = s_pendingFrame.storageSize;
+  g_stats.lastTextureUploadSize = s_pendingFrame.textureSize;
+  clearPending();
+  g_stagingBuffers[currentStagingBuffer].Unmap();
+  s_mappingState.reset();
   currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();
   map_staging_buffer();
 }
