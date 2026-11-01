@@ -1734,6 +1734,124 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
         "    return out;";
   }
 
+
+  // The GX TEV combine is emulated exactly: inputs quantise to 8 bits, the lerp runs in integer 8.8
+  // fixed point with the hardware's rounding, and every stage re-quantises. That is roughly 50
+  // scalar ops per stage per pixel, and the world pass is three stages. The float path keeps the
+  // combine, the bias/scale semantics and the clamp, and drops the per-stage quantisation.
+  // It is the default; NSMBW_TEV_FLOAT=0 restores the exact hardware arithmetic.
+constexpr std::string_view kTevArithmeticInt = R"""(
+fn tev_overflow_f32(in: f32) -> f32 {
+  let byte_space = in * 255.0;
+  return (byte_space - floor(byte_space / 256.0) * 256.0) / 255.0;
+}
+
+fn tev_overflow_vec3f(in: vec3f) -> vec3f {
+  let byte_space = in * 255.0;
+  return (byte_space - floor(byte_space / 256.0) * 256.0) / 255.0;
+}
+
+fn tev_overflow_vec4f(in: vec4f) -> vec4f {
+  let byte_space = in * 255.0;
+  return (byte_space - floor(byte_space / 256.0) * 256.0) / 255.0;
+}
+
+fn tev_s24_fixed_vec2i(in: vec2i) -> vec2i {
+  return (in << vec2u(8u)) >> vec2u(8u);
+}
+
+fn tev_byte_f32(in: f32) -> i32 {
+  return i32(round(in * 255.0));
+}
+
+fn tev_byte_vec3f(in: vec3f) -> vec3i {
+  return vec3i(round(in * 255.0));
+}
+
+fn tev_regular_i32(a: i32, b: i32, c: i32, d: i32, bias: i32, scale: u32, is_sub: bool) -> i32 {
+  var d_part = d + bias;
+  var lerp_part = (a << 8u) + (b - a) * (c + (c >> 7u));
+  if (scale == 1u) {
+    d_part = d_part << 1u;
+    lerp_part = lerp_part << 1u;
+  }
+  if (scale == 2u) {
+    d_part = d_part << 2u;
+    lerp_part = lerp_part << 2u;
+  }
+  if (scale != 3u) {
+    lerp_part += select(128, 127, is_sub);
+  }
+  let lerp = lerp_part >> 8u;
+  var result = select(d_part + lerp, d_part - lerp, is_sub);
+  if (scale == 3u) {
+    result = result >> 1u;
+  }
+  return result;
+}
+
+fn tev_regular_f32(a: f32, b: f32, c: f32, d: f32, bias: i32, scale: u32, is_sub: bool) -> f32 {
+  return f32(tev_regular_i32(tev_byte_f32(a), tev_byte_f32(b), tev_byte_f32(c), tev_byte_f32(d), bias, scale, is_sub)) /
+         255.0;
+}
+
+fn tev_regular_vec3f(a: vec3f, b: vec3f, c: vec3f, d: vec3f, bias: i32, scale: u32, is_sub: bool) -> vec3f {
+  let ai = tev_byte_vec3f(a);
+  let bi = tev_byte_vec3f(b);
+  let ci = tev_byte_vec3f(c);
+  let di = tev_byte_vec3f(d);
+  return vec3f(
+    f32(tev_regular_i32(ai.x, bi.x, ci.x, di.x, bias, scale, is_sub)) / 255.0,
+    f32(tev_regular_i32(ai.y, bi.y, ci.y, di.y, bias, scale, is_sub)) / 255.0,
+    f32(tev_regular_i32(ai.z, bi.z, ci.z, di.z, bias, scale, is_sub)) / 255.0,
+  );
+}
+)""";
+
+constexpr std::string_view kTevArithmeticFloat = R"""(
+fn tev_overflow_f32(in: f32) -> f32 { return in; }
+
+fn tev_overflow_vec3f(in: vec3f) -> vec3f { return in; }
+
+fn tev_overflow_vec4f(in: vec4f) -> vec4f { return in; }
+
+fn tev_s24_fixed_vec2i(in: vec2i) -> vec2i {
+  return (in << vec2u(8u)) >> vec2u(8u);
+}
+
+fn tev_byte_f32(in: f32) -> i32 {
+  return i32(round(in * 255.0));
+}
+
+fn tev_byte_vec3f(in: vec3f) -> vec3i {
+  return vec3i(round(in * 255.0));
+}
+
+fn tev_scale_factor(scale: u32) -> f32 {
+  if (scale == 1u) { return 2.0; }
+  if (scale == 2u) { return 4.0; }
+  if (scale == 3u) { return 0.5; }
+  return 1.0;
+}
+
+fn tev_regular_f32(a: f32, b: f32, c: f32, d: f32, bias: i32, scale: u32, is_sub: bool) -> f32 {
+  let lerp = a + (b - a) * c;
+  let base = d + f32(bias) / 255.0;
+  return select(base + lerp, base - lerp, is_sub) * tev_scale_factor(scale);
+}
+
+fn tev_regular_vec3f(a: vec3f, b: vec3f, c: vec3f, d: vec3f, bias: i32, scale: u32, is_sub: bool) -> vec3f {
+  let lerp = a + (b - a) * c;
+  let base = d + vec3f(f32(bias) / 255.0);
+  return select(base + lerp, base - lerp, is_sub) * tev_scale_factor(scale);
+}
+)""";
+
+  static const bool floatTev = [] {
+    const char* value = std::getenv("NSMBW_TEV_FLOAT");
+    return value == nullptr || value[0] != '0';
+  }();
+
   auto shaderSource = fmt::format(R"""(
 fn bswap32(v: u32, le: bool) -> u32 {{
   if (le) {{
@@ -2049,71 +2167,7 @@ fn fetch_rgba8(p: ptr<storage, array<u32>>, byte_off: u32, le: bool) -> vec4f {{
   return vec4f(v) / 255.0;
 }}
 
-fn tev_overflow_f32(in: f32) -> f32 {{
-  let byte_space = in * 255.0;
-  return (byte_space - floor(byte_space / 256.0) * 256.0) / 255.0;
-}}
-
-fn tev_overflow_vec3f(in: vec3f) -> vec3f {{
-  let byte_space = in * 255.0;
-  return (byte_space - floor(byte_space / 256.0) * 256.0) / 255.0;
-}}
-
-fn tev_overflow_vec4f(in: vec4f) -> vec4f {{
-  let byte_space = in * 255.0;
-  return (byte_space - floor(byte_space / 256.0) * 256.0) / 255.0;
-}}
-
-fn tev_s24_fixed_vec2i(in: vec2i) -> vec2i {{
-  return (in << vec2u(8u)) >> vec2u(8u);
-}}
-
-fn tev_byte_f32(in: f32) -> i32 {{
-  return i32(round(in * 255.0));
-}}
-
-fn tev_byte_vec3f(in: vec3f) -> vec3i {{
-  return vec3i(round(in * 255.0));
-}}
-
-fn tev_regular_i32(a: i32, b: i32, c: i32, d: i32, bias: i32, scale: u32, is_sub: bool) -> i32 {{
-  var d_part = d + bias;
-  var lerp_part = (a << 8u) + (b - a) * (c + (c >> 7u));
-  if (scale == 1u) {{
-    d_part = d_part << 1u;
-    lerp_part = lerp_part << 1u;
-  }}
-  if (scale == 2u) {{
-    d_part = d_part << 2u;
-    lerp_part = lerp_part << 2u;
-  }}
-  if (scale != 3u) {{
-    lerp_part += select(128, 127, is_sub);
-  }}
-  let lerp = lerp_part >> 8u;
-  var result = select(d_part + lerp, d_part - lerp, is_sub);
-  if (scale == 3u) {{
-    result = result >> 1u;
-  }}
-  return result;
-}}
-
-fn tev_regular_f32(a: f32, b: f32, c: f32, d: f32, bias: i32, scale: u32, is_sub: bool) -> f32 {{
-  return f32(tev_regular_i32(tev_byte_f32(a), tev_byte_f32(b), tev_byte_f32(c), tev_byte_f32(d), bias, scale, is_sub)) /
-         255.0;
-}}
-
-fn tev_regular_vec3f(a: vec3f, b: vec3f, c: vec3f, d: vec3f, bias: i32, scale: u32, is_sub: bool) -> vec3f {{
-  let ai = tev_byte_vec3f(a);
-  let bi = tev_byte_vec3f(b);
-  let ci = tev_byte_vec3f(c);
-  let di = tev_byte_vec3f(d);
-  return vec3f(
-    f32(tev_regular_i32(ai.x, bi.x, ci.x, di.x, bias, scale, is_sub)) / 255.0,
-    f32(tev_regular_i32(ai.y, bi.y, ci.y, di.y, bias, scale, is_sub)) / 255.0,
-    f32(tev_regular_i32(ai.z, bi.z, ci.z, di.z, bias, scale, is_sub)) / 255.0,
-  );
-}}
+{11}
 
 {8}
 
@@ -2151,7 +2205,8 @@ fn fs_main(in: VertexOutput) -> {9} {{{6}{5}
 )""",
                                         uniBufAttrs, texBindings, vtxOutAttrs, vtxInAttrs, vtxXfrAttrs, fragmentFn,
                                         fragmentFnPre, vtxXfrAttrsPre, uniformPre, fragmentReturnType,
-                                        fragmentReturn);
+                                        fragmentReturn,
+                                        floatTev ? kTevArithmeticFloat : kTevArithmeticInt);
   if (webgpu::g_shaderDebug != 0) {
     apply_shader_debug(shaderSource, hash);
   }
