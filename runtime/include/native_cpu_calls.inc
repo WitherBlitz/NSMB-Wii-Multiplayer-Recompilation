@@ -95,4 +95,7 @@ template <> struct KnownNativeCpuCall<addr> { \
 MKW_KNOWN_NATIVE_CPU_CALL(0x802B6C80u, nw4r__lyt__detail__DrawQuad_800847c0);
 MKW_KNOWN_NATIVE_CPU_CALL(0x802B71E0u, nw4r__lyt__detail__DrawQuad_80084d20);
 
+extern "C" void NW4R_G3D_RotXYZFIdx_HLE(CpuContext* ctx);
+MKW_KNOWN_NATIVE_CPU_CALL(0x802382B0u, NW4R_G3D_RotXYZFIdx_HLE);
+
 #undef MKW_KNOWN_NATIVE_CPU_CALL
