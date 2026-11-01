@@ -117,7 +117,7 @@ Light prepare_shader_light(Light light) noexcept {
 }
 
 namespace {
-Vec4<float> texture_size_bias(const gfx::TextureBind& tex) {
+Vec4<float> texture_uv_recip(const gfx::TextureBind& tex) {
   auto width = static_cast<float>(tex.texObj.width());
   auto height = static_cast<float>(tex.texObj.height());
   const auto vpBias =
@@ -125,7 +125,8 @@ Vec4<float> texture_size_bias(const gfx::TextureBind& tex) {
           ? log2(std::min(g_gxState.renderViewport.width / std::max(g_gxState.logicalViewport.width, 1.f),
                           g_gxState.renderViewport.height / std::max(g_gxState.logicalViewport.height, 1.f)))
           : 0.f;
-  return {width, height, tex.texObj.lod_bias() + vpBias, 0.0f};
+  // The shader multiplies by the reciprocal size instead of dividing per pixel.
+  return {1.0f / width, 1.0f / height, tex.texObj.lod_bias() + vpBias, 0.0f};
 }
 
 Vec4<float> texcoord_scale(const TexCoordScale& scale) {
@@ -712,7 +713,7 @@ UniformRanges build_uniform(const ShaderInfo& info, u32 vtxStart, const BindGrou
     }
     const auto& tex = get_texture(static_cast<GXTexMapID>(i));
     // CHECK(tex, "unbound texture {}", i);
-    buf.append(texture_size_bias(tex));
+    buf.append(texture_uv_recip(tex));
   }
 
   if (!perspective || frame_interpolation_fps() == 0) {

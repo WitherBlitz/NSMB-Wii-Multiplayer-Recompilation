@@ -19,6 +19,11 @@
 #include "tracy/Tracy.hpp"
 
 namespace aurora::gx {
+
+// The hardware converts texture coordinates to 24-bit fixed point before sampling, and the generator
+// used to reproduce that: a vec2i conversion, a 24-bit wrap and a divide by the texture size. Games
+// do not depend on the truncation, only on the wrap for very large coordinates, so the coordinate is
+// sampled as a float with a precomputed reciprocal size instead.
 using namespace fmt::literals;
 using namespace std::string_literals;
 using namespace std::string_view_literals;
@@ -1369,7 +1374,7 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
         "\n    // Indirect stage {0}"
         "\n    let ind{0}_sample_fixed = {5} >> vec2u({3}u, {4}u);"
         "\n    let t_IndTexCoord{0} = tev_byte_vec3f(textureSampleBias(tex{2}, tex{2}_samp, "
-        "vec2f(ind{0}_sample_fixed) / (ubuf.tex{2}_size_bias.xy * 128.0), ubuf.tex{2}_size_bias.z).abg);",
+        "vec2f(ind{0}_sample_fixed) * ubuf.tex{2}_uv_recip.xy * 0.0078125, ubuf.tex{2}_uv_recip.z).abg);",
         i, effectiveIndTexCoord, underlying(indStage.texMapId), ind_scale_shift(indStage.scaleS),
         ind_scale_shift(indStage.scaleT), indFixedUv);
   }
@@ -1515,11 +1520,11 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
         }
         fragmentFnPre += "\n    t_TexCoord = tev_s24_fixed_vec2i(t_TexCoord);";
 
-        // ShaderInfo only emits texN_size_bias and texture bindings for a texture that can actually be sampled.
+        // ShaderInfo only emits texN_uv_recip and texture bindings for a texture that can actually be sampled.
         if (willSampleTexture) {
           u32 texMapId = static_cast<u32>(textureDependency.texMapId);
           fragmentFnPre += fmt::format(
-              "\n    var ind{0}_uv = vec2f(t_TexCoord) / (ubuf.tex{1}_size_bias.xy * 128.0);", i, texMapId);
+              "\n    var ind{0}_uv = vec2f(t_TexCoord) * ubuf.tex{1}_uv_recip.xy * 0.0078125;", i, texMapId);
           uvIn = fmt::format("ind{0}_uv", i);
         }
       }
@@ -1529,12 +1534,11 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
     }
     if (uvIn.empty()) {
       // No indirect texturing
-      const auto fixedUv = fixed_texcoord_name(static_cast<u32>(textureDependency.texCoordId));
-      uvIn = fmt::format("vec2f(tev_s24_fixed_vec2i({0})) / (ubuf.tex{1}_size_bias.xy * 128.0)", fixedUv,
-                         textureDependency.texMapId);
+      uvIn = fmt::format("tex{0}_uv * ubuf.texcoord{0}_scale.xy * ubuf.tex{1}_uv_recip.xy",
+                         static_cast<u32>(textureDependency.texCoordId), textureDependency.texMapId);
     }
     fragmentFnPre +=
-        fmt::format("\n    var sampled{0} = textureSampleBias(tex{1}, tex{1}_samp, {2}, ubuf.tex{1}_size_bias.z);", i,
+        fmt::format("\n    var sampled{0} = textureSampleBias(tex{1}, tex{1}_samp, {2}, ubuf.tex{1}_uv_recip.z);", i,
                     textureDependency.texMapId, uvIn);
   }
 
@@ -1669,7 +1673,7 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
     if (!info.sampledTextures.test(i)) {
       continue;
     }
-    uniBufAttrs += fmt::format("\n    tex{}_size_bias: vec4f,", i);
+    uniBufAttrs += fmt::format("\n    tex{}_uv_recip: vec4f,", i);
     texBindings += fmt::format(
         "\n@group(2) @binding({1})\n"
         "var tex{0}: texture_2d<f32>;\n"
