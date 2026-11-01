@@ -60,7 +60,7 @@ extern "C" void GX__ClearVtxDesc_8016dc34() {
         changed |= g_hleGxState.vtxDesc[i] != GX_NONE;
         g_hleGxState.vtxDesc[i]=GX_NONE;
     }
-    if (changed) g_hleGxState.InvalidateVtxLayoutHash();
+    if (changed) g_hleGxState.InvalidateVtxLayoutHash(HleGxState::kVtxLayoutDescRow);
     // GXClearVtxDesc resets descriptors only; array base/stride state persists.
     GXClearVtxDesc();
 }
@@ -74,7 +74,7 @@ extern "C" void GX__SetVtxDesc_8016d3a4(uint32_t a, uint32_t t) {
     if (a == GX_VA_NBT) {
         g_hleGxState.vtxDesc[GX_VA_NBT] = GX_NONE;
     }
-    if (g_hleGxState.vtxDesc[attr] != oldType) g_hleGxState.InvalidateVtxLayoutHash();
+    if (g_hleGxState.vtxDesc[attr] != oldType) g_hleGxState.InvalidateVtxLayoutHash(HleGxState::kVtxLayoutDescRow);
     if(IsMatrixIndexAttr((GXAttr)attr)) return;
     GXSetVtxDesc((GXAttr)a, (t==GX_INDEX8||t==GX_INDEX16)?GX_DIRECT:(GXAttrType)t);
 }
@@ -141,7 +141,7 @@ extern "C" void GX__SetVtxAttrFmt_8016dc68(uint32_t vf, uint32_t a, uint32_t c, 
             oldFmt.cnt != newFmt.cnt || oldFmt.type != newFmt.type || oldFmt.frac != newFmt.frac;
         unchanged = a != GX_VA_NBT && !fmtChanged;
         if (fmtChanged) {
-            g_hleGxState.InvalidateVtxLayoutHash();
+            g_hleGxState.InvalidateVtxLayoutHash(HleGxState::VtxLayoutFmtRow(vf));
         }
     }
     if (vf >= GX_MAX_VTXFMT || a < GX_VA_POS || a >= GX_VA_MAX_ATTR) {

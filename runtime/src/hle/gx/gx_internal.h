@@ -238,6 +238,15 @@ struct HleGxState {
     // hash only after a real VCD/VAT mutation.
     uint64_t vtxLayoutHash = 0;
     bool vtxLayoutHashDirty = true;
+    // Rows whose per-row hash in gx_dl.cpp's HashScanLayoutState may no longer describe the
+    // current state: bit 0 = vtxDesc, bit 1 + n = vtxAttrFmt[n]. Set by every mutation (the row
+    // it touched, or all rows when the writer does not say), cleared when the hash is rebuilt.
+    uint16_t vtxLayoutStaleRows = kVtxLayoutAllRows;
+    static constexpr uint16_t kVtxLayoutDescRow = 1u;
+    static constexpr uint16_t kVtxLayoutAllRows = 0x1FFu;
+    static constexpr uint16_t VtxLayoutFmtRow(uint32_t fmt) noexcept {
+        return static_cast<uint16_t>(2u << fmt);
+    }
     // Bumped on every real vtxDesc/vtxAttrFmt mutation. Consumers that mirror
     // this state (gx_dl.cpp's applied-state mirror) use it to detect that a
     // republish would be a no-op.
@@ -277,8 +286,9 @@ struct HleGxState {
     std::vector<uint8_t> rawPacket;
 
     void ResetVertex();
-    void InvalidateVtxLayoutHash() noexcept {
+    void InvalidateVtxLayoutHash(uint16_t rows = kVtxLayoutAllRows) noexcept {
         vtxLayoutHashDirty = true;
+        vtxLayoutStaleRows |= rows;
         ++vtxStateGeneration;
     }
     GXAttr NextEnabledAttr(int startAttr);

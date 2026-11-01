@@ -27,7 +27,7 @@ inline void VcdLo(uint32_t value) {
     assign(g_hleGxState.vtxDesc[GX_VA_CLR1], AttrType2(value >> 15));
     assign(g_hleGxState.vtxDesc[GX_VA_NBT], GX_NONE);
     if (changed) {
-        g_hleGxState.InvalidateVtxLayoutHash();
+        g_hleGxState.InvalidateVtxLayoutHash(HleGxState::kVtxLayoutDescRow);
     }
 }
 
@@ -40,7 +40,7 @@ inline void VcdHi(uint32_t value) {
         dst = next;
     }
     if (changed) {
-        g_hleGxState.InvalidateVtxLayoutHash();
+        g_hleGxState.InvalidateVtxLayoutHash(HleGxState::kVtxLayoutDescRow);
     }
 }
 
@@ -80,7 +80,7 @@ inline void VatA(uint8_t fmt, uint32_t value) {
     if (!SameVtxAttrFmt(oldPos, pos) || !SameVtxAttrFmt(oldNrm, nrm) ||
         !SameVtxAttrFmt(oldClr0, clr0) || !SameVtxAttrFmt(oldClr1, clr1) ||
         !SameVtxAttrFmt(oldTex0, tex0)) {
-        g_hleGxState.InvalidateVtxLayoutHash();
+        g_hleGxState.InvalidateVtxLayoutHash(HleGxState::VtxLayoutFmtRow(fmt));
     }
 }
 
@@ -100,7 +100,7 @@ inline void VatB(uint8_t fmt, uint32_t value) {
     bool changed = false;
     for (int tex = 1; tex <= 4; ++tex) changed |= !SameVtxAttrFmt(before[tex - 1], attrs[GX_VA_TEX0 + tex]);
     if (changed) {
-        g_hleGxState.InvalidateVtxLayoutHash();
+        g_hleGxState.InvalidateVtxLayoutHash(HleGxState::VtxLayoutFmtRow(fmt));
     }
 }
 
@@ -119,7 +119,7 @@ inline void VatC(uint8_t fmt, uint32_t value) {
     bool changed = false;
     for (int tex = 4; tex <= 7; ++tex) changed |= !SameVtxAttrFmt(before[tex - 4], attrs[GX_VA_TEX0 + tex]);
     if (changed) {
-        g_hleGxState.InvalidateVtxLayoutHash();
+        g_hleGxState.InvalidateVtxLayoutHash(HleGxState::VtxLayoutFmtRow(fmt));
     }
 }
 
