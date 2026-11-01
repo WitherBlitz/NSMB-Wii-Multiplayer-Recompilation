@@ -309,11 +309,16 @@ struct KnownTypedNativeCpuCall {
 
 #include "native_cpu_calls.inc"
 
-// Direct-mapped memo in front of the sorted registry lookup every bctrl performs; a miss just
-// re-runs the sorted lookup. 512 entries (12 KiB) covers the per-frame indirect working set while
-// staying L1/L2 resident, unlike 4096 which would thrash L2. Must stay a power of two, the
-// index masks with (size - 1).
+// Memo in front of the sorted registry lookup every bctrl performs; a miss just re-runs the
+// sorted lookup. 512 entries covers the per-frame indirect working set while staying L1/L2
+// resident, unlike 4096 which would thrash L2. The raw memo is 4-way associative: one set is
+// one cache line (4 x 16 bytes) and virtual-call targets come in power-of-two-strided runs
+// that collided in a direct-mapped table. kIndirectDispatchSets/kIndirectDispatchWays must
+// multiply to kIndirectDispatchCacheEntries and stay powers of two.
 inline constexpr size_t kIndirectDispatchCacheEntries = 512;
+inline constexpr size_t kIndirectDispatchWays = 4;
+inline constexpr size_t kIndirectDispatchSets = kIndirectDispatchCacheEntries / kIndirectDispatchWays;
+inline constexpr uint32_t kIndirectDispatchSetShift = 32 - 7;  // 128 sets, hash high bits
 
 struct IndirectResolvedDispatchMemoEntry {
     bool valid;
@@ -333,7 +338,8 @@ struct IndirectRawDispatchMemoEntry {
 // instead.
 struct IndirectDispatchMemo {
     IndirectResolvedDispatchMemoEntry resolved[kIndirectDispatchCacheEntries]{};
-    IndirectRawDispatchMemoEntry raw[kIndirectDispatchCacheEntries]{};
+    alignas(64) IndirectRawDispatchMemoEntry raw[kIndirectDispatchSets][kIndirectDispatchWays]{};
+    uint8_t rawVictim[kIndirectDispatchSets]{};
     uint32_t rawGeneration = 0;
 };
 
@@ -367,8 +373,8 @@ public:
             return FindByAddressPtrSlow(address);
         }
 
-        auto& cached = memo->resolved[
-            ((address >> 2) * 2654435761u) & (kIndirectDispatchCacheEntries - 1)];
+        const uint32_t hash = (address >> 2) * 2654435761u;
+        auto& cached = memo->resolved[hash >> (32 - 9)];  // 512 entries
         if (cached.valid && cached.address == address) {
             return cached.info;
         }
@@ -397,13 +403,15 @@ public:
             memo->rawGeneration = generation;
         }
 
-        auto& cached = memo->raw[
-            ((address >> 2) * 2654435761u) & (kIndirectDispatchCacheEntries - 1)];
-        if (cached.valid && cached.address == address) {
-            return cached.record;
+        const uint32_t hash = (address >> 2) * 2654435761u;
+        auto& set = memo->raw[hash >> kIndirectDispatchSetShift];
+        for (const auto& cached : set) {
+            if (cached.valid && cached.address == address) {
+                return cached.record;
+            }
         }
 
-        return FindRawByAddressPtrMiss(address, cached);
+        return FindRawByAddressPtrMiss(address, set, memo->rawVictim[hash >> kIndirectDispatchSetShift]);
     }
     // Look up a registered function by host (native) address.
     // This enables stack trace symbolication for translated functions.
@@ -425,30 +433,35 @@ public:
 
 private:
     static void ClearIndirectDispatchMemo(IndirectDispatchMemo& memo) noexcept {
-        for (auto& entry : memo.raw) {
-            entry = {};
+        auto* entries = &memo.raw[0][0];
+        for (size_t i = 0; i < kIndirectDispatchCacheEntries; ++i) {
+            entries[i] = {};
         }
     }
 
     // Memo miss: resolve against the header-inline generated table first; only dynamically
-    // registered records or a not-yet-published table fall through to the slow path.
+    // registered records or a not-yet-published table fall through to the slow path. The
+    // victim is round-robin inside the one set.
     static MKW_PPC_NO_INLINE MKW_PPC_COLD const RawDispatchRecord* FindRawByAddressPtrMiss(
-        uint32_t address, IndirectRawDispatchMemoEntry& cached) {
+        uint32_t address, IndirectRawDispatchMemoEntry (&set)[kIndirectDispatchWays],
+        uint8_t& victim) {
         const RawDispatchRecord* record = nullptr;
         for (size_t i = 0; i < runtimeRedirectCount_; ++i) {
             if (runtimeRedirects_[i]->address == address) {
-                cached = {true, address, runtimeRedirects_[i]};
-                return runtimeRedirects_[i];
+                record = runtimeRedirects_[i];
+                break;
             }
         }
-        if (const auto* table =
-                g_publishedStaticIndirectDispatchTable.load(std::memory_order_acquire)) {
-            record = FindStaticIndirectDispatchEntry(table, address);
-        }
         if (record == nullptr) {
-            record = FindRawByAddressPtrSlow(address);
+            if (const auto* table =
+                    g_publishedStaticIndirectDispatchTable.load(std::memory_order_acquire)) {
+                record = FindStaticIndirectDispatchEntry(table, address);
+            }
+            if (record == nullptr) {
+                record = FindRawByAddressPtrSlow(address);
+            }
         }
-        cached = {true, address, record};
+        set[victim++ & (kIndirectDispatchWays - 1)] = {true, address, record};
         return record;
     }
 
