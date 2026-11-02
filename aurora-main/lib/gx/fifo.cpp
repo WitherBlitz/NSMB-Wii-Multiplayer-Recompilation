@@ -71,8 +71,6 @@ uint32_t end_display_list() {
   return padded;
 }
 
-bool in_display_list() { return detail::sInDisplayList; }
-
 // How much of the producer's frame is spent blocked before it may decode the next batch of GX commands.
 static void note_drain_wait(uint64_t nanos) noexcept {
   ZoneScopedN("FIFO drain wait");

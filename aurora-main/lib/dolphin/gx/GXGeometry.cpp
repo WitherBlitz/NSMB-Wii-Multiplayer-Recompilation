@@ -80,6 +80,13 @@ static inline void SETVCDATTR(GXAttr attr, GXAttrType type) {
   default:
     break;
   }
+  if (attr >= GX_VA_PNMTXIDX && attr < GX_VA_MAX_ATTR) {
+    __gx->vtxDescTypes[attr] = static_cast<u8>(type);
+  }
+}
+
+static inline u32 vat_spec(GXCompCnt cnt, GXCompType type, u8 frac) {
+  return (static_cast<u32>(cnt) << 16) | (static_cast<u32>(type) << 8) | frac;
 }
 
 static inline void SETVAT(u32* va, u32* vb, u32* vc, GXAttr attr, GXCompCnt cnt, GXCompType type, u8 frac) {
@@ -153,36 +160,33 @@ static inline void SETVAT(u32* va, u32* vb, u32* vc, GXAttr attr, GXCompCnt cnt,
   }
 }
 
-// These compare against the decoded state, which display lists can change behind the API's back.
-// NSMBW: with the GX thread the decoded state lags behind, so they always answer "differs": the
-// register is sent again, and the command processor drops a write that changes nothing.
-static inline bool AuroraVtxDescDiffers(GXAttr attr, GXAttrType type) {
-  if (aurora::gx::fifo::threaded()) {
-    return true;
-  }
-  return attr >= GX_VA_PNMTXIDX && attr < GX_VA_MAX_ATTR && g_gxState.vtxDesc[attr] != type;
+static inline bool vcd_shadow_matches() {
+  return __gx->sentVcdValid && __gx->sentVcdLo == __gx->vcdLo && __gx->sentVcdHi == __gx->vcdHi &&
+         __gx->sentHasNrms == __gx->hasNrms && __gx->sentHasBiNrms == __gx->hasBiNrms &&
+         __gx->sentNrmType == __gx->nrmType;
 }
 
-static inline bool AuroraVtxAttrFmtDiffers(GXVtxFmt vtxfmt, GXAttr attr, GXCompCnt cnt, GXCompType type, u8 frac) {
-  if (aurora::gx::fifo::threaded()) {
-    return true;
-  }
-  if (vtxfmt < GX_VTXFMT0 || vtxfmt >= GX_MAX_VTXFMT || attr < GX_VA_POS || attr >= GX_VA_MAX_ATTR) {
-    return true;
-  }
-  const auto& fmt = g_gxState.vtxFmts[vtxfmt].attrs[attr];
-  return fmt.cnt != cnt || fmt.type != type || fmt.frac != frac;
+static inline bool vat_shadow_matches(GXVtxFmt vtxfmt) {
+  return (__gx->sentVatValid & (1u << vtxfmt)) != 0 && __gx->sentVatA[vtxfmt] == __gx->vatA[vtxfmt] &&
+         __gx->sentVatB[vtxfmt] == __gx->vatB[vtxfmt] && __gx->sentVatC[vtxfmt] == __gx->vatC[vtxfmt];
 }
 
 extern "C" {
 
 void GXSetVtxDesc(GXAttr attr, GXAttrType type) {
+  // The water and lava meshes set the same descriptors thousands of times per frame. If the
+  // producer's state and the last register written to the FIFO already agree, there is nothing to
+  // send. A display list call invalidates the shadow, so the first set after one is always sent.
+  if (!aurora::gx::fifo::in_display_list() && attr >= GX_VA_PNMTXIDX && attr < GX_VA_MAX_ATTR &&
+      __gx->vtxDescTypes[attr] == static_cast<u8>(type) && vcd_shadow_matches()) {
+    return;
+  }
+
   const u32 oldVcdLo = __gx->vcdLo;
   const u32 oldVcdHi = __gx->vcdHi;
   const u8 oldHasNrms = __gx->hasNrms;
   const u8 oldHasBiNrms = __gx->hasBiNrms;
   const u32 oldNrmType = __gx->nrmType;
-  const bool auroraStateChanged = AuroraVtxDescDiffers(attr, type);
 
   SETVCDATTR(attr, type);
   if (__gx->hasNrms || __gx->hasBiNrms) {
@@ -190,9 +194,9 @@ void GXSetVtxDesc(GXAttr attr, GXAttrType type) {
   } else {
     SET_REG_FIELD(0, __gx->vcdLo, 2, 11, 0);
   }
-  if (aurora::gx::fifo::in_display_list() || auroraStateChanged || __gx->vcdLo != oldVcdLo ||
-      __gx->vcdHi != oldVcdHi || __gx->hasNrms != oldHasNrms || __gx->hasBiNrms != oldHasBiNrms ||
-      __gx->nrmType != oldNrmType) {
+  if (aurora::gx::fifo::in_display_list() || __gx->vcdLo != oldVcdLo || __gx->vcdHi != oldVcdHi ||
+      __gx->hasNrms != oldHasNrms || __gx->hasBiNrms != oldHasBiNrms ||
+      __gx->nrmType != oldNrmType || !vcd_shadow_matches()) {
     __gx->dirtyState |= 8;
   }
 }
@@ -215,10 +219,8 @@ void GXSetVtxDescv(GXVtxDescList* list) {
   const u8 oldHasNrms = __gx->hasNrms;
   const u8 oldHasBiNrms = __gx->hasBiNrms;
   const u32 oldNrmType = __gx->nrmType;
-  bool auroraStateChanged = false;
 
   while (list->attr != GX_VA_NULL) {
-    auroraStateChanged = auroraStateChanged || AuroraVtxDescDiffers(list->attr, list->type);
     SETVCDATTR(list->attr, list->type);
     ++list;
   }
@@ -227,9 +229,9 @@ void GXSetVtxDescv(GXVtxDescList* list) {
   } else {
     SET_REG_FIELD(0, __gx->vcdLo, 2, 11, 0);
   }
-  if (aurora::gx::fifo::in_display_list() || auroraStateChanged || __gx->vcdLo != oldVcdLo ||
-      __gx->vcdHi != oldVcdHi || __gx->hasNrms != oldHasNrms || __gx->hasBiNrms != oldHasBiNrms ||
-      __gx->nrmType != oldNrmType) {
+  if (aurora::gx::fifo::in_display_list() || __gx->vcdLo != oldVcdLo || __gx->vcdHi != oldVcdHi ||
+      __gx->hasNrms != oldHasNrms || __gx->hasBiNrms != oldHasBiNrms ||
+      __gx->nrmType != oldNrmType || !vcd_shadow_matches()) {
     __gx->dirtyState |= 8;
   }
 }
@@ -240,6 +242,8 @@ void GXClearVtxDesc() {
   __gx->vcdHi = 0;
   __gx->hasNrms = 0;
   __gx->hasBiNrms = 0;
+  std::memset(__gx->vtxDescTypes, 0, sizeof(__gx->vtxDescTypes));
+  __gx->vtxDescTypes[GX_VA_POS] = GX_DIRECT;
   __gx->dirtyState |= 8;
 }
 
@@ -247,16 +251,22 @@ void GXSetVtxAttrFmt(GXVtxFmt vtxfmt, GXAttr attr, GXCompCnt cnt, GXCompType typ
   CHECK(vtxfmt >= GX_VTXFMT0 && vtxfmt < GX_MAX_VTXFMT, "invalid vtxfmt {}", underlying(vtxfmt));
   CHECK(attr >= GX_VA_POS && attr < GX_VA_MAX_ATTR, "invalid attr {}", underlying(attr));
 
+  const u32 spec = vat_spec(cnt, type, frac);
+  if (!aurora::gx::fifo::in_display_list() && __gx->vatSpec[vtxfmt][attr] == spec &&
+      vat_shadow_matches(vtxfmt)) {
+    return;
+  }
+
   u32* va = &__gx->vatA[vtxfmt];
   u32* vb = &__gx->vatB[vtxfmt];
   u32* vc = &__gx->vatC[vtxfmt];
   const u32 oldVa = *va;
   const u32 oldVb = *vb;
   const u32 oldVc = *vc;
-  const bool auroraStateChanged = AuroraVtxAttrFmtDiffers(vtxfmt, attr, cnt, type, frac);
   SETVAT(va, vb, vc, attr, cnt, type, frac);
-  if (aurora::gx::fifo::in_display_list() || auroraStateChanged || *va != oldVa || *vb != oldVb ||
-      *vc != oldVc) {
+  __gx->vatSpec[vtxfmt][attr] = spec;
+  if (aurora::gx::fifo::in_display_list() || *va != oldVa || *vb != oldVb || *vc != oldVc ||
+      !vat_shadow_matches(vtxfmt)) {
     __gx->dirtyState |= 0x10;
     __gx->dirtyVAT |= static_cast<u8>(1 << vtxfmt);
   }
@@ -272,17 +282,15 @@ void GXSetVtxAttrFmtv(GXVtxFmt vtxfmt, const GXVtxAttrFmtList* list) {
   const u32 oldVa = *va;
   const u32 oldVb = *vb;
   const u32 oldVc = *vc;
-  bool auroraStateChanged = false;
   while (list->attr != GX_VA_NULL) {
     CHECK(list->attr >= GX_VA_POS && list->attr < GX_VA_MAX_ATTR, "invalid attr {}", underlying(list->attr));
-    auroraStateChanged =
-        auroraStateChanged || AuroraVtxAttrFmtDiffers(vtxfmt, list->attr, list->cnt, list->type, list->frac);
     SETVAT(va, vb, vc, list->attr, list->cnt, list->type, list->frac);
+    __gx->vatSpec[vtxfmt][list->attr] = vat_spec(list->cnt, list->type, list->frac);
     ++list;
   }
 
-  if (aurora::gx::fifo::in_display_list() || auroraStateChanged || *va != oldVa || *vb != oldVb ||
-      *vc != oldVc) {
+  if (aurora::gx::fifo::in_display_list() || *va != oldVa || *vb != oldVb || *vc != oldVc ||
+      !vat_shadow_matches(vtxfmt)) {
     __gx->dirtyState |= 0x10;
     __gx->dirtyVAT |= static_cast<u8>(1 << vtxfmt);
   }

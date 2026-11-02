@@ -76,6 +76,10 @@ GXFifoObj* GXInit(void* base, u32 size) {
 
   __gx->dirtyState = 0;
   __gx->dirtyVAT = 0;
+  __gx->sentVcdValid = 0;
+  __gx->sentVatValid = 0;
+  std::memset(__gx->vtxDescTypes, 0, sizeof(__gx->vtxDescTypes));
+  std::memset(__gx->vatSpec, 0, sizeof(__gx->vatSpec));
 
   // VAT initialization: set default bits and write vatB to CP
   for (i = 0; i < GX_MAX_VTXFMT; i++) {
@@ -357,6 +361,13 @@ void __GXSetVCD() {
   GX_WRITE_XF_REG(8, reg);
   __gx->bpSent = 0;
 
+  __gx->sentVcdLo = __gx->vcdLo;
+  __gx->sentVcdHi = __gx->vcdHi;
+  __gx->sentHasNrms = __gx->hasNrms;
+  __gx->sentHasBiNrms = __gx->hasBiNrms;
+  __gx->sentNrmType = __gx->nrmType;
+  __gx->sentVcdValid = 1;
+
   // Calculate vertex data limit for flush prim
   if (__gx->vNum != 0) {
     static u8 tbl1[] = {0, 4, 1, 2};
@@ -398,6 +409,10 @@ void __GXSetVAT() {
       GX_WRITE_SOME_REG4(8, i | 0x70, __gx->vatA[i], i - 12);
       GX_WRITE_SOME_REG4(8, i | 0x80, __gx->vatB[i], i - 12);
       GX_WRITE_SOME_REG4(8, i | 0x90, __gx->vatC[i], i - 12);
+      __gx->sentVatA[i] = __gx->vatA[i];
+      __gx->sentVatB[i] = __gx->vatB[i];
+      __gx->sentVatC[i] = __gx->vatC[i];
+      __gx->sentVatValid |= static_cast<u8>(1 << i);
     }
   }
   __gx->dirtyVAT = 0;

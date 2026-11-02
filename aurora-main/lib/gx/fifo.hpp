@@ -76,7 +76,7 @@ inline void write_f32(const float val) {
 // Display list recording
 void begin_display_list(uint8_t* buf, uint32_t size);
 uint32_t end_display_list();
-bool in_display_list();
+inline bool in_display_list() { return detail::sInDisplayList; }
 
 // Drain the internal FIFO buffer through the command processor. With the GX thread on, this is a
 // full synchronization: everything queued so far has been decoded when it returns.

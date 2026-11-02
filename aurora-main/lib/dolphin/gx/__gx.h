@@ -160,6 +160,23 @@ struct __GXData_struct {
                     // bit 2: gen mode
                     // bit 3: VCD
                     // bit 4: VAT
+
+  // Producer-side shadow of the last VCD/VAT registers written to the FIFO. The decoded state lags
+  // behind with the GX thread, so comparing against it always said "changed" and dirtied the state
+  // again. NSMBW's water and lava meshes set the same vertex descriptors thousands of times per
+  // frame; a matching shadow lets those calls return without touching the FIFO.
+  u32 sentVcdLo;
+  u32 sentVcdHi;
+  u32 sentVatA[8];
+  u32 sentVatB[8];
+  u32 sentVatC[8];
+  GXAttrType sentNrmType;
+  u8 sentHasNrms;
+  u8 sentHasBiNrms;
+  u8 sentVcdValid;
+  u8 sentVatValid;                  // bitmask per vertex format
+  u8 vtxDescTypes[GX_VA_MAX_ATTR];  // producer copy, GXSetVtxDesc's attr/type
+  u32 vatSpec[8][GX_VA_MAX_ATTR];   // cnt << 16 | type << 8 | frac
 };
 
 extern __GXData_struct* __gx;
