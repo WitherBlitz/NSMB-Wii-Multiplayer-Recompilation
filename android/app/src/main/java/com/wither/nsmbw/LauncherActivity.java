@@ -50,6 +50,7 @@ public final class LauncherActivity extends Activity {
     private static final int REQUEST_IMPORT = 1;
     private static final int REQUEST_ZIP = 2;
     private static final int REQUEST_LOGS = 3;
+    private static final int REQUEST_LANGUAGE_PACK = 4;
     /** Set by GameActivity.restartForSession: open the game again once its old process is gone. */
     static final String EXTRA_RESTART_GAME = "restartGame";
     /** Set by the game's "Start Menu": show this screen even with Skip Start Menu on. */
@@ -456,17 +457,58 @@ public final class LauncherActivity extends Activity {
 
     /** The Language button: sets the game's language and redraws this screen in it. */
     private void chooseLanguage() {
-        new AlertDialog.Builder(this)
+        final AlertDialog.Builder builder = new AlertDialog.Builder(this)
                 .setTitle(Lang.t("Language"))
                 .setSingleChoiceItems(Lang.NAMES, Lang.index(), (dialog, which) -> {
                     dialog.dismiss();
                     if (which != Lang.index()) {
                         Lang.set(this, which);
-                        recreate();
+                        if (!Lang.onDisc(which) && !AppFiles.languagePackInstalled(this, Lang.CODES[which])) {
+                            languagePack(true);
+                        } else {
+                            recreate();
+                        }
                     }
                 })
-                .setNegativeButton(Lang.t("Cancel"), null)
-                .show();
+                .setNegativeButton(Lang.t("Cancel"), null);
+        if (!Lang.onDisc(Lang.index())) {
+            builder.setNeutralButton(Lang.t("Language Pack\u2026"), (dialog, which) -> languagePack(false));
+        }
+        builder.show();
+    }
+
+    /**
+     * The language pack a language the disc doesn't have (Italian) needs for the game's own text: a zip
+     * of a folder shaped like the disc's files/US/EngUS, made by a translator. The start menu and the
+     * port's menus are translated without one. justPicked: the language was just chosen (the screen
+     * redraws in it when the dialog closes).
+     */
+    private void languagePack(boolean justPicked) {
+        final String code = Lang.CODES[Lang.index()];
+        final boolean installed = AppFiles.languagePackInstalled(this, code);
+        final AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle(Lang.t("Language Pack"))
+                .setMessage(Lang.t(installed
+                        ? "A language pack is installed: the game's own text is in this language."
+                        : "The start menu and the port's menus are in this language. For the game's own "
+                        + "text, import a language pack zip made by a translator; until then it stays "
+                        + "English."))
+                .setPositiveButton(Lang.t(installed ? "Replace\u2026" : "Import Language Pack\u2026"), (d, w) -> {
+                    final Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("*/*");
+                    intent.putExtra(Intent.EXTRA_MIME_TYPES,
+                            new String[] {"application/zip", "application/x-zip-compressed", "application/x-zip"});
+                    startActivityForResult(intent, REQUEST_LANGUAGE_PACK);
+                })
+                .setNegativeButton(Lang.t(justPicked ? "Not Now" : "Cancel"), null);
+        if (installed) {
+            builder.setNeutralButton(Lang.t("Remove"),
+                    (d, w) -> AppFiles.deleteRecursively(AppFiles.languagePackDir(this, code)));
+        }
+        final AlertDialog dialog = builder.create();
+        if (justPicked) dialog.setOnDismissListener(d -> recreate());
+        dialog.show();
     }
 
     private void section(LinearLayout column, String title, String body) {
@@ -520,6 +562,8 @@ public final class LauncherActivity extends Activity {
             runImport(progress -> copyZip(uri, progress));
         } else if (requestCode == REQUEST_LOGS) {
             saveLogs(uri);
+        } else if (requestCode == REQUEST_LANGUAGE_PACK) {
+            runImport(Lang.t("Importing the language pack"), progress -> copyLanguagePack(uri, progress));
         }
     }
 
@@ -557,6 +601,10 @@ public final class LauncherActivity extends Activity {
     }
 
     private void runImport(ImportJob job) {
+        runImport(Lang.t("Importing game data"), job);
+    }
+
+    private void runImport(String title, ImportJob job) {
         final ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         final TextView label = text(Lang.t("Looking at the game files…"), 14);
         final LinearLayout box = new LinearLayout(this);
@@ -565,7 +613,7 @@ public final class LauncherActivity extends Activity {
         box.addView(bar);
         box.addView(label);
         final AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(Lang.t("Importing game data")).setView(box).setCancelable(false).show();
+                .setTitle(title).setView(box).setCancelable(false).show();
 
         new Thread(() -> {
             String result;
@@ -673,8 +721,54 @@ public final class LauncherActivity extends Activity {
 
     /** A zip of the folder Dolphin extracted: unpacked into the staging folder, checked, swapped in. */
     private String copyZip(Uri zip, Progress progress) throws IOException {
-        final long size = documentSize(zip);
         final File staging = stagingDir();
+        final int count = unzip(zip, staging, progress);
+        final File root = findGameRoot(staging, 3);
+        if (root == null) {
+            AppFiles.deleteRecursively(staging);
+            return Lang.f("%s\n\nNothing was changed.", Lang.t("That zip doesn't hold an extracted game: zip the "
+                    + "folder Dolphin's Extract Entire Disc made (the one with files and sys in it)."));
+        }
+        return install(root, count);
+    }
+
+    /** A language pack zip: its folder with Message in it becomes Languages/<code> (AppFiles). */
+    private String copyLanguagePack(Uri zip, Progress progress) throws IOException {
+        final String code = Lang.CODES[Lang.index()];
+        final File target = AppFiles.languagePackDir(this, code);
+        final File staging = new File(target.getParentFile(), code + ".importing");
+        unzip(zip, staging, progress);
+        final File root = findLanguagePackRoot(staging, 3);
+        if (root == null) {
+            AppFiles.deleteRecursively(staging);
+            return Lang.f("%s\n\nNothing was changed.", Lang.t("That zip doesn't hold a language pack: it needs "
+                    + "a Message folder, as in the disc's files/US/EngUS."));
+        }
+        AppFiles.deleteRecursively(target);
+        if (!root.renameTo(target)) {
+            AppFiles.deleteRecursively(staging);
+            throw new IOException("cannot move the language pack into " + target);
+        }
+        AppFiles.deleteRecursively(staging);
+        return Lang.t("The language pack is installed. The game uses it the next time it starts.");
+    }
+
+    private static File findLanguagePackRoot(File dir, int depth) {
+        if (new File(dir, "Message").isDirectory()) return dir;
+        if (depth == 0) return null;
+        final File[] children = dir.listFiles(File::isDirectory);
+        if (children == null) return null;
+        for (File child : children) {
+            if (child.getName().equals("__MACOSX")) continue;
+            final File found = findLanguagePackRoot(child, depth - 1);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    /** Unpacks `zip` into a fresh `staging` folder; returns how many files it held. */
+    private int unzip(Uri zip, File staging, Progress progress) throws IOException {
+        final long size = documentSize(zip);
         AppFiles.deleteRecursively(staging);
         if (!staging.mkdirs()) throw new IOException("cannot create " + staging);
         final String stagingPath = staging.getCanonicalPath() + File.separator;
@@ -710,13 +804,7 @@ public final class LauncherActivity extends Activity {
                 }
             }
         }
-        final File root = findGameRoot(staging, 3);
-        if (root == null) {
-            AppFiles.deleteRecursively(staging);
-            return Lang.f("%s\n\nNothing was changed.", Lang.t("That zip doesn't hold an extracted game: zip the "
-                    + "folder Dolphin's Extract Entire Disc made (the one with files and sys in it)."));
-        }
-        return install(root, count);
+        return count;
     }
 
     /** The extracted game inside an unpacked zip: its top, DATA, or a folder holding either. */

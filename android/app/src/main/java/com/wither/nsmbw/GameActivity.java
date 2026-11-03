@@ -53,6 +53,8 @@ public class GameActivity extends SDLActivity
     static native boolean nativePlaying();
     /** A line into the game's run log (console.log, which Download Logs includes). */
     static native void nativeLog(String line);
+    /** Join's Direct Connection: the address typed into askDirectAddress's dialog. */
+    static native void nativeDirectAddress(String address);
     /** {render scale, show FPS, aspect} after the game's own settings window changed them, else null. */
     static native float[] nativeTakeSettings();
     /**
@@ -89,6 +91,7 @@ public class GameActivity extends SDLActivity
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        Lang.load(this);
         settings = new AppSettings(this);
         bootWidescreen = settings.aspectMode() != AppSettings.ASPECT_4_3;
         try {
@@ -163,15 +166,15 @@ public class GameActivity extends SDLActivity
             }
             if (!Updater.canInstall(this)) {
                 new AlertDialog.Builder(this)
-                        .setTitle("NSMBW " + release.version + " is available")
-                        .setMessage("To install updates, let NSMBW install apps: turn on Allow from this source "
-                                + "on the next screen, then come back to the game.")
-                        .setPositiveButton("Open Settings", (d, w) -> {
+                        .setTitle(Lang.f("NSMBW %s is available", release.version))
+                        .setMessage(Lang.t("To install updates, let NSMBW install apps: turn on Allow from this "
+                                + "source on the next screen, then come back to the game."))
+                        .setPositiveButton(Lang.t("Open Settings"), (d, w) -> {
                             updateWaitsForPermission = true;
                             startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                                     android.net.Uri.parse("package:" + getPackageName())));
                         })
-                        .setNegativeButton("Not Now",
+                        .setNegativeButton(Lang.t("Not Now"),
                                 (d, w) -> nativeUpdateStatus(UPDATE_AVAILABLE, release.version, -1f, ""))
                         .setCancelable(false)
                         .show();
@@ -423,6 +426,27 @@ public class GameActivity extends SDLActivity
                 || (sources & android.view.InputDevice.SOURCE_JOYSTICK) == android.view.InputDevice.SOURCE_JOYSTICK);
     }
 
+    /**
+     * The Wii Remote's rumble on the phone (player 1 with no controller), from the game thread
+     * (android_bridge.cpp Vibrate). Off with the Vibration setting. 2 s at most; the game stops it.
+     */
+    @SuppressWarnings("deprecation")
+    void vibrateForGame(boolean on) {
+        if (!settings.haptics()) return;
+        final android.os.Vibrator vibrator = android.os.Build.VERSION.SDK_INT >= 31
+                ? ((android.os.VibratorManager) getSystemService(VIBRATOR_MANAGER_SERVICE)).getDefaultVibrator()
+                : (android.os.Vibrator) getSystemService(VIBRATOR_SERVICE);
+        if (vibrator == null || !vibrator.hasVibrator()) return;
+        if (on) {
+            // As a game's, not touch feedback: the phone's touch vibration setting doesn't mute it.
+            vibrator.vibrate(android.os.VibrationEffect.createOneShot(2000, 180),
+                    new android.media.AudioAttributes.Builder()
+                            .setUsage(android.media.AudioAttributes.USAGE_GAME).build());
+        } else {
+            vibrator.cancel();
+        }
+    }
+
     @Override
     public boolean canRevealControls() {
         if (!nativeReady) return false;
@@ -611,15 +635,45 @@ public class GameActivity extends SDLActivity
         items.add("Start Menu");
         if (inSession) items.add("Leave LAN Game");
         items.add("Quit Game");
+        final String[] labels = new String[items.size()];
+        for (int i = 0; i < labels.length; ++i) labels[i] = Lang.t(items.get(i));
         new AlertDialog.Builder(this)
                 .setTitle("New Super Mario Bros. Wii")
-                .setItems(items.toArray(new String[0]), (dialog, which) -> {
+                .setItems(labels, (dialog, which) -> {
                     final String item = items.get(which);
                     if (item.equals("Start Menu")) openStartMenu(inSession);
                     else if (item.equals("Leave LAN Game")) leaveSession();
                     else finish();
                 })
-                .setNegativeButton("Back to the Game", null)
+                .setNegativeButton(Lang.t("Back to the Game"), null)
                 .show();
+    }
+
+    /**
+     * Join's Direct Connection (called from the game thread): asks for the host's IP:Port, which the
+     * host's room shows at its top. The game passes its own title and hint, in its language.
+     */
+    void askDirectAddress(String title, String hint) {
+        runOnUiThread(() -> {
+            if (touch != null) touch.release();
+            final android.widget.EditText field = new android.widget.EditText(this);
+            field.setSingleLine(true);
+            field.setHint("192.168.1.20:52130");
+            field.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+            final android.widget.FrameLayout box = new android.widget.FrameLayout(this);
+            final int pad = (int) (20 * getResources().getDisplayMetrics().density);
+            box.setPadding(pad, pad / 2, pad, 0);
+            box.addView(field);
+            final AlertDialog dialog = new AlertDialog.Builder(this)
+                    .setTitle(title)
+                    .setMessage(hint)
+                    .setView(box)
+                    .setPositiveButton(Lang.t("Connect"), (d, w) -> nativeDirectAddress(field.getText().toString().trim()))
+                    .setNegativeButton(Lang.t("Cancel"), null)
+                    .create();
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
+            dialog.show();
+            field.requestFocus();
+        });
     }
 }

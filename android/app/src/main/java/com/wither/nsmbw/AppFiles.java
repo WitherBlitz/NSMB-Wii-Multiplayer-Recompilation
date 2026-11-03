@@ -199,7 +199,19 @@ final class AppFiles {
         return eq > 0 && trimmed.substring(0, eq).trim().equals(key);
     }
 
-    /** The game's language, Config.toml's [game] language: "en" (the default), "es" or "fr". */
+    /**
+     * A language pack (runtime_config.h LanguagePackDir): Languages/<code> beside Config.toml, shaped
+     * like the disc's files/US/EngUS. The game puts it over the English text at boot.
+     */
+    static File languagePackDir(Context context, String code) {
+        return new File(new File(dataDir(context), "Languages"), code);
+    }
+
+    static boolean languagePackInstalled(Context context, String code) {
+        return new File(languagePackDir(context, code), "Message").isDirectory();
+    }
+
+    /** The game's language, Config.toml's [game] language: "en" (the default), "es", "fr" or "it". */
     static String gameLanguage(Context context) {
         final File config = new File(dataDir(context), "Config.toml");
         if (!config.isFile()) return "en";
