@@ -5,6 +5,7 @@
 #include "host_suspend.h"
 #include "graphics_info.h"
 #include "runtime_config.h"
+#include "runtime_log.h"
 #include "settings_overlay.h"
 #include "updater.h"
 #include "virtual_remote.h"
@@ -203,6 +204,19 @@ JNIEXPORT jboolean JNICALL Java_com_wither_nsmbw_GameActivity_nativeTapScreen(JN
     return NetplayUi::TapScreenUp() ? JNI_TRUE : JNI_FALSE;
 }
 
+// GameActivity.nativeLog: a line from the app (the input devices Android reports) into the run log.
+JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeLog(JNIEnv* env, jclass, jstring line)
+{
+    if (line == nullptr) {
+        return;
+    }
+    const char* text = env->GetStringUTFChars(line, nullptr);
+    if (text != nullptr) {
+        RT_LOGF(RT_TAG_RUNTIME, "%s\n", text);
+        env->ReleaseStringUTFChars(line, text);
+    }
+}
+
 // GameActivity.nativePlaying: in a course or on the world map with no menu up (NetplayUi::Playing).
 JNIEXPORT jboolean JNICALL Java_com_wither_nsmbw_GameActivity_nativePlaying(JNIEnv*, jclass)
 {
@@ -210,7 +224,7 @@ JNIEXPORT jboolean JNICALL Java_com_wither_nsmbw_GameActivity_nativePlaying(JNIE
 }
 
 // GameActivity.nativeSetBackground: the app left the screen (true) or came back (false). Leaving, the
-// game writes a backup Quick Save (backup: the app left; not when the screen just turned off) and
+// game saves as a backup (backup: the app left; not when the screen just turned off) and
 // pauses (host_suspend.h); nativeGamePaused says when it has.
 JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeSetBackground(JNIEnv*, jclass, jboolean background,
                                                                              jboolean backup)

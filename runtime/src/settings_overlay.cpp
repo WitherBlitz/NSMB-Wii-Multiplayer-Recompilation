@@ -1903,6 +1903,19 @@ bool ControllerConnected() noexcept {
     return GamepadPort() >= 0;
 }
 
+int ControllerShoulderPressed() noexcept {
+    static bool wasLeft = false, wasRight = false;
+    const int port = GamepadPort();
+    const s32 index = port >= 0 ? PADGetIndexForPort(static_cast<u32>(port)) : -1;
+    SDL_Gamepad* pad = index >= 0 ? PADGetSDLGamepadForIndex(static_cast<u32>(index)) : nullptr;
+    const bool left = pad != nullptr && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
+    const bool right = pad != nullptr && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
+    const int pressed = left && !wasLeft ? -1 : right && !wasRight ? 1 : 0;
+    wasLeft = left;
+    wasRight = right;
+    return pressed;
+}
+
 std::string ControllerBindingLabel(int action) {
     if (action == kActionTiltLeft) return "Right stick left";
     if (action == kActionTiltRight) return "Right stick right";

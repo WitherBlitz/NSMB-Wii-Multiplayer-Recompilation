@@ -33,6 +33,9 @@ void BeginControllerCapture(int action) noexcept;
 int ControllerCapturing() noexcept;  // the action waiting for a button, or -1
 bool PollControllerCapture() noexcept;  // true once the capture has ended
 void ResetControllerBindings() noexcept;
+// A fresh press of the controller's L (-1) or R (+1) shoulder button since the last call, else 0:
+// the settings window steps between its tabs with them.
+int ControllerShoulderPressed() noexcept;
 // Android's on-screen controls (the app shows or hides them; the Keybinds tab's checkbox asks it to).
 void SetTouchControls(bool on) noexcept;
 bool TouchControls() noexcept;

@@ -23,7 +23,6 @@ using Clock = std::chrono::steady_clock;
 
 // NSMBW (USA rev 1) addresses.
 constexpr uint32_t kSaveGame = 0x8092F5F0u;                 // SaveGame(void*, bool quick), d_basesNP
-constexpr uint32_t kStartDeleteQuickNandSave = 0x800E11D0u;  // dSaveMng_c::startDeleteQuickNandSave
 constexpr uint32_t kSaveMngInstance = 0x8042A040u;          // dSaveMng_c::m_instance
 constexpr uint32_t kNandThreadInstance = 0x80429FB8u;       // dNandThread_c::m_instance; busy at +0x74
 constexpr uint32_t kNowScene = 0x80428730u;                 // dScene_c::m_nowScene (low halfword)
@@ -43,10 +42,10 @@ constexpr uint32_t kGameCourseFlags = 0x6C, kCourseFlagWords = 10 * 42;
 // score after kAutoSaveReplayFrames; the map is watched for kAutoSaveWatchFrames in all.
 constexpr int kAutoSaveReplayFrames = 5 * 60, kAutoSaveWatchFrames = 15 * 60;
 constexpr auto kSaveTimeout = std::chrono::seconds(4);
-// How long a pause waits for the game thread to start its backup Quick Save before pausing without.
+// How long a pause waits for the game thread to start its backup save before pausing without.
 constexpr auto kBackupStartTimeout = std::chrono::seconds(1);
 
-enum class State { Running, Saving, Paused, DeleteBackup };
+enum class State { Running, Saving, Paused };
 
 std::mutex g_mutex;
 std::condition_variable g_wake;
@@ -54,7 +53,6 @@ bool g_pauseWanted = false;   // guarded by g_mutex
 bool g_backupWanted = false;  // guarded by g_mutex
 std::atomic<bool> g_pauseRequested{false};  // g_pauseWanted, readable without the lock
 State g_state = State::Running;  // the game thread's
-bool g_backupWritten = false;    // the game thread's: a Quick Save of ours is on the NAND
 Clock::time_point g_saveDeadline;
 // A backup asked for, waiting for the game thread (OnGameThread) to start it; when it should have.
 bool g_backupPending = false;
@@ -91,10 +89,10 @@ bool BackupAllowed() {
     if ((flags & (kGameFlagFreeMode | kGameFlagCoinBattle)) != 0 || NetplaySession::Active()) {
         return false;
     }
-    // With the world map's + menu or a level's pause window open, a Quick Save from here is taken as
-    // the menu's own Quick Save, which ends the game once written: pause without a backup then.
+    // With the world map's + menu or a level's pause window open, the menu owns saving (its Save or
+    // Quick Save is the player's): pause without a backup then.
     if (GameMenus::PauseMenuOpen()) {
-        RT_LOGF(RT_TAG_RUNTIME, "suspend: a menu is open; pausing without a backup Quick Save\n");
+        RT_LOGF(RT_TAG_RUNTIME, "suspend: a menu is open; pausing without a backup save\n");
         return false;
     }
     return !(scene == kSceneStage && GameMenus::HasProfile(kProfileOpeningTitle)) && !NandBusy();
@@ -302,21 +300,13 @@ uint64_t OnRetrace() {
         if (NandBusy() && Clock::now() < g_saveDeadline) {
             return 0;
         }
-        RT_LOGF(RT_TAG_RUNTIME, "suspend: backup %s\n", NandBusy() ? "still writing (timed out)" : "written");
-        g_state = pauseWanted ? State::Paused : State::DeleteBackup;
-        if (g_state == State::DeleteBackup) {
+        RT_LOGF(RT_TAG_RUNTIME, "suspend: backup %s\n", NandBusy() ? "still writing (timed out)" : "saved");
+        if (!pauseWanted) {
+            g_state = State::Running;  // back before the pause began
             return 0;
         }
+        g_state = State::Paused;
         break;
-    case State::DeleteBackup:
-        if (NandBusy()) {
-            return 0;
-        }
-        CallGuest(kStartDeleteQuickNandSave, Memory::Read32(kSaveMngInstance), 0);
-        g_backupWritten = false;
-        g_state = State::Running;
-        RT_LOGF(RT_TAG_RUNTIME, "suspend: back in the game, backup Quick Save deleted\n");
-        return 0;
     case State::Paused:
         break;
     }
@@ -335,7 +325,7 @@ uint64_t OnRetrace() {
     const uint64_t pausedNs =
         static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - stopped).count());
     g_pausedNs.fetch_add(pausedNs, std::memory_order_acq_rel);
-    g_state = g_backupWritten ? State::DeleteBackup : State::Running;
+    g_state = State::Running;
     RT_LOGF(RT_TAG_RUNTIME, "suspend: resumed after %.1f s\n", static_cast<double>(pausedNs) / 1e9);
     return pausedNs;
 }
@@ -350,11 +340,12 @@ void OnGameThread() {
         g_backupDeclined = true;  // OnRetrace pauses without one
         return;
     }
-    CallGuest(kSaveGame, 0, 1);  // SaveGame(_, quick = true), as the + menu's Quick Save calls it
-    g_backupWritten = true;
+    // A Save, as the world map's Save calls it, not a Quick Save: the game takes a finished Quick Save
+    // as "save and quit", and once the player came back, the world map ended the game (0.3.0/0.3.1).
+    CallGuest(kSaveGame, 0, 0);
     g_saveDeadline = Clock::now() + kSaveTimeout;
     g_state = State::Saving;
-    RT_LOGF(RT_TAG_RUNTIME, "suspend: writing a Quick Save as a backup\n");
+    RT_LOGF(RT_TAG_RUNTIME, "suspend: saving the game as a backup\n");
 }
 
 } // namespace HostSuspend
