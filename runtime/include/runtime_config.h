@@ -20,6 +20,7 @@
 #include <vector>
 #include <toml.hpp>
 #include "platform/host_platform.h"
+#include "runtime_product.h"
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -343,7 +344,30 @@ inline void AdoptEarlierUserData(const std::filesystem::path& target) {
 }
 #endif
 
+inline std::filesystem::path BaseApplicationDataDirectory();
+
+// A mod (RuntimeProduct userDataFolder) keeps its own settings, saves and caches: Documents\<folder>
+// on Windows, <folder> inside the base game's data folder elsewhere.
 inline std::filesystem::path ApplicationDataDirectory() {
+    const std::string_view modFolder = RuntimeProduct::Active().userDataFolder;
+    if (modFolder.empty()) {
+        return BaseApplicationDataDirectory();
+    }
+#ifdef _WIN32
+    if (!PortableRootDirectory()) {
+        PWSTR documentsPath = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_CREATE, nullptr, &documentsPath)) &&
+            documentsPath != nullptr) {
+            const std::filesystem::path directory = std::filesystem::path(documentsPath) / std::filesystem::u8path(modFolder);
+            CoTaskMemFree(documentsPath);
+            return directory;
+        }
+    }
+#endif
+    return BaseApplicationDataDirectory() / std::filesystem::u8path(modFolder);
+}
+
+inline std::filesystem::path BaseApplicationDataDirectory() {
     if (const auto& portableRoot = PortableRootDirectory()) {
         return *portableRoot / kPortableUserDataDirectoryName;
     }

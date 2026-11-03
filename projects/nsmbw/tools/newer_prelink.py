@@ -378,7 +378,13 @@ def main():
             sys.exit(f"0x{addr:08X} holds 0x{img.rd32(addr):08X}, not dSys_c::create's replay heap size")
         img.wr32(addr, new)
 
-    base_map = (REPO / "projects" / "nsmbw" / "MAP.txt").read_text()
+    # Newer's main.dol calls DVDDiskCheck (the disc's BCA, read over the drive interface) from main,
+    # where the retail game has a nop; there is no drive here, so the check fails the disc. The
+    # retail nop again.
+    if img.rd32(0x800C9FC8) == encode_b(0x800C9FC8, 0x80006780, link=True):
+        img.wr32(0x800C9FC8, 0x60000000)
+
+    base_map =(REPO / "projects" / "nsmbw" / "MAP.txt").read_text()
     lines = [base_map.rstrip("\n"), "# Newer Super Mario Bros. Wii loader (main.dol .data) and blob"]
     lines += [f"{a:08x} {a:08x}" for a in LOADER]
     lines += [f"{a:08x} newer_{a - DLCODE_ADDR:05x}" for a in sorted(starts)]

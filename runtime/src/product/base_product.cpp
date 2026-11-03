@@ -24,6 +24,7 @@ const Descriptor& Active() noexcept {
               "NewerRes/DLCodeUS_1.bin",
               463252,
               "title/00010000/534d4e45/data/NerSMBW.sav",
+              "NewerWiiSaveData",
           }
         : Descriptor{
               Kind::BaseGame,
