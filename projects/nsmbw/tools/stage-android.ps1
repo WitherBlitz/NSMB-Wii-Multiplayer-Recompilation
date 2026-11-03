@@ -1,17 +1,56 @@
 # Stage the Android native build for the app: a stripped libmain.so in android/native/jniLibs and the
 # runtime's data files (what a desktop build keeps beside its executable) in android/native/assets.
+# -Newer: the Newer Super Mario Bros. Wii module instead (android-build-newer): its stripped library
+# zipped as android/native/newer/NSMBW-<version>-newer-android-arm64.zip, the file to attach to that
+# version's release, and its name, size and SHA-256 in assets/newer-module.properties, which the app
+# (NewerModule.java) downloads and checks it by. Stage it before building the APK, and attach exactly
+# that zip: another build of it has another SHA-256.
 [CmdletBinding()]
 param(
     [string]$BuildDirectory,
-    [string]$NativeDirectory
+    [string]$NativeDirectory,
+    [switch]$Newer
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'paths.ps1')
-if (-not $BuildDirectory) { $BuildDirectory = Get-NsmbwBuildDirectory 'android-build' }
+if (-not $BuildDirectory) { $BuildDirectory = Get-NsmbwBuildDirectory $(if ($Newer) { 'android-build-newer' } else { 'android-build' }) }
 if (-not $NativeDirectory) { $NativeDirectory = Join-Path $NsmbwRepo 'android\native' }
 $ndk = Get-NsmbwNdk
 $strip = Join-Path $ndk 'toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-strip.exe'
+
+if ($Newer) {
+    $lib = Join-Path $BuildDirectory 'libmain.so'
+    if (-not (Test-Path -LiteralPath $lib)) { throw "libmain.so is missing: $lib" }
+    $gradle = Get-Content -LiteralPath (Join-Path $NativeDirectory '..\app\build.gradle') -Raw
+    if ($gradle -notmatch "versionName\s+'([^']+)'") { throw 'no versionName in android/app/build.gradle' }
+    $version = $Matches[1]
+    $out = Join-Path $NativeDirectory 'newer'
+    if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Recurse -Force }
+    New-Item -ItemType Directory -Force $out | Out-Null
+    $stripped = Join-Path $out 'libnewer.so'
+    & $strip --strip-unneeded -o $stripped $lib
+    if ($LASTEXITCODE -ne 0) { throw 'llvm-strip failed' }
+    $name = "NSMBW-$version-newer-android-arm64.zip"
+    $zip = Join-Path $out $name
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::Open($zip, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $stripped, 'libnewer.so',
+            [IO.Compression.CompressionLevel]::Optimal)
+    } finally {
+        $archive.Dispose()
+    }
+    Remove-Item -LiteralPath $stripped
+    $size = (Get-Item -LiteralPath $zip).Length
+    $sha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+    $assetsDir = Join-Path $NativeDirectory 'assets'
+    New-Item -ItemType Directory -Force $assetsDir | Out-Null
+    [IO.File]::WriteAllText((Join-Path $assetsDir 'newer-module.properties'),
+        "file=$name`nsize=$size`nsha256=$sha`n", (New-Object Text.UTF8Encoding $false))
+    '{0:N1} MB  {1}' -f ($size / 1MB), $zip
+    return
+}
 
 $lib = Join-Path $BuildDirectory 'libmain.so'
 if (-not (Test-Path -LiteralPath $lib)) { throw "libmain.so is missing: $lib" }

@@ -1,16 +1,18 @@
 # Build targets of the Android (arm64-v8a) native build configured by configure-android.ps1.
+# -Newer: android-build-newer (configure-android.ps1 -Newer).
 [CmdletBinding()]
 param(
     [string[]]$Target = @('WiiCompiled'),
     [int]$Jobs = 10,
     [string]$BuildDirectory,
     [string]$LogPath,
-    [switch]$KeepGoing
+    [switch]$KeepGoing,
+    [switch]$Newer
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'paths.ps1')
-if (-not $BuildDirectory) { $BuildDirectory = Get-NsmbwBuildDirectory 'android-build' }
+if (-not $BuildDirectory) { $BuildDirectory = Get-NsmbwBuildDirectory $(if ($Newer) { 'android-build-newer' } else { 'android-build' }) }
 if (-not $LogPath) { $LogPath = Join-Path (Get-NsmbwLogDirectory $BuildDirectory) 'build-android.log' }
 $toolchain = Get-NsmbwToolchain
 $env:PATH = "$toolchain\CMake\bin;$toolchain\Ninja;$env:SystemRoot\System32;$env:SystemRoot"

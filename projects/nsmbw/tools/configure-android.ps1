@@ -1,16 +1,19 @@
 # Configure the NSMBW runtime for Android arm64-v8a: the same pinned Dependencies tree as the Windows
 # build (configure-native.ps1), the portable CMake/Ninja, and NDK 29 - the toolchain the pinned
 # Android Dawn archive was built with, so its static libc++ code links cleanly. Produces libmain.so.
+# -Newer: Newer Super Mario Bros. Wii's (generated/ translated from it, rebuild-all.ps1 -Newer) in
+# android-build-newer, accepting its disc (NSMBW_GAME_ID=SMNE03): the app's downloadable module.
 [CmdletBinding()]
 param(
     [int]$TranslatedJobs = 6,
     [string]$BuildDirectory,
-    [string]$LogPath
+    [string]$LogPath,
+    [switch]$Newer
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'paths.ps1')
-if (-not $BuildDirectory) { $BuildDirectory = Get-NsmbwBuildDirectory 'android-build' }
+if (-not $BuildDirectory) { $BuildDirectory = Get-NsmbwBuildDirectory $(if ($Newer) { 'android-build-newer' } else { 'android-build' }) }
 if (-not $LogPath) { $LogPath = Join-Path (Get-NsmbwLogDirectory $BuildDirectory) 'configure-android.log' }
 $workspace = $NsmbwRepo
 $toolchain = Get-NsmbwToolchain
@@ -40,7 +43,8 @@ $configure = @(
     '-DCMAKE_BUILD_TYPE=Release',
     '-DAURORA_DAWN_PROVIDER=package', '-DAURORA_SDL3_PROVIDER=vendor',
     '-DCMAKE_POLICY_DEFAULT_CMP0168=NEW', '-DFETCHCONTENT_FULLY_DISCONNECTED=ON',
-    "-DMKW_TRANSLATED_COMPILE_JOBS=$TranslatedJobs"
+    "-DMKW_TRANSLATED_COMPILE_JOBS=$TranslatedJobs",
+    "-DNSMBW_GAME_ID=$(if ($Newer) { 'SMNE03' } else { 'SMNE01' })"
 )
 foreach ($directory in Get-ChildItem -LiteralPath $dependencies -Directory) {
     # Windows-only trees, and the Windows Dawn package (the Android one replaces it below).

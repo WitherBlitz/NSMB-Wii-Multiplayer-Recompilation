@@ -233,14 +233,21 @@ void StartReadCachePreload() {
     }
 #endif
 #if defined(_WIN32) || defined(__ANDROID__)
-    constexpr uint64_t kCacheLimitBytes = 1ull << 30;  // mods can be larger than the disc; stop at 1 GiB
+    // Mods can be larger than the disc: stop at 1 GiB, and on a phone at an eighth of its RAM (from
+    // 384 MiB, so the whole disc still fits). Newer's 843 MiB cached in full left a 4 GB Pixel 3 XL
+    // so little memory that Android killed the game; the files past the limit are read as they're needed.
+#if defined(__ANDROID__)
+    const uint64_t kCacheLimitBytes = std::min<uint64_t>(1ull << 30, ram / 8);
+#else
+    constexpr uint64_t kCacheLimitBytes = 1ull << 30;
+#endif
     std::vector<fs::path> paths;
     for (const DVDFileEntry& entry : g_fileEntries) {
         if (!entry.isDirectory && entry.size > 0) {
             paths.push_back(entry.hostPath);
         }
     }
-    std::thread([paths = std::move(paths)] {
+    std::thread([paths = std::move(paths), kCacheLimitBytes] {
 #if defined(_WIN32)
         ::SetThreadPriority(::GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
 #else
