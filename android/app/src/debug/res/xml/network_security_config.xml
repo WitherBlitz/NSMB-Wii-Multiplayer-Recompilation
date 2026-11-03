@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: the Newer module download can be tested from a server on the PC through
+     `adb reverse` (LauncherActivity EXTRA_NEWER_MODULE_BASE). The module's SHA-256 is still checked. -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

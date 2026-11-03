@@ -84,6 +84,7 @@ final class TouchControlsView extends View {
     private int dragId = -1;  // the finger the game's menus follow (onPointer), or -1
     private final android.util.SparseLongArray tapTimes = new android.util.SparseLongArray();
 
+    private static final int EDIT_SELECTED = Color.rgb(229, 57, 53);
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -167,6 +168,11 @@ final class TouchControlsView extends View {
         padR = 0.21f * u;
         padX = left + 0.07f * u + padR;
         padY = 0.66f * u;
+        if (custom[0] != null) {
+            padR *= custom[0][2];
+            padX = custom[0][0] * w;
+            padY = custom[0][1] * h;
+        }
         place(TWO, w - right - 0.17f * u, 0.74f * u, 0.11f * u);
         place(ONE, w - right - 0.43f * u, 0.80f * u, 0.11f * u);
         place(A, w - right - 0.43f * u, 0.52f * u, 0.075f * u);
@@ -178,13 +184,165 @@ final class TouchControlsView extends View {
     }
 
     private void place(int bit, float x, float y, float r) {
-        for (Button b : buttons) {
-            if (b.bit == bit) { b.x = x; b.y = y; b.r = r; }
+        for (int i = 0; i < buttons.length; ++i) {
+            final Button b = buttons[i];
+            if (b.bit != bit) continue;
+            final float[] c = custom[i + 1];
+            b.x = c != null ? c[0] * getWidth() : x;
+            b.y = c != null ? c[1] * getHeight() : y;
+            b.r = c != null ? r * c[2] : r;
         }
     }
 
+    // --- the layout editor (TouchLayoutEditor): each control moved and resized by the player --------
+
+    /** Saved names of the movable controls: the cross-pad, then `buttons` in order. */
+    private static final String[] KEYS = {"pad", "two", "one", "a", "shake", "minus", "plus"};
+    /** Per control (KEYS order): {centre x, centre y as fractions of the view, size as a multiple of
+     *  the default}, or null where it keeps the default place. */
+    private final float[][] custom = new float[KEYS.length][];
+    private boolean editing;
+    private int selected = -1;
+    private int editDragId = -1, editPinchId = -1;
+    private float grabX, grabY, pinchStart, pinchScale;
+
+    /** The saved layout ("pad:0.2,0.6,1.1;two:..."); empty for the default one. */
+    void setLayout(String spec) {
+        java.util.Arrays.fill(custom, null);
+        if (spec != null) {
+            for (String part : spec.split(";")) {
+                final int colon = part.indexOf(':');
+                final int index = colon > 0 ? java.util.Arrays.asList(KEYS).indexOf(part.substring(0, colon)) : -1;
+                final String[] v = colon > 0 ? part.substring(colon + 1).split(",") : new String[0];
+                if (index < 0 || v.length != 3) continue;
+                try {
+                    custom[index] = new float[] {clamp(Float.parseFloat(v[0]), 0f, 1f),
+                            clamp(Float.parseFloat(v[1]), 0f, 1f), clamp(Float.parseFloat(v[2]), MIN_SCALE, MAX_SCALE)};
+                } catch (NumberFormatException ignored) {
+                    // a damaged entry keeps that control's default place
+                }
+            }
+        }
+        layoutControls(getWidth(), getHeight());
+    }
+
+    String layout() {
+        final StringBuilder out = new StringBuilder();
+        for (int i = 0; i < KEYS.length; ++i) {
+            if (custom[i] == null) continue;
+            if (out.length() > 0) out.append(';');
+            out.append(String.format(java.util.Locale.ROOT, "%s:%.4f,%.4f,%.3f", KEYS[i], custom[i][0], custom[i][1], custom[i][2]));
+        }
+        return out.toString();
+    }
+
+    private static final float MIN_SCALE = 0.5f, MAX_SCALE = 2.5f;
+
+    /** Editing: every control shows, a finger moves the one it lands on and two fingers resize it. */
+    void setEditing(boolean on) {
+        editing = on;
+        selected = -1;
+        editDragId = editPinchId = -1;
+        release();
+        invalidate();
+    }
+
+    /** Bigger or Smaller: the picked control (or, with none picked, every one) by `factor`. */
+    void resizeSelected(float factor) {
+        for (int i = 0; i < KEYS.length; ++i) {
+            if (selected < 0 || selected == i) setScale(i, scaleOf(i) * factor);
+        }
+    }
+
+    void resetLayout() { setLayout(""); }
+
+    private float scaleOf(int index) { return custom[index] != null ? custom[index][2] : 1f; }
+
+    private float[] centreOf(int index) {
+        if (index == 0) return new float[] {padX, padY};
+        return new float[] {buttons[index - 1].x, buttons[index - 1].y};
+    }
+
+    private void moveTo(int index, float x, float y) {
+        final float[] c = custom[index] != null ? custom[index] : new float[] {0, 0, 1f};
+        c[0] = clamp(x / getWidth(), 0f, 1f);
+        c[1] = clamp(y / getHeight(), 0f, 1f);
+        custom[index] = c;
+        layoutControls(getWidth(), getHeight());
+    }
+
+    private void setScale(int index, float scale) {
+        final float[] centre = centreOf(index);
+        final float[] c = custom[index] != null ? custom[index]
+                : new float[] {centre[0] / getWidth(), centre[1] / getHeight(), 1f};
+        c[2] = clamp(scale, MIN_SCALE, MAX_SCALE);
+        custom[index] = c;
+        layoutControls(getWidth(), getHeight());
+    }
+
+    /** The control nearest the point within reach of it, or -1. */
+    private int controlAt(float x, float y) {
+        int best = -1;
+        float bestDistance = Float.MAX_VALUE;
+        for (int i = 0; i < KEYS.length; ++i) {
+            final float[] c = centreOf(i);
+            final float reach = (i == 0 ? padR : buttons[i - 1].r) * 1.2f;
+            final float d = (float) Math.hypot(x - c[0], y - c[1]);
+            if (d <= reach && d < bestDistance) {
+                best = i;
+                bestDistance = d;
+            }
+        }
+        return best;
+    }
+
+    private void editTouch(MotionEvent e) {
+        final int action = e.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            selected = controlAt(e.getX(), e.getY());
+            editDragId = selected >= 0 ? e.getPointerId(0) : -1;
+            if (selected >= 0) {
+                final float[] c = centreOf(selected);
+                grabX = c[0] - e.getX();
+                grabY = c[1] - e.getY();
+            }
+        } else if (action == MotionEvent.ACTION_POINTER_DOWN && selected >= 0 && editPinchId < 0 && e.getPointerCount() >= 2) {
+            editPinchId = e.getPointerId(e.getActionIndex());
+            pinchStart = Math.max(1f, spread(e));
+            pinchScale = scaleOf(selected);
+        } else if (action == MotionEvent.ACTION_MOVE && selected >= 0) {
+            if (editPinchId >= 0 && e.findPointerIndex(editPinchId) >= 0 && e.findPointerIndex(editDragId) >= 0) {
+                setScale(selected, pinchScale * spread(e) / pinchStart);
+            } else {
+                final int i = e.findPointerIndex(editDragId);
+                if (i >= 0) moveTo(selected, e.getX(i) + grabX, e.getY(i) + grabY);
+            }
+        } else if (action == MotionEvent.ACTION_POINTER_UP || action == MotionEvent.ACTION_UP
+                || action == MotionEvent.ACTION_CANCEL) {
+            final int id = e.getPointerId(e.getActionIndex());
+            if (action != MotionEvent.ACTION_POINTER_UP || id == editDragId || id == editPinchId) {
+                // A pinch ends with both fingers' drag, so the one left doesn't jerk the control.
+                editDragId = editPinchId = -1;
+            }
+        }
+        invalidate();
+    }
+
+    /** How far apart the drag and pinch fingers are. */
+    private float spread(MotionEvent e) {
+        final int a = e.findPointerIndex(editDragId), b = e.findPointerIndex(editPinchId);
+        if (a < 0 || b < 0) return 1f;
+        return (float) Math.hypot(e.getX(a) - e.getX(b), e.getY(a) - e.getY(b));
+    }
+
+    private static float clamp(float v, float lo, float hi) { return Math.max(lo, Math.min(hi, v)); }
+
     @Override
     public boolean onTouchEvent(MotionEvent e) {
+        if (editing) {
+            editTouch(e);
+            return true;
+        }
         final int action = e.getActionMasked();
         if (action == MotionEvent.ACTION_CANCEL) {
             endDrag(e.getX(), e.getY());
@@ -334,17 +492,25 @@ final class TouchControlsView extends View {
 
     @Override
     protected void onDraw(Canvas canvas) {
-        final int base = Math.round(255 * opacity);
-        if (showsControls()) {
+        final int base = editing ? Math.max(170, Math.round(255 * opacity)) : Math.round(255 * opacity);
+        final boolean shown = editing || showsControls();
+        if (shown) {
             drawPad(canvas, base);
+            if (editing && selected == 0) {
+                stroke.setColor(EDIT_SELECTED);
+                stroke.setStrokeWidth(Math.max(4f, padR * 0.04f));
+                canvas.drawCircle(padX, padY, padR * 1.08f, stroke);
+            }
         }
-        for (Button b : buttons) {
-            if (!showsControls() && b.bit != MENU) continue;
+        for (int i = 0; i < buttons.length; ++i) {
+            final Button b = buttons[i];
+            if (!shown && b.bit != MENU) continue;
             final boolean down = (held & b.bit) != 0;
             fill.setColor(Color.argb(down ? base * 3 / 4 : base / 3, 255, 255, 255));
             canvas.drawCircle(b.x, b.y, b.r, fill);
-            stroke.setStrokeWidth(Math.max(2f, b.r * 0.06f));
-            stroke.setColor(Color.argb(base, 255, 255, 255));
+            final boolean picked = editing && selected == i + 1;
+            stroke.setStrokeWidth(Math.max(picked ? 4f : 2f, b.r * (picked ? 0.1f : 0.06f)));
+            stroke.setColor(picked ? EDIT_SELECTED : Color.argb(base, 255, 255, 255));
             canvas.drawCircle(b.x, b.y, b.r, stroke);
             text.setColor(Color.argb(Math.min(255, base + 60), down ? 30 : 255, down ? 30 : 255, down ? 30 : 255));
             text.setTextSize(b.label.length() > 2 ? b.r * 0.42f : b.r * 0.9f);

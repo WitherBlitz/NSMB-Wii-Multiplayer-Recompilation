@@ -238,6 +238,24 @@ public class GameActivity extends SDLActivity
         return new String[] {"main"};
     }
 
+    /**
+     * Newer Super Mario Bros. Wii runs its own build of the same library, the downloaded module
+     * (NewerModule), in place of libmain.so. Each start is a new process, so only one is ever loaded.
+     */
+    @Override
+    public void loadLibraries() {
+        if (AppFiles.newerActive(this)) {
+            System.load(NewerModule.libraryToLoad(this));
+        } else {
+            super.loadLibraries();
+        }
+    }
+
+    @Override
+    protected String getMainSharedObject() {
+        return AppFiles.newerActive(this) ? NewerModule.library(this).getAbsolutePath() : super.getMainSharedObject();
+    }
+
     // The game's menus take taps and the remote hides while they are up; it comes back a moment
     // after they go, so it doesn't blink while one menu screen hands over to the next.
     private final android.os.Handler menuPoll = new android.os.Handler(android.os.Looper.getMainLooper());
@@ -601,6 +619,15 @@ public class GameActivity extends SDLActivity
         }
         touch.setOpacity(settings.touchOpacity());
         touch.setHaptics(settings.haptics());
+        touch.setLayout(settings.touchLayout());
+    }
+
+    /** The menu's Edit Touch Controls: the game waits (as with the screen off) while the remote is edited. */
+    private void editTouchControls() {
+        if (nativeReady) nativeSetBackground(true, false);
+        TouchLayoutEditor.open(this, touch, settings, () -> {
+            if (nativeReady) nativeSetBackground(false, false);
+        });
     }
 
     private void hideSystemBars() {
@@ -634,15 +661,17 @@ public class GameActivity extends SDLActivity
         final java.util.List<String> items = new java.util.ArrayList<>();
         items.add("Start Menu");
         if (inSession) items.add("Leave LAN Game");
+        if (settings.touchControls()) items.add("Edit Touch Controls");
         items.add("Quit Game");
         final String[] labels = new String[items.size()];
         for (int i = 0; i < labels.length; ++i) labels[i] = Lang.t(items.get(i));
         new AlertDialog.Builder(this)
-                .setTitle("New Super Mario Bros. Wii")
+                .setTitle(AppFiles.newerActive(this) ? "Newer Super Mario Bros. Wii" : "New Super Mario Bros. Wii")
                 .setItems(labels, (dialog, which) -> {
                     final String item = items.get(which);
                     if (item.equals("Start Menu")) openStartMenu(inSession);
                     else if (item.equals("Leave LAN Game")) leaveSession();
+                    else if (item.equals("Edit Touch Controls")) editTouchControls();
                     else finish();
                 })
                 .setNegativeButton(Lang.t("Back to the Game"), null)

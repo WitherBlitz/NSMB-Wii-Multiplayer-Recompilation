@@ -42,7 +42,9 @@ final class LogExport {
 
     /** Writes the zip to `destination`; returns how many sessions went in. */
     static int write(Context context, Uri destination, String appVersion) throws IOException {
-        final File logs = new File(AppFiles.dataDir(context), "Logs");
+        // The game picked on the start menu: Newer keeps its logs and settings in its own folder.
+        final File product = AppFiles.productDir(context, AppFiles.newerActive(context));
+        final File logs = new File(product, "Logs");
         File[] sessions = logs.listFiles(File::isDirectory);
         if (sessions == null) sessions = new File[0];
         Arrays.sort(sessions, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
@@ -51,7 +53,7 @@ final class LogExport {
              ZipOutputStream zip = new ZipOutputStream(raw)) {
             if (raw == null) throw new IOException("could not open the chosen file");
             putText(zip, "device.txt", deviceSummary(appVersion, count));
-            putFile(zip, "Config.toml", new File(AppFiles.dataDir(context), "Config.toml"));
+            putFile(zip, "Config.toml", new File(product, "Config.toml"));
             for (int i = 0; i < count; i++) {
                 final File[] files = sessions[i].listFiles(File::isFile);
                 if (files == null) continue;

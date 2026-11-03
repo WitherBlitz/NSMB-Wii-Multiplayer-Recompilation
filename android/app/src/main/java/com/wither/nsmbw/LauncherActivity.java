@@ -17,6 +17,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
@@ -31,11 +32,13 @@ import android.widget.TextView;
 
 import java.io.BufferedInputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.channels.FileChannel;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -51,6 +54,7 @@ public final class LauncherActivity extends Activity {
     private static final int REQUEST_ZIP = 2;
     private static final int REQUEST_LOGS = 3;
     private static final int REQUEST_LANGUAGE_PACK = 4;
+    private static final int REQUEST_ISO = 5;
     /** Set by GameActivity.restartForSession: open the game again once its old process is gone. */
     static final String EXTRA_RESTART_GAME = "restartGame";
     /** Set by the game's "Start Menu": show this screen even with Skip Start Menu on. */
@@ -63,6 +67,11 @@ public final class LauncherActivity extends Activity {
             + "computer, right-click the game, choose Properties, Filesystem, then right-click the disc and "
             + "choose Extract Entire Disc. Copy that folder (or a zip of it) to this phone and tap Import. "
             + "Dolphin shows the revision under Properties > Info.";
+
+    private static final String NEWER_STEPS =
+            "1. Have your own Newer Super Mario Bros. Wii v1.30 for the USA (SMNE03) as a disc image (.iso).\n"
+            + "2. Copy it to this phone and tap Import Disc Image (.iso)… below: it's extracted here.\n\n"
+            + "Or extract it in Dolphin (Properties, Filesystem, Extract Entire Disc) and import that folder or a zip of it.";
 
     private AppSettings settings;
     /** The On/Off pills of the Skip Start Menu and Auto Update rows. */
@@ -79,6 +88,12 @@ public final class LauncherActivity extends Activity {
     private TextView status;
     private Button play;
     private View steps;
+    /** The Newer Super Mario Bros. Wii tab is picked; with its module installed, Play starts Newer. */
+    private boolean newerTab, newer;
+    /** For testing: a folder URL to download the Newer module from instead of the release (the
+     *  APK's SHA-256 still has to match). */
+    static final String EXTRA_NEWER_MODULE_BASE = "newerModuleBase";
+    private String newerModuleBase;
     private final Handler main = new Handler(Looper.getMainLooper());
 
     @Override
@@ -101,6 +116,9 @@ public final class LauncherActivity extends Activity {
             skipAfterCheck = true;  // Auto Update first; the game opens once there's nothing to install
         }
         Lang.load(this);
+        newerTab = settings.newerSelected();
+        newer = AppFiles.newerActive(this);
+        newerModuleBase = launch != null ? launch.getStringExtra(EXTRA_NEWER_MODULE_BASE) : null;
         final int pad = dp(20);
         final int screenWidth = getResources().getDisplayMetrics().widthPixels;
         // Landscape (or a tablet): title, status and Play on the left, the rest beside them.
@@ -135,10 +153,21 @@ public final class LauncherActivity extends Activity {
         help.setOnClickListener(v -> showHelp());
         header.addView(help);
         intro.addView(header, matchWidth(0));
-        final TextView subtitle = text(Lang.t("New Super Mario Bros. Wii, recompiled to run natively"), 15);
+        final TextView subtitle = text(newerTab ? Lang.t("Newer Super Mario Bros. Wii, recompiled to run natively") : Lang.t("New Super Mario Bros. Wii, recompiled to run natively"), 15);
         subtitle.setGravity(Gravity.START);
         subtitle.setTextColor(MUTED);
         intro.addView(subtitle, matchWidth(dp(2)));
+
+        // Which game Play starts: New Super Mario Bros. Wii, or Newer once its module is downloaded.
+        final LinearLayout tabs = new LinearLayout(this);
+        tabs.setOrientation(LinearLayout.HORIZONTAL);
+        tabs.addView(tab("New Super Mario Bros. Wii", !newerTab, false), new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        final LinearLayout.LayoutParams newerParams = new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        newerParams.leftMargin = dp(8);
+        tabs.addView(tab("Newer Super Mario Bros. Wii", newerTab, true), newerParams);
+        intro.addView(tabs, matchWidth(dp(16)));
 
         status = text("", 15);
         status.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
@@ -150,6 +179,12 @@ public final class LauncherActivity extends Activity {
         play = button(Lang.t("Play"), true);
         play.setOnClickListener(v -> startActivity(GameActivity.intent(this)));
         intro.addView(play, matchWidth(dp(14)));
+        // The Newer tab before its module is here: the download in Play's place, no game data yet.
+        final boolean needModule = newerTab && !newer;
+        if (needModule) {
+            play.setVisibility(View.GONE);
+            intro.addView(newerModuleBox(), matchWidth(dp(14)));
+        }
 
         final LinearLayout updates = card(Lang.t("Updates"));
         updateCheck = button(Lang.t("Check for Updates"), false);
@@ -164,8 +199,11 @@ public final class LauncherActivity extends Activity {
 
         final LinearLayout options = card(Lang.t("Options"));
         final Button settingsButton = button(Lang.t("Settings"), false);
-        settingsButton.setOnClickListener(v -> SettingsMenu.show(this));
+        settingsButton.setOnClickListener(v -> SettingsActivity.open(this));
         options.addView(settingsButton, matchWidth(dp(10)));
+        final Button touchLayout = button(Lang.t("Edit Touch Controls"), false);
+        touchLayout.setOnClickListener(v -> startActivity(new Intent(this, TouchEditorActivity.class)));
+        options.addView(touchLayout, matchWidth(dp(10)));
         final Button devices = button(Lang.t("Tailscale & LAN Devices"), false);
         devices.setOnClickListener(v -> DevicesDialog.show(this));
         options.addView(devices, matchWidth(dp(10)));
@@ -183,7 +221,7 @@ public final class LauncherActivity extends Activity {
                 });
         showToggle(mainProcess, settings.gameInMainProcess());
 
-        final LinearLayout gameData = card(Lang.t("Game Data"));
+        final LinearLayout gameData = card(Lang.t(newer ? "Newer Game Data" : "Game Data"));
         // How to get the game files, the same steps KartPad gives, until a game is imported.
         final LinearLayout stepsBox = new LinearLayout(this);
         stepsBox.setOrientation(LinearLayout.VERTICAL);
@@ -191,7 +229,7 @@ public final class LauncherActivity extends Activity {
         stepsTitle.setTypeface(Typeface.DEFAULT_BOLD);
         stepsTitle.setGravity(Gravity.START);
         stepsBox.addView(stepsTitle);
-        final TextView stepsText = text(Lang.t(
+        final TextView stepsText = text(newer ? Lang.t(NEWER_STEPS) : Lang.t(
                 "1. In Dolphin on a computer, right-click New Super Mario Bros. Wii and choose Properties.\n"
                 + "2. Open Filesystem, right-click the disc at the top and choose Extract Entire Disc.\n"
                 + "3. Copy that folder (or a zip of it) to this phone.\n"
@@ -203,9 +241,11 @@ public final class LauncherActivity extends Activity {
         stepsBox.addView(stepsText);
         steps = stepsBox;
         gameData.addView(stepsBox, matchWidth(dp(10)));
-        final TextView importHelp = text(Lang.t("Import your own New Super Mario Bros. Wii (USA, SMNE01) once. "
-                + "Easiest: the folder Dolphin's Extract Entire Disc makes (DATA, or the folder that holds it), "
-                + "or a zip of that folder. Your saves are kept."), 13);
+        final TextView importHelp = text(newer ? Lang.t("Import your own Newer Super Mario Bros. Wii v1.30 (USA, "
+                + "SMNE03) once: its disc image, the folder Dolphin's Extract Entire Disc makes from it, or a zip of "
+                + "that folder. Newer keeps saves of its own.") : Lang.t("Import your own New Super Mario Bros. Wii "
+                + "(USA, SMNE01) once. Easiest: the folder Dolphin's Extract Entire Disc makes (DATA, or the folder "
+                + "that holds it), or a zip of that folder. Your saves are kept."), 13);
         importHelp.setGravity(Gravity.START);
         importHelp.setTextColor(MUTED);
         gameData.addView(importHelp, matchWidth(dp(8)));
@@ -216,6 +256,26 @@ public final class LauncherActivity extends Activity {
         final Button importZip = button(Lang.t("Import Game Data Zip\u2026"), false);
         importZip.setOnClickListener(v -> pickZip());
         gameData.addView(importZip, matchWidth(dp(10)));
+        final Button importIso = button(Lang.t("Import Disc Image (.iso)…"), false);
+        importIso.setOnClickListener(v -> pickIso());
+        gameData.addView(importIso, matchWidth(dp(10)));
+        final TextView isoHelp = text(Lang.t("Have the disc image itself? Import the .iso: it's extracted on this "
+                + "phone, the way Dolphin does it, with no computer needed."), 13);
+        isoHelp.setGravity(Gravity.START);
+        isoHelp.setTextColor(MUTED);
+        gameData.addView(isoHelp, matchWidth(dp(8)));
+        if (newer) {
+            final Button removeModule = button(Lang.t("Remove the NewerSMBW Support Module"), false);
+            removeModule.setOnClickListener(v -> new AlertDialog.Builder(this)
+                    .setMessage(Lang.t("Remove the NewerSMBW support module? Newer's game files and saves stay; "
+                            + "download the module again to play it."))
+                    .setPositiveButton(Lang.t("Remove"), (d, w) -> {
+                        NewerModule.remove(this);
+                        recreate();
+                    })
+                    .setNegativeButton(Lang.t("Cancel"), null).show());
+            gameData.addView(removeModule, matchWidth(dp(14)));
+        }
 
         final Button downloadLogs = button(Lang.t("Download Logs (For Github Reports)"), false);
         downloadLogs.setOnClickListener(v -> LogExport.pickDestination(this, REQUEST_LOGS));
@@ -237,7 +297,7 @@ public final class LauncherActivity extends Activity {
             cards.setOrientation(LinearLayout.VERTICAL);
             cards.addView(updates, matchWidth(0));
             cards.addView(options, matchWidth(dp(14)));
-            cards.addView(gameData, matchWidth(dp(14)));
+            if (!needModule) cards.addView(gameData, matchWidth(dp(14)));
             cards.addView(downloadLogs, matchWidth(dp(14)));
             final LinearLayout.LayoutParams cardsParams =
                     new LinearLayout.LayoutParams(right, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -252,7 +312,7 @@ public final class LauncherActivity extends Activity {
             column.addView(intro, matchWidth(0));
             column.addView(updates, matchWidth(dp(20)));
             column.addView(options, matchWidth(dp(14)));
-            column.addView(gameData, matchWidth(dp(14)));
+            if (!needModule) column.addView(gameData, matchWidth(dp(14)));
             column.addView(downloadLogs, matchWidth(dp(14)));
             column.addView(version, matchWidth(dp(18)));
             page.addView(column, new LinearLayout.LayoutParams(width, LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -420,9 +480,16 @@ public final class LauncherActivity extends Activity {
     }
 
     private void refresh() {
-        final boolean present = AppFiles.hasGameData(this);
-        final String problem = present ? AppFiles.gameProblem(AppFiles.gameDir(this)) : null;
-        if (!present) {
+        if (newerTab && !newer) {
+            showStatus(Lang.t("Newer Super Mario Bros. Wii needs its support module: download it below."), AMBER);
+            return;
+        }
+        final boolean present = AppFiles.hasGameData(this, newer);
+        final String problem = present ? AppFiles.gameProblem(AppFiles.gameDir(this, newer), newer) : null;
+        if (!present && newer) {
+            showStatus(Lang.t("No Newer game data yet. Import its disc image, the folder Dolphin made, or a zip of it."),
+                    AMBER);
+        } else if (!present) {
             showStatus(Lang.t("No game data yet. Import the folder Dolphin made, or a zip of it."), AMBER);
         } else if (problem != null) {
             showStatus(Lang.f("The imported game can't be played. %s", problem), ACCENT);
@@ -549,6 +616,55 @@ public final class LauncherActivity extends Activity {
         startActivityForResult(intent, REQUEST_ZIP);
     }
 
+    /** A tab above Play: picking it makes Play start that game, and the screen shows its own. */
+    private TextView tab(String label, boolean selected, boolean isNewer) {
+        final TextView view = text(label, 14);
+        view.setTypeface(selected ? Typeface.DEFAULT_BOLD : MEDIUM);
+        view.setTextColor(selected ? Color.WHITE : MUTED);
+        view.setMaxLines(2);
+        view.setPadding(dp(10), dp(10), dp(10), dp(10));
+        view.setBackground(rounded(selected ? ACCENT : Color.TRANSPARENT, Color.TRANSPARENT, dp(18),
+                selected ? 0 : STROKE));
+        view.setOnClickListener(v -> {
+            if (selected) return;
+            settings.setNewerSelected(isNewer);
+            recreate();
+        });
+        return view;
+    }
+
+    /** The Newer tab without its module: what it is, and the download with its size. */
+    private View newerModuleBox() {
+        final LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        final NewerModule.Info info = NewerModule.info(this);
+        final String size = info == null ? "" : String.format(Locale.ROOT, "  (%.1f MB)", info.size / 1048576.0);
+        final Button download = button(Lang.t("Download the NewerSMBW support module!") + size, true);
+        download.setEnabled(info != null);
+        download.setOnClickListener(v -> runImport(Lang.t("Downloading the NewerSMBW support module"), progress -> {
+            NewerModule.download(this, newerModuleBase, (done, total) -> progress.update(
+                    (int) (done * 1000 / Math.max(1, total)), 1000, Lang.f("%d of %d MB", done >> 20, total >> 20)));
+            return Lang.t("The NewerSMBW support module is installed. Import your Newer Super Mario Bros. Wii, then tap Play.");
+        }, this::recreate));
+        box.addView(download, matchWidth(0));
+        final TextView about = text(info == null
+                ? Lang.t("This build of the app comes without the NewerSMBW support module.")
+                : Lang.t("Newer Super Mario Bros. Wii runs on a build of the game of its own: the support module, a "
+                        + "separate download from this version's GitHub release, so the app stays small for "
+                        + "everyone else."), 13);
+        about.setGravity(Gravity.START);
+        about.setTextColor(MUTED);
+        box.addView(about, matchWidth(dp(10)));
+        return box;
+    }
+
+    private void pickIso() {
+        final Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");  // disc images come with no agreed MIME type
+        startActivityForResult(intent, REQUEST_ISO);
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -564,6 +680,8 @@ public final class LauncherActivity extends Activity {
             saveLogs(uri);
         } else if (requestCode == REQUEST_LANGUAGE_PACK) {
             runImport(Lang.t("Importing the language pack"), progress -> copyLanguagePack(uri, progress));
+        } else if (requestCode == REQUEST_ISO) {
+            runImport(Lang.t("Extracting the disc image"), progress -> copyIso(uri, progress));
         }
     }
 
@@ -605,6 +723,11 @@ public final class LauncherActivity extends Activity {
     }
 
     private void runImport(String title, ImportJob job) {
+        runImport(title, job, null);
+    }
+
+    /** `job` on a worker thread under a progress dialog; its message, then `after` once dismissed. */
+    private void runImport(String title, ImportJob job, Runnable after) {
         final ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         final TextView label = text(Lang.t("Looking at the game files…"), 14);
         final LinearLayout box = new LinearLayout(this);
@@ -634,22 +757,26 @@ public final class LauncherActivity extends Activity {
             main.post(() -> {
                 dialog.dismiss();
                 refresh();
-                new AlertDialog.Builder(this).setMessage(message).setPositiveButton(Lang.t("OK"), null).show();
+                new AlertDialog.Builder(this).setMessage(message).setPositiveButton(Lang.t("OK"), null)
+                        .setOnDismissListener(d -> {
+                            if (after != null) after.run();
+                        }).show();
             });
         }, "game-import").start();
     }
 
-    private File stagingDir() { return new File(AppFiles.dataDir(this), "game.importing"); }
+    /** Imports go beside the game they replace: New Super Mario Bros. Wii's, or Newer's on its tab. */
+    private File stagingDir() { return new File(AppFiles.productDir(this, newer), "game.importing"); }
 
     /** The checked game at `root` (inside the staging folder) becomes the game; saves stay. */
     private String install(File root, int fileCount) throws IOException {
         final File staging = stagingDir();
-        final String problem = AppFiles.gameProblem(root);
+        final String problem = AppFiles.gameProblem(root, newer);
         if (problem != null) {
             AppFiles.deleteRecursively(staging);
             return Lang.f("%s\n\nNothing was changed.", problem);
         }
-        final File game = AppFiles.gameDir(this);
+        final File game = AppFiles.gameDir(this, newer);
         AppFiles.deleteRecursively(game);
         if (!root.renameTo(game)) throw new IOException("cannot move the imported data into place");
         AppFiles.deleteRecursively(staging);
@@ -716,7 +843,7 @@ public final class LauncherActivity extends Activity {
                 return Lang.t("That folder's sys/boot.bin is too short, so the game can't be identified.");
             }
         }
-        return AppFiles.headerProblem(header);
+        return AppFiles.headerProblem(header, newer);
     }
 
     /** A zip of the folder Dolphin extracted: unpacked into the staging folder, checked, swapped in. */
@@ -730,6 +857,37 @@ public final class LauncherActivity extends Activity {
                     + "folder Dolphin's Extract Entire Disc made (the one with files and sys in it)."));
         }
         return install(root, count);
+    }
+
+    /** A Wii disc image: checked, extracted into the staging folder as Dolphin would (WiiDisc), swapped in. */
+    private String copyIso(Uri iso, Progress progress) throws IOException {
+        try (ParcelFileDescriptor fd = getContentResolver().openFileDescriptor(iso, "r")) {
+            if (fd == null) throw new IOException("cannot read the disc image");
+            try (FileInputStream in = new FileInputStream(fd.getFileDescriptor()); FileChannel disc = in.getChannel()) {
+                final byte[] header = WiiDisc.header(disc);
+                if (header == null) {
+                    return Lang.f("%s\n\nNothing was changed.", Lang.t("That file isn't a Wii disc image. Pick the "
+                            + ".iso itself; compressed images (.rvz, .wbfs, .wia) can be turned into one with "
+                            + "Dolphin's Convert File."));
+                }
+                final String problem = AppFiles.headerProblem(header, newer);
+                if (problem != null) return Lang.f("%s\n\nNothing was changed.", problem);
+                progress.update(0, 0, Lang.t("Reading the disc image…"));
+                final WiiDisc wii = new WiiDisc(disc);
+                final File staging = stagingDir();
+                AppFiles.deleteRecursively(staging);
+                final long need = wii.extractedSize() + (64L << 20);
+                final File data = AppFiles.dataDir(this);
+                if (data.getUsableSpace() < need) {
+                    return Lang.f("%s\n\nNothing was changed.", Lang.f("There isn't enough free space on this phone: "
+                            + "the game takes %d MB.", need >> 20));
+                }
+                final int count = wii.extract(staging, (done, total) -> progress.update(
+                        (int) (done * 1000 / Math.max(1, total)), 1000,
+                        Lang.f("%d of %d MB", done >> 20, total >> 20)));
+                return install(staging, count);
+            }
+        }
     }
 
     /** A language pack zip: its folder with Message in it becomes Languages/<code> (AppFiles). */

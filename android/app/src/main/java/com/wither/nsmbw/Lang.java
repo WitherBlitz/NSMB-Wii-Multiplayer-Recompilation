@@ -71,6 +71,11 @@ final class Lang {
         row(english)[2] = italian;
     }
 
+    private static void newer(String english, String spanish, String french, String italian) {
+        put(english, spanish, french);
+        it(english, italian);
+    }
+
     private static String[] row(String english) {
         return TABLE.computeIfAbsent(english, k -> new String[CODES.length - 1]);
     }
@@ -153,6 +158,35 @@ final class Lang {
                 "Importer depuis le dossier de données extrait…");
         put("Import Game Data Zip…", "Importar zip de datos del juego…",
                 "Importer un zip des données du jeu…");
+        put("Import Disc Image (.iso)…", "Importar imagen de disco (.iso)…", "Importer une image disque (.iso)…");
+        put("Have the disc image itself? Import the .iso: it's extracted on this phone, the way Dolphin does it, "
+                + "with no computer needed.",
+                "¿Tienes la imagen del disco? Importa el .iso: se extrae en este teléfono, como lo hace Dolphin, "
+                + "sin necesidad de un ordenador.",
+                "Vous avez l'image du disque ? Importez le .iso : il est extrait sur ce téléphone, comme le fait "
+                + "Dolphin, sans ordinateur.");
+        put("Extracting the disc image", "Extrayendo la imagen del disco", "Extraction de l'image disque");
+        put("Reading the disc image…", "Leyendo la imagen del disco…", "Lecture de l'image disque…");
+        put("That file isn't a Wii disc image. Pick the .iso itself; compressed images (.rvz, .wbfs, .wia) can be "
+                + "turned into one with Dolphin's Convert File.",
+                "Ese archivo no es una imagen de disco de Wii. Elige el propio .iso; las imágenes comprimidas "
+                + "(.rvz, .wbfs, .wia) se pueden convertir en una con Convertir archivo de Dolphin.",
+                "Ce fichier n'est pas une image disque Wii. Choisissez le .iso lui-même ; les images compressées "
+                + "(.rvz, .wbfs, .wia) peuvent être converties avec Convertir le fichier de Dolphin.");
+        put("There isn't enough free space on this phone: the game takes %d MB.",
+                "No hay suficiente espacio libre en este teléfono: el juego ocupa %d MB.",
+                "Il n'y a pas assez d'espace libre sur ce téléphone : le jeu occupe %d Mo.");
+        put("that isn't a Wii disc image", "no es una imagen de disco de Wii", "ce n'est pas une image disque Wii");
+        put("that disc image isn't encrypted the way a Wii disc is",
+                "esa imagen de disco no está cifrada como un disco de Wii",
+                "cette image disque n'est pas chiffrée comme un disque Wii");
+        put("the disc image is cut short", "la imagen del disco está incompleta", "l'image disque est incomplète");
+        put("that disc image isn't from a retail Wii disc", "esa imagen no es de un disco de Wii comercial",
+                "cette image ne provient pas d'un disque Wii du commerce");
+        put("that disc image has no game partition", "esa imagen de disco no tiene partición de juego",
+                "cette image disque n'a pas de partition de jeu");
+        put("the disc's file table is damaged", "la tabla de archivos del disco está dañada",
+                "la table des fichiers du disque est endommagée");
         put("Download Logs (For Github Reports)", "Descargar registros (para reportes en GitHub)",
                 "Télécharger les journaux (pour les rapports GitHub)");
         put("No game data yet. Import the folder Dolphin made, or a zip of it.",
@@ -365,6 +399,177 @@ final class Lang {
                 + "fuente en la siguiente pantalla y luego vuelve al juego.",
                 "Pour installer les mises à jour, autorisez NSMBW à installer des applis : activez Autoriser "
                 + "cette source sur l'écran suivant, puis revenez au jeu.");
+        // --- Settings (SettingsActivity), worded as the game's settings window ---
+        newer("Video", "Vídeo", "Vidéo", "Video");
+        newer("Audio", "Audio", "Audio", "Audio");
+        newer("Resolution", "Resolución", "Résolution", "Risoluzione");
+        newer("Rendered at this many lines, then scaled to the screen. Match screen: the screen's own.",
+                "Se renderiza con estas líneas y luego se escala a la pantalla. Igualar pantalla: la de la pantalla.",
+                "Rendu avec ce nombre de lignes, puis mis à l'échelle de l'écran. Écran : celle de l'écran.",
+                "Renderizzato con queste linee, poi scalato sullo schermo. Come lo schermo: quella dello schermo.");
+        newer("Fill Screen: a wider view filling the whole screen. 16:9 and 4:3 add black bars.",
+                "Llenar pantalla: una vista más ancha que llena toda la pantalla. 16:9 y 4:3 añaden barras negras.",
+                "Plein écran : une vue plus large qui remplit tout l'écran. 16:9 et 4:3 ajoutent des bandes noires.",
+                "Riempi schermo: una visuale più ampia che riempie lo schermo. 16:9 e 4:3 aggiungono bande nere.");
+        newer("Automatic: Vulkan, else OpenGL ES. Takes effect at the next start.",
+                "Automático: Vulkan, si no OpenGL ES. Se aplica en el próximo inicio.",
+                "Automatique : Vulkan, sinon OpenGL ES. Prend effet au prochain démarrage.",
+                "Automatico: Vulkan, altrimenti OpenGL ES. Vale dal prossimo avvio.");
+        newer("No tearing: frames wait for the display, the game keeps its pace.",
+                "Sin cortes: los fotogramas esperan a la pantalla, el juego mantiene su ritmo.",
+                "Pas de déchirure : les images attendent l'écran, le jeu garde son rythme.",
+                "Niente tearing: i fotogrammi aspettano lo schermo, il gioco mantiene il ritmo.");
+        newer("FPS and each frame's time, top right. The slider sets its size.",
+                "FPS y el tiempo de cada fotograma, arriba a la derecha. El control deslizante fija su tamaño.",
+                "FPS et le temps de chaque image, en haut à droite. Le curseur règle sa taille.",
+                "FPS e il tempo di ogni fotogramma, in alto a destra. Il cursore ne regola la dimensione.");
+        newer("Monitor Size", "Tamaño del monitor", "Taille du moniteur", "Dimensione del monitor");
+        newer("Animated coins and blocks. Off saves a little GPU work.",
+                "Monedas y bloques animados. Desactivado ahorra algo de trabajo a la GPU.",
+                "Pièces et blocs animés. Désactivé épargne un peu le GPU.",
+                "Monete e blocchi animati. Disattivato risparmia un po' di lavoro alla GPU.");
+        newer("Fixes for phone GPUs that scramble the game's models. Auto: on for the GPUs that need them.",
+                "Arreglos para GPU de teléfonos que deforman los modelos. Auto: activados en las GPU que los necesitan.",
+                "Correctifs pour les GPU de téléphone qui déforment les modèles. Auto : activés pour les GPU qui en "
+                + "ont besoin.",
+                "Correzioni per le GPU dei telefoni che rovinano i modelli. Auto: attive sulle GPU che ne hanno bisogno.");
+        newer("Master", "General", "Général", "Generale");
+        newer("Music", "Música", "Musique", "Musica");
+        newer("Sound Effects", "Efectos de sonido", "Effets sonores", "Effetti sonori");
+        newer("The volume of everything.", "El volumen de todo.", "Le volume de tout.", "Il volume di tutto.");
+        newer("The background music.", "La música de fondo.", "La musique de fond.", "La musica di sottofondo.");
+        newer("Jumps, coins, enemies and the rest.", "Saltos, monedas, enemigos y lo demás.",
+                "Sauts, pièces, ennemis et le reste.", "Salti, monete, nemici e il resto.");
+        newer("The on-screen Wii Remote. A controller hides it while you use it.",
+                "El Wii Remote en pantalla. Un mando lo oculta mientras lo usas.",
+                "La Wiimote à l'écran. Une manette la masque pendant que vous l'utilisez.",
+                "Il Wii Remote sullo schermo. Un controller lo nasconde mentre lo usi.");
+        newer("How solid the on-screen remote looks.", "Lo opaco que se ve el mando en pantalla.",
+                "L'opacité de la manette à l'écran.", "Quanto appare solido il telecomando sullo schermo.");
+        newer("Turning the phone tilts the Wii Remote, for the levels and platforms that use it.",
+                "Girar el teléfono inclina el Wii Remote, para los niveles y plataformas que lo usan.",
+                "Tourner le téléphone incline la Wiimote, pour les niveaux et plateformes qui l'utilisent.",
+                "Ruotare il telefono inclina il Wii Remote, per i livelli e le piattaforme che lo usano.");
+        newer("A jolt of the phone shakes the Wii Remote: spin jumps and picking things up.",
+                "Una sacudida del teléfono agita el Wii Remote: saltos giratorios y recoger cosas.",
+                "Une secousse du téléphone secoue la Wiimote : sauts tournoyants et ramasser des objets.",
+                "Uno scossone del telefono agita il Wii Remote: salti rotanti e raccogliere oggetti.");
+        newer("A short buzz when a touch button is pressed.", "Una breve vibración al pulsar un botón táctil.",
+                "Une brève vibration quand un bouton tactile est pressé.",
+                "Una breve vibrazione quando premi un pulsante touch.");
+        newer("Restart the game to play in this language.", "Reinicia el juego para jugar en este idioma.",
+                "Redémarrez le jeu pour jouer dans cette langue.", "Riavvia il gioco per giocare in questa lingua.");
+        newer("The game's own text needs a language pack: the start menu's language button imports one.",
+                "El texto del juego necesita un paquete de idioma: el botón de idioma del menú de inicio lo importa.",
+                "Le texte du jeu a besoin d'un pack de langue : le bouton de langue du menu de départ en importe un.",
+                "Il testo del gioco ha bisogno di un pacchetto lingua: il pulsante della lingua nel menu iniziale "
+                + "ne importa uno.");
+        // --- Edit Touch Controls (TouchLayoutEditor) ---
+        newer("Edit Touch Controls", "Editar controles táctiles", "Modifier les commandes tactiles",
+                "Modifica i controlli touch");
+        newer("Drag a control to move it. Pinch it, or tap it and use Bigger or Smaller, to resize it.",
+                "Arrastra un control para moverlo. Pellízcalo, o tócalo y usa Más grande o Más pequeño, para "
+                + "cambiar su tamaño.",
+                "Faites glisser une commande pour la déplacer. Pincez-la, ou touchez-la puis Plus grand ou Plus "
+                + "petit, pour la redimensionner.",
+                "Trascina un controllo per spostarlo. Pizzicalo, o toccalo e usa Più grande o Più piccolo, per "
+                + "ridimensionarlo.");
+        newer("Smaller", "Más pequeño", "Plus petit", "Più piccolo");
+        newer("Bigger", "Más grande", "Plus grand", "Più grande");
+        newer("Reset", "Restablecer", "Réinitialiser", "Ripristina");
+        // --- Newer Super Mario Bros. Wii (its tab, its module, its game data) ---
+        newer("Newer Super Mario Bros. Wii, recompiled to run natively",
+                "Newer Super Mario Bros. Wii, recompilado para ejecutarse de forma nativa",
+                "Newer Super Mario Bros. Wii, recompilé pour fonctionner en natif",
+                "Newer Super Mario Bros. Wii, ricompilato per funzionare in modo nativo");
+        newer("Newer Game Data", "Datos del juego de Newer", "Données du jeu Newer", "Dati del gioco di Newer");
+        newer("1. Have your own Newer Super Mario Bros. Wii v1.30 for the USA (SMNE03) as a disc image (.iso).\n"
+                + "2. Copy it to this phone and tap Import Disc Image (.iso)… below: it's extracted here.\n\n"
+                + "Or extract it in Dolphin (Properties, Filesystem, Extract Entire Disc) and import that folder or a zip of it.",
+                "1. Ten tu propio Newer Super Mario Bros. Wii v1.30 de EE. UU. (SMNE03) como imagen de disco (.iso).\n"
+                + "2. Cópiala a este teléfono y toca Importar imagen de disco (.iso)… abajo: se extrae aquí.\n\n"
+                + "O extráela en Dolphin (Propiedades, Sistema de archivos, Extraer disco entero) e importa esa "
+                + "carpeta o un zip de ella.",
+                "1. Ayez votre propre Newer Super Mario Bros. Wii v1.30 américain (SMNE03) en image disque (.iso).\n"
+                + "2. Copiez-la sur ce téléphone et touchez Importer une image disque (.iso)… ci-dessous : elle est "
+                + "extraite ici.\n\n"
+                + "Ou extrayez-la dans Dolphin (Propriétés, Système de fichiers, Extraire le disque entier) et "
+                + "importez ce dossier ou un zip de celui-ci.",
+                "1. Procurati il tuo Newer Super Mario Bros. Wii v1.30 USA (SMNE03) come immagine disco (.iso).\n"
+                + "2. Copiala su questo telefono e tocca Importa immagine disco (.iso)… qui sotto: viene estratta qui.\n\n"
+                + "Oppure estraila in Dolphin (Proprietà, File system, Estrai intero disco) e importa quella "
+                + "cartella o un suo zip.");
+        newer("Import your own Newer Super Mario Bros. Wii v1.30 (USA, SMNE03) once: its disc image, the folder "
+                + "Dolphin's Extract Entire Disc makes from it, or a zip of that folder. Newer keeps saves of its own.",
+                "Importa una vez tu propio Newer Super Mario Bros. Wii v1.30 (EE. UU., SMNE03): su imagen de disco, "
+                + "la carpeta que crea Extraer disco entero de Dolphin o un zip de esa carpeta. Newer tiene sus "
+                + "propias partidas guardadas.",
+                "Importez une fois votre propre Newer Super Mario Bros. Wii v1.30 (USA, SMNE03) : son image disque, "
+                + "le dossier créé par Extraire le disque entier de Dolphin, ou un zip de ce dossier. Newer a ses "
+                + "propres sauvegardes.",
+                "Importa una volta il tuo Newer Super Mario Bros. Wii v1.30 (USA, SMNE03): la sua immagine disco, "
+                + "la cartella creata da Estrai intero disco di Dolphin, o uno zip di quella cartella. Newer ha "
+                + "salvataggi suoi.");
+        newer("Remove the NewerSMBW Support Module", "Quitar el módulo de soporte de NewerSMBW",
+                "Retirer le module de prise en charge NewerSMBW", "Rimuovi il modulo di supporto NewerSMBW");
+        newer("Remove the NewerSMBW support module? Newer's game files and saves stay; download the module again "
+                + "to play it.",
+                "¿Quitar el módulo de soporte de NewerSMBW? Los archivos y partidas de Newer se conservan; vuelve a "
+                + "descargar el módulo para jugarlo.",
+                "Retirer le module de prise en charge NewerSMBW ? Les fichiers et sauvegardes de Newer restent ; "
+                + "téléchargez à nouveau le module pour y jouer.",
+                "Rimuovere il modulo di supporto NewerSMBW? I file e i salvataggi di Newer restano; scarica di nuovo "
+                + "il modulo per giocarci.");
+        newer("Download the NewerSMBW support module!", "¡Descarga el módulo de soporte de NewerSMBW!",
+                "Téléchargez le module de prise en charge NewerSMBW !", "Scarica il modulo di supporto NewerSMBW!");
+        newer("Downloading the NewerSMBW support module", "Descargando el módulo de soporte de NewerSMBW",
+                "Téléchargement du module de prise en charge NewerSMBW", "Download del modulo di supporto NewerSMBW");
+        newer("The NewerSMBW support module is installed. Import your Newer Super Mario Bros. Wii, then tap Play.",
+                "El módulo de soporte de NewerSMBW está instalado. Importa tu Newer Super Mario Bros. Wii y toca Jugar.",
+                "Le module de prise en charge NewerSMBW est installé. Importez votre Newer Super Mario Bros. Wii, "
+                + "puis touchez Jouer.",
+                "Il modulo di supporto NewerSMBW è installato. Importa il tuo Newer Super Mario Bros. Wii, poi tocca "
+                + "Gioca.");
+        newer("This build of the app comes without the NewerSMBW support module.",
+                "Esta compilación de la app no incluye el módulo de soporte de NewerSMBW.",
+                "Cette version de l'appli est fournie sans le module de prise en charge NewerSMBW.",
+                "Questa build dell'app non ha il modulo di supporto NewerSMBW.");
+        newer("Newer Super Mario Bros. Wii runs on a build of the game of its own: the support module, a separate "
+                + "download from this version's GitHub release, so the app stays small for everyone else.",
+                "Newer Super Mario Bros. Wii funciona con una compilación propia del juego: el módulo de soporte, "
+                + "una descarga aparte de la versión de GitHub de esta app, para que la app siga siendo pequeña "
+                + "para todos los demás.",
+                "Newer Super Mario Bros. Wii fonctionne avec sa propre version du jeu : le module de prise en "
+                + "charge, un téléchargement séparé depuis la version GitHub de cette appli, pour que l'appli reste "
+                + "légère pour tous les autres.",
+                "Newer Super Mario Bros. Wii gira su una build del gioco tutta sua: il modulo di supporto, un "
+                + "download a parte dalla release GitHub di questa versione, così l'app resta leggera per tutti "
+                + "gli altri.");
+        newer("Newer Super Mario Bros. Wii needs its support module: download it below.",
+                "Newer Super Mario Bros. Wii necesita su módulo de soporte: descárgalo abajo.",
+                "Newer Super Mario Bros. Wii a besoin de son module de prise en charge : téléchargez-le ci-dessous.",
+                "Newer Super Mario Bros. Wii ha bisogno del suo modulo di supporto: scaricalo qui sotto.");
+        newer("No Newer game data yet. Import its disc image, the folder Dolphin made, or a zip of it.",
+                "Aún no hay datos de Newer. Importa su imagen de disco, la carpeta que creó Dolphin o un zip de ella.",
+                "Pas encore de données de Newer. Importez son image disque, le dossier créé par Dolphin, ou un zip "
+                + "de celui-ci.",
+                "Ancora nessun dato di Newer. Importa la sua immagine disco, la cartella creata da Dolphin o un "
+                + "suo zip.");
+        newer("That is another version of Newer Super Mario Bros. Wii. This port runs v1.30 for the USA.",
+                "Esa es otra versión de Newer Super Mario Bros. Wii. Este port ejecuta la v1.30 de EE. UU.",
+                "C'est une autre version de Newer Super Mario Bros. Wii. Ce portage lance la v1.30 américaine.",
+                "Questa è un'altra versione di Newer Super Mario Bros. Wii. Questo port esegue la v1.30 USA.");
+        newer("That is %s, not Newer Super Mario Bros. Wii for the USA (SMNE03).",
+                "Eso es %s, no Newer Super Mario Bros. Wii de EE. UU. (SMNE03).",
+                "C'est %s, pas Newer Super Mario Bros. Wii américain (SMNE03).",
+                "Quello è %s, non Newer Super Mario Bros. Wii USA (SMNE03).");
+        newer("this version of the app has no Newer module", "esta versión de la app no tiene módulo de Newer",
+                "cette version de l'appli n'a pas de module Newer", "questa versione dell'app non ha il modulo Newer");
+        newer("GitHub answered %d", "GitHub respondió %d", "GitHub a répondu %d", "GitHub ha risposto %d");
+        newer("the download doesn't match this version's module",
+                "la descarga no coincide con el módulo de esta versión",
+                "le téléchargement ne correspond pas au module de cette version",
+                "il download non corrisponde al modulo di questa versione");
         // --- Italian, by the same English wording ---
         it("Language", "Lingua");
         it("Help", "Aiuto");
@@ -417,6 +622,25 @@ final class Lang {
                 + "o uno zip di quella cartella. I salvataggi vengono mantenuti.");
         it("Import from Extracted Game Data Folder…", "Importa dalla cartella dei dati estratti…");
         it("Import Game Data Zip…", "Importa zip dei dati del gioco…");
+        it("Import Disc Image (.iso)…", "Importa immagine disco (.iso)…");
+        it("Have the disc image itself? Import the .iso: it's extracted on this phone, the way Dolphin does it, "
+                + "with no computer needed.",
+                "Hai l'immagine del disco? Importa il file .iso: viene estratto su questo telefono, come fa "
+                + "Dolphin, senza bisogno di un computer.");
+        it("Extracting the disc image", "Estrazione dell'immagine disco");
+        it("Reading the disc image…", "Lettura dell'immagine disco…");
+        it("That file isn't a Wii disc image. Pick the .iso itself; compressed images (.rvz, .wbfs, .wia) can be "
+                + "turned into one with Dolphin's Convert File.",
+                "Quel file non è un'immagine disco Wii. Scegli il file .iso; le immagini compresse (.rvz, .wbfs, "
+                + ".wia) si possono convertire con Converti file di Dolphin.");
+        it("There isn't enough free space on this phone: the game takes %d MB.",
+                "Non c'è abbastanza spazio libero su questo telefono: il gioco occupa %d MB.");
+        it("that isn't a Wii disc image", "non è un'immagine disco Wii");
+        it("that disc image isn't encrypted the way a Wii disc is", "quell'immagine non è cifrata come un disco Wii");
+        it("the disc image is cut short", "l'immagine disco è incompleta");
+        it("that disc image isn't from a retail Wii disc", "quell'immagine non viene da un disco Wii originale");
+        it("that disc image has no game partition", "quell'immagine disco non ha una partizione di gioco");
+        it("the disc's file table is damaged", "la tabella dei file del disco è danneggiata");
         it("Download Logs (For Github Reports)", "Scarica i log (per le segnalazioni su GitHub)");
         it("No game data yet. Import the folder Dolphin made, or a zip of it.",
                 "Ancora nessun dato del gioco. Importa la cartella creata da Dolphin, o un suo zip.");

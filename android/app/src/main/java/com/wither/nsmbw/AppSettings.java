@@ -54,6 +54,14 @@ final class AppSettings {
         return maker.contains("xiaomi") || maker.contains("redmi") || maker.contains("poco");
     }
 
+    /** Where the player moved the on-screen remote's controls and how big (TouchControlsView.layout). */
+    String touchLayout() { return prefs.getString("touch_layout", ""); }
+    void setTouchLayout(String layout) { prefs.edit().putString("touch_layout", layout).commit(); }
+
+    /** The start menu's Newer Super Mario Bros. Wii tab: Play starts Newer (AppFiles.newerActive). */
+    boolean newerSelected() { return prefs.getBoolean("newer_selected", false); }
+    void setNewerSelected(boolean on) { prefs.edit().putBoolean("newer_selected", on).commit(); }
+
     /** The game's Update button started an install: open the game again once it is done (UpdateReceiver). */
     boolean reopenGameAfterUpdate() { return prefs.getBoolean("reopen_after_update", false); }
     void setReopenGameAfterUpdate(boolean on) { prefs.edit().putBoolean("reopen_after_update", on).commit(); }
