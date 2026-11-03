@@ -104,6 +104,20 @@ bool ReadDiscFile(const std::string& dvdPath, std::vector<uint8_t>& out) {
     while (!relative.empty() && relative.front() == '/') {
         relative.erase(relative.begin());
     }
+    // A language the disc doesn't have: the fonts with the letters riivolution.cpp made at boot.
+    static const bool madeFonts = !RuntimeConfigFile::DiscLanguage(RuntimeConfigFile::Language());
+    constexpr std::string_view kEnglishFonts = "US/EngUS/Font/";
+    if (madeFonts && relative.compare(0, kEnglishFonts.size(), kEnglishFonts) == 0) {
+        const std::filesystem::path made = RuntimeConfigFile::ResolveConfigPath().parent_path() / "Cache" /
+                                           "LanguageFonts" / std::filesystem::u8path(relative.substr(kEnglishFonts.size()));
+        std::ifstream madeIn(made, std::ios::binary);
+        if (madeIn) {
+            out.assign(std::istreambuf_iterator<char>(madeIn), std::istreambuf_iterator<char>());
+            if (!out.empty()) {
+                return true;
+            }
+        }
+    }
     std::ifstream in(root / "files" / std::filesystem::u8path(relative), std::ios::binary);
     if (!in) {
         RT_LOGF(RT_TAG_RUNTIME, "netplay ui: %s is not in the game folder\n", dvdPath.c_str());

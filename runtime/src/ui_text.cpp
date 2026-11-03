@@ -9,8 +9,8 @@
 namespace UiText {
 namespace {
 
-// 0 English, 1 Italian. The disc's Spanish and French have no menu translations yet. No font on the
-// disc has i or o with a grave accent (the French one has a, e and u), so the Italian avoids them.
+// 0 English, 1 Italian. The disc's Spanish and French have no menu translations yet. The letters
+// with a grave accent that no disc font has are made at boot (FontGraves).
 std::atomic<int> g_language{-1};
 
 int LanguageIndex(const std::string& code) {
@@ -44,8 +44,8 @@ const Table& Italian() {
         {"Native", "Nativa"},
         {"Ultrawide", "Ultrawide"},
         {"Fullscreen", "Schermo intero"},
-        {"Off", "Disattivo"},
-        {"On", "Attivo"},
+        {"Off", "No"},
+        {"On", "Sì"},
         {"Borderless", "Senza bordi"},
         {"Exclusive", "Esclusivo"},
         {"Renderer", "Renderer"},
@@ -62,7 +62,7 @@ const Table& Italian() {
         {"Borderless: a window covering the whole screen (F11).",
          "Senza bordi: una finestra che copre tutto lo schermo (F11)."},
         {"Exclusive: the game takes over the display.", "Esclusivo: il gioco prende il controllo dello schermo."},
-        {"Off: the game plays in a window.", "Disattivo: il gioco è in una finestra."},
+        {"Off: the game plays in a window.", "No: il gioco è in una finestra."},
         {"The best this device has. ", "Il migliore per questo dispositivo. "},
         {"Takes effect at the next start. Now: ", "Si applica al prossimo avvio. Ora: "},
         {"FPS and each frame's time, top right. Left and right: its size.",
