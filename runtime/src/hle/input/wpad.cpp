@@ -6,6 +6,8 @@
 #include "wii_remote_input.h"
 #include "wpad_speaker.h"
 
+#include <SDL3/SDL_gamepad.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -163,10 +165,36 @@ extern "C" int32_t WPADProbe_HLE(uint32_t chan, uint32_t typePtr)
 }
 PPC_NATIVE_OVERRIDE(801E0F40, WPADProbe_HLE, int32_t, (uint32_t chan, uint32_t typePtr), (chan, typePtr));
 
+extern "C" bool PAD_HLE_RumbleEnabled();
+#if defined(__ANDROID__)
+namespace AndroidBridge {
+void Vibrate(bool on);
+}
+#endif
+
+// The remote's rumble (WPAD_MOTOR_RUMBLE 1, WPAD_MOTOR_STOP 0): a real Wii Remote, or a controller,
+// on the channel rumbles through SDL; with neither, on Android, player 1's phone vibrates. A rumble is
+// asked for 2 s at most and stopped by the game's own STOP, so a missed STOP can't run on.
 extern "C" void WPADControlMotor_HLE(uint32_t chan, uint32_t command)
 {
-    (void)chan;
-    (void)command;
+    static std::array<bool, WpadContract::kChannelCount> s_on{};
+    if (chan >= WpadContract::kChannelCount) {
+        return;
+    }
+    const bool on = command == 1 && PAD_HLE_RumbleEnabled();
+    if (s_on[chan] == on) {
+        return;
+    }
+    s_on[chan] = on;
+    if (SDL_Gamepad* pad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan))) {
+        SDL_RumbleGamepad(pad, on ? 0xC000 : 0, on ? 0xC000 : 0, on ? 2000 : 0);
+        return;
+    }
+#if defined(__ANDROID__)
+    if (chan == 0) {
+        AndroidBridge::Vibrate(on);
+    }
+#endif
 }
 PPC_NATIVE_OVERRIDE(801E14E0, WPADControlMotor_HLE, void, (uint32_t chan, uint32_t command), (chan, command));
 

@@ -144,6 +144,9 @@ struct State {
     // Browsing / member
     std::vector<FoundRoom> rooms;
     std::vector<Netplay::Address> unicastTargets;  // known and Tailscale devices, asked one by one
+    Netplay::Address direct;           // ConnectDirect: asked for its room, joined when it answers
+    std::string directText;
+    Clock::time_point directSince{};
     std::vector<uint32_t> ownIps;
     Netplay::Address hostAddress;
     uint64_t joinRoomId = 0;
@@ -667,6 +670,20 @@ void HostTickLocked(State& s) {
 }
 
 // ---------------------------------------------------------------- browser / member
+void JoinLocked(State& s, const FoundRoom& room) {
+    s.hostAddress = room.address;
+    s.joinRoomId = room.room.id;
+    s.joinHostIps = room.hostIps;
+    s.roomName = room.room.name;
+    s.maxPlayers = room.room.maxPlayers;
+    std::random_device random;
+    s.nonce = random();
+    s.phase = Phase::Joining;
+    s.startedAt = Clock::now();
+    s.lastFromHost = Clock::now();
+    s.message.clear();
+}
+
 void MemberPacketLocked(State& s, const Netplay::Address& from, uint8_t type, uint64_t roomId, Reader& r) {
     if (type == kRoomInfo && s.phase == Phase::Browsing) {
         FoundRoom found;
@@ -706,6 +723,16 @@ void MemberPacketLocked(State& s, const Netplay::Address& from, uint8_t type, ui
             *existing = found;
         } else {
             existing->lastSeen = found.lastSeen;
+        }
+        if (s.direct.Valid() && from.ip == s.direct.ip) {
+            // The room ConnectDirect asked for: join it, and ask this device directly from now on.
+            s.direct = {};
+            if (found.room.full) {
+                s.message = "That room is full.";
+            } else {
+                RememberHost(from);
+                JoinLocked(s, found);
+            }
         }
         return;
     }
@@ -840,6 +867,13 @@ void MemberTickLocked(State& s) {
             for (const auto& target : s.unicastTargets) {
                 Send(s, target, kDiscover, 0, shared.data);
             }
+            if (s.direct.Valid()) {
+                Send(s, s.direct, kDiscover, 0, shared.data);
+            }
+        }
+        if (s.direct.Valid() && now - s.directSince > kTimeout) {
+            s.message = "No room answered at that address.";
+            s.direct = {};
         }
         std::erase_if(s.rooms, [&](const FoundRoom& f) { return now - f.lastSeen > 4s; });
         return;
@@ -1052,6 +1086,14 @@ Snapshot Get() {
     for (auto it = s.rooms.rbegin(); it != s.rooms.rend(); ++it) {
         snap.rooms.push_back(it->room);
     }
+    if (s.phase == Phase::Browsing && s.direct.Valid()) {
+        snap.direct = s.directText;
+    }
+    if (s.roomId != 0) {
+        for (const uint32_t ip : s.ownIps) {
+            snap.hostAddresses.push_back(Netplay::IpToString(ip) + ":" + std::to_string(s.socket.LocalPort()));
+        }
+    }
     return snap;
 }
 
@@ -1099,6 +1141,7 @@ void Browse() {
     NoteOwnAddresses(s);
     s.phase = Phase::Browsing;
     s.unicastTargets.clear();
+    s.direct = {};
     s.thread = std::thread(Thread);
     lock.unlock();
     RefreshTargets();
@@ -1141,17 +1184,31 @@ void Join(uint64_t roomId) {
     if (it == s.rooms.end() || s.phase != Phase::Browsing) {
         return;
     }
-    s.hostAddress = it->address;
-    s.joinRoomId = roomId;
-    s.joinHostIps = it->hostIps;
-    s.roomName = it->room.name;
-    s.maxPlayers = it->room.maxPlayers;
-    std::random_device random;
-    s.nonce = random();
-    s.phase = Phase::Joining;
-    s.startedAt = Clock::now();
-    s.lastFromHost = Clock::now();
+    JoinLocked(s, *it);
+}
+
+bool ConnectDirect(const std::string& address) {
+    std::string text = address;
+    std::erase_if(text, [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; });
+    Netplay::Address to;
+    // Resolving a name can take a moment; it runs before the lock.
+    const bool resolved = !text.empty() && text.size() <= 253 && Netplay::ResolveAddress(text, Netplay::kDefaultPort, to);
+    State& s = S();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    if (s.phase != Phase::Browsing) {
+        return false;
+    }
+    if (!resolved) {
+        s.message = "That isn't an address.";
+        s.direct = {};
+        return false;
+    }
+    RT_LOGF(RT_TAG_RUNTIME, "netplay: asking %s for its room\n", Netplay::ToString(to).c_str());
+    s.direct = to;
+    s.directText = text;
+    s.directSince = Clock::now();
     s.message.clear();
+    return true;
 }
 
 void Start() {

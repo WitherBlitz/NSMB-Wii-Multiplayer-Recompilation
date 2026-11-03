@@ -66,6 +66,53 @@ bool StartAppUpdate() {
     return true;
 }
 
+// The Wii Remote's rumble on the phone itself (player 1 with no controller): GameActivity.vibrateForGame
+// honours the app's Vibration setting.
+void Vibrate(bool on) {
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (env == nullptr || activity == nullptr) {
+        return;
+    }
+    jclass type = env->GetObjectClass(activity);
+    jmethodID vibrate = type != nullptr ? env->GetMethodID(type, "vibrateForGame", "(Z)V") : nullptr;
+    if (vibrate == nullptr) {
+        env->ExceptionClear();
+    } else {
+        env->CallVoidMethod(activity, vibrate, on ? JNI_TRUE : JNI_FALSE);
+    }
+    if (type != nullptr) {
+        env->DeleteLocalRef(type);
+    }
+    env->DeleteLocalRef(activity);
+}
+
+// Join's Direct Connection: GameActivity.askDirectAddress asks for the host's address with a dialog,
+// which answers through nativeDirectAddress.
+void AskDirectAddress(const std::string& title, const std::string& hint) {
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (env == nullptr || activity == nullptr) {
+        return;
+    }
+    jclass type = env->GetObjectClass(activity);
+    jmethodID ask = type != nullptr ? env->GetMethodID(type, "askDirectAddress", "(Ljava/lang/String;Ljava/lang/String;)V")
+                                    : nullptr;
+    if (ask == nullptr) {
+        env->ExceptionClear();
+    } else {
+        jstring jTitle = env->NewStringUTF(title.c_str());
+        jstring jHint = env->NewStringUTF(hint.c_str());
+        env->CallVoidMethod(activity, ask, jTitle, jHint);
+        env->DeleteLocalRef(jTitle);
+        env->DeleteLocalRef(jHint);
+    }
+    if (type != nullptr) {
+        env->DeleteLocalRef(type);
+    }
+    env->DeleteLocalRef(activity);
+}
+
 } // namespace AndroidBridge
 
 extern "C" {
@@ -215,6 +262,19 @@ JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeLog(JNIEnv* env,
         RT_LOGF(RT_TAG_RUNTIME, "%s\n", text);
         env->ReleaseStringUTFChars(line, text);
     }
+}
+
+// GameActivity.nativeDirectAddress: what was typed into the Direct Connection dialog.
+JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeDirectAddress(JNIEnv* env, jclass, jstring address)
+{
+    std::string text;
+    if (address != nullptr) {
+        if (const char* utf8 = env->GetStringUTFChars(address, nullptr)) {
+            text = utf8;
+            env->ReleaseStringUTFChars(address, utf8);
+        }
+    }
+    NetplayUi::DirectAddressEntered(text);
 }
 
 // GameActivity.nativePlaying: in a course or on the world map with no menu up (NetplayUi::Playing).

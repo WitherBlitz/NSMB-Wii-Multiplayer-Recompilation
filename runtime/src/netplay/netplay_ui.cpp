@@ -13,15 +13,19 @@
 #include "display_settings.h"
 #include "keybinds.h"
 #include "settings_overlay.h"
+#include "ui_text.h"
 #include "updater.h"
 
 #include <imgui.h>
+#include <SDL3/SDL_events.h>
+#include <SDL3/SDL_keyboard.h>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <map>
 #include <functional>
+#include <mutex>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -33,6 +37,12 @@
 
 // Defined in hle/vi.cpp: whether an aurora frame is open for drawing.
 extern std::atomic_bool g_auroraFrameActive;
+
+#if defined(__ANDROID__)
+namespace AndroidBridge {
+void AskDirectAddress(const std::string& title, const std::string& hint);
+}
+#endif
 
 namespace NetplayUi {
 namespace {
@@ -102,6 +112,16 @@ void AddHit(float x, float y, float w, float h, int cursor, bool back = false) {
 void AddHitEvent(float x, float y, float w, float h, int cursor, uint32_t event) {
     g_hits.push_back(Hit{x, y, w, h, cursor, event});
 }
+
+// Join's Direct Connection address box (desktop; Android asks with a dialog of its own).
+struct AddressEntry {
+    bool open = false;
+    std::string text;
+};
+AddressEntry g_entry;
+std::mutex g_enteredMutex;
+std::string g_entered;          // Android: the dialog's address, for the next frame
+std::atomic<bool> g_hasEntered{false};
 
 std::atomic<uint64_t> g_tap{0};  // a tap for the next frame: bit 63, then x and y as 16-bit fractions
 std::atomic<bool> g_tapScreen{false};
@@ -379,14 +399,15 @@ void Window(const Canvas& c, float height, float width = 528.0f) {
     a.yesNo.Draw(c.list, c.view, "N_yesnoWindow_00", p);
 }
 
-// The game's message text: white with its dark edge, centred on (x, y) unless told otherwise.
+// The game's message text: white with its dark edge, centred on (x, y) unless told otherwise. Text and
+// Title put their English wording in the menus' language (UiText).
 void Text(const Canvas& c, const std::string& text, float x, float y, float size = 30.0f, int originH = 1,
           uint32_t color = 0xFFFFFFFFu) {
     Assets& a = GetAssets();
     if (!GameLayout::FontReady(a.message.get())) {
         return;
     }
-    const std::u16string t = Utf16(text);
+    const std::u16string t = Utf16(UiText::Tr(text));
     GameLayout::DrawText(c.list, c.view, *a.message, t, x + 2.5f, y - 2.5f, size, 0x30200AFFu, 0x30200AFFu,
                          0.55f * c.alpha, originH, 1);
     GameLayout::DrawText(c.list, c.view, *a.message, t, x, y, size, color, color, c.alpha, originH, 1);
@@ -398,7 +419,7 @@ void Title(const Canvas& c, const std::string& text, float x, float y, float siz
     if (!GameLayout::FontReady(a.mario.get())) {
         return;
     }
-    GameLayout::DrawText(c.list, c.view, *a.mario, Utf16(text), x, y, size, 0xFFFF00FFu, 0xFF8C00FFu, c.alpha, 1, 1);
+    GameLayout::DrawText(c.list, c.view, *a.mario, Utf16(UiText::Tr(text)), x, y, size, 0xFFFF00FFu, 0xFF8C00FFu, c.alpha, 1, 1);
 }
 
 float Pulse(int frame) {
@@ -451,7 +472,15 @@ void Button(const Canvas& c, const std::string& label, float x, float y, float w
     const float scale = p.scale;
     Canvas t = c;
     t.alpha = p.alpha;
-    Text(t, label, x, y, textSize * scale);
+    const std::string shown = UiText::Tr(label);
+    float size = textSize * scale;
+    if (GameLayout::FontReady(a.message.get()) && !shown.empty()) {
+        const float room = (w - 22.0f) * scale, width = GameLayout::MeasureText(*a.message, Utf16(shown), size);
+        if (width > room) {
+            size *= room / width;
+        }
+    }
+    Text(t, shown, x, y, size);
     if (selected) {
         Cursor(c, x, y, w * scale + 6, h * scale + 6, frame);
     }
@@ -468,7 +497,7 @@ void ButtonPair(const Canvas& c, const std::string& left, const std::string& rig
 }
 
 std::string PlayerLine(uint8_t slot, const std::string& name, bool you) {
-    return std::to_string(slot + 1) + "P  " + name + (you ? "  (you)" : "");
+    return std::to_string(slot + 1) + "P  " + name + (you ? UiText::Tr("  (you)") : "");
 }
 
 // ---------------------------------------------------------------- screens
@@ -1083,7 +1112,7 @@ void DrawUpdate(const Canvas& c) {
     bool busy = true;
     switch (update.state) {
     case Updater::State::Downloading:
-        label = update.progress >= 0 ? "Updating " + std::to_string(static_cast<int>(update.progress * 100)) + "%"
+        label = update.progress >= 0 ? UiText::Tr("Updating ") + std::to_string(static_cast<int>(update.progress * 100)) + "%"
                                      : "Updating...";
         break;
     case Updater::State::Installing: label = "Installing..."; break;
@@ -1253,7 +1282,7 @@ std::string ChoiceLabel(const VideoChoice& choice) {
         return "Native";
     }
     if (choice.wide) {
-        std::snprintf(text, sizeof(text), "%gx Ultrawide", choice.scale);
+        std::snprintf(text, sizeof(text), "%gx %s", choice.scale, UiText::Tr("Ultrawide").c_str());
     } else {
         std::snprintf(text, sizeof(text), "%gx (%dp)", choice.scale,
                       static_cast<int>(std::lround(480.0f * choice.scale)));
@@ -1417,8 +1446,10 @@ void DrawAudioTab(const Canvas& c) {
     AddHit(0, -kSettingsHeight / 2 + 43.0f, 240, 60, kAudioOk);
 }
 
-// The Language tab: the USA disc's three languages. The game reads the console language once at
-// boot (SCGetLanguage), so a change shows the next time it starts. Cursor rows: 1-3, then 4 OK.
+// The Language tab: the USA disc's three languages, and Italian, whose game text comes from a language
+// pack (RuntimeConfigFile::LanguagePackDir) over the English files. The game reads the console language
+// once at boot (SCGetLanguage), so a change shows the next time it starts; these menus change at once.
+// Cursor rows: 1-4, then 5 OK.
 // restartNote is written in the language itself: the player choosing it may not read the one the
 // game is running in.
 struct LanguageChoice {
@@ -1430,27 +1461,32 @@ constexpr LanguageChoice kLanguages[] = {
     {"en", "English", "Restart the game to play in this language."},
     {"es", "Español", "Reinicia el juego para jugar en este idioma."},
     {"fr", "Français", "Redémarrez le jeu pour jouer dans cette langue."},
+    {"it", "Italiano", "Riavvia il gioco per giocare in questa lingua."},
 };
-constexpr int kLanguageOk = 4;
+constexpr int kLanguageCount = static_cast<int>(sizeof(kLanguages) / sizeof(kLanguages[0]));
+constexpr int kLanguageOk = kLanguageCount + 1;
 
 void DrawLanguageTab(const Canvas& c) {
     static const std::string atBoot = RuntimeConfigFile::Language();
     const std::string chosen = RuntimeConfigFile::Language();
-    for (int i = 0; i < 3; ++i) {
-        const float y = 100.0f - 58.0f * i;
+    for (int i = 0; i < kLanguageCount; ++i) {
+        const float y = 112.0f - 52.0f * i;
         Button(c, kLanguages[i].name, 24, y, 380, g_ui.cursor == 1 + i, true, g_ui.frame, 30.0f, 48.0f);
         Checkbox(c, -140, y, chosen == kLanguages[i].code);
         AddHit(0, y, 400, 54, 1 + i);
     }
     const char* note = "The language of the game's text and menus.";
-    if (chosen != atBoot) {
+    const bool packMissing = !RuntimeConfigFile::DiscLanguage(chosen) && !RuntimeConfigFile::LanguagePackInstalled(chosen);
+    if (packMissing) {
+        note = "The game's own text needs an Italian language pack.";
+    } else if (chosen != atBoot) {
         for (const LanguageChoice& language : kLanguages) {
             if (chosen == language.code) {
                 note = language.restartNote;
             }
         }
     }
-    Text(c, note, 0, -82, 22, 1, chosen != atBoot ? 0xFFF0B0FFu : 0xFFFFFFFFu);
+    Text(c, note, 0, -100, 22, 1, chosen != atBoot || packMissing ? 0xFFF0B0FFu : 0xFFFFFFFFu);
     Button(c, "OK", 0, -kSettingsHeight / 2 + 43.0f, 232, g_ui.cursor == kLanguageOk, true, g_ui.frame);
     AddHit(0, -kSettingsHeight / 2 + 43.0f, 240, 60, kLanguageOk);
 }
@@ -1530,8 +1566,9 @@ void DrawVideoTab(const Canvas& c) {
     const char* fullscreenNote = fullscreen == 1 ? "Borderless: a window covering the whole screen (F11)."
                                  : fullscreen == 2 ? "Exclusive: the game takes over the display."
                                                    : "Off: the game plays in a window.";
-    const std::string rendererNote = std::string(RendererIndex() == 0 ? "The best this device has. " : "") +
-                                     "Takes effect at the next start. Now: " + settings_overlay::RunningGraphicsApi() + ".";
+    const std::string rendererNote = (RendererIndex() == 0 ? UiText::Tr("The best this device has. ") : "") +
+                                     UiText::Tr("Takes effect at the next start. Now: ") +
+                                     settings_overlay::RunningGraphicsApi() + ".";
     const char* note = g_ui.cursor == kVideoFullscreen ? fullscreenNote
                        : g_ui.cursor == kVideoRenderer ? rendererNote.c_str()
                        : g_ui.cursor == kVideoGraph ? "FPS and each frame's time, top right. Left and right: its size."
@@ -1686,8 +1723,9 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
     if (g_settingsTab == kTabLanguage) {
         if (up) cursor = cursor - 1;
         if (down) cursor = std::min(kLanguageOk, cursor + 1);
-        if (confirm && cursor >= 1 && cursor <= 3) {
+        if (confirm && cursor >= 1 && cursor <= kLanguageCount) {
             RuntimeConfigFile::SetLanguage(kLanguages[cursor - 1].code);
+            UiText::SetLanguage(kLanguages[cursor - 1].code);
             g_settingsChanged = true;
         } else if (confirm && cursor == kLanguageOk) {
             CloseSettings();
@@ -1772,7 +1810,7 @@ void DrawRooms(const Canvas& c, const NetplayLobby::Snapshot& lobby) {
     const int count = static_cast<int>(lobby.rooms.size());
     if (count == 0) {
         const int dots = (g_ui.frame / 20) % 4;
-        Text(c, "Looking for rooms" + std::string(dots, '.'), 0, 30);
+        Text(c, UiText::Tr("Looking for rooms") + std::string(dots, '.'), 0, 30);
         Text(c, "Rooms on your Wi-Fi and Tailscale", 0, -20, 24);
         Text(c, "show up here.", 0, -48, 24);
     }
@@ -1788,8 +1826,39 @@ void DrawRooms(const Canvas& c, const NetplayLobby::Snapshot& lobby) {
         Button(c, label, 0, y, 480, g_ui.cursor == first + i, !room.full, g_ui.frame);
         AddHit(0, y, 490, 58, first + i);
     }
+    // Direct Connection: below the list, its cursor row one past the rooms.
+    const float directY = -height / 2 + 40;
+    Button(c, "Direct Connection", -70, directY, 300, g_ui.cursor == count, true, g_ui.frame, 26.0f, 48.0f);
+    AddHit(-70, directY, 310, 54, count);
+    std::string status;
+    uint32_t color = 0xFFF0B0FFu;
+    if (!lobby.direct.empty()) {
+        status = UiText::Tr("Asking ") + lobby.direct + "...";
+    } else if (!lobby.message.empty()) {
+        status = UiText::Tr(lobby.message);
+        color = 0xFFE040FFu;
+    }
+    if (!status.empty()) {
+        Text(c, status, 0, directY + 40, 21, 1, color);
+    }
     Text(c, "(1) Back", 225, -height / 2 + 22, 22, 2);
     AddHit(175, -height / 2 + 22, 140, 44, -1, true);
+    if (g_entry.open) {
+        Veil(c);
+        Window(c, 240, 520);
+        Title(c, "Direct Connection", 0, 80, 34);
+        const float boxW = 400, boxH = 46, boxY = 14;
+        const ImVec2 a = ToScreen(c, -boxW / 2, boxY + boxH / 2), b = ToScreen(c, boxW / 2, boxY - boxH / 2);
+        c.list->AddRectFilled(a, b, IM_COL32(20, 40, 90, static_cast<int>(235 * c.alpha)), 8 * c.view.scale);
+        c.list->AddRect(a, b, IM_COL32(60, 60, 60, static_cast<int>(255 * c.alpha)), 8 * c.view.scale, 0,
+                        2 * c.view.scale);
+        const bool caret = (g_ui.frame / 30) % 2 == 0;
+        const std::string shown = g_entry.text.empty() && !caret ? std::string(" ") : g_entry.text + (caret ? "|" : " ");
+        Text(c, g_entry.text.empty() && !caret ? UiText::Tr("IP:Port") : shown, 0, boxY, 28, 1,
+             g_entry.text.empty() && !caret ? 0xA0A0A0FFu : 0xFFFFFFFFu);
+        Text(c, "The host's IP:Port, shown at the top of its room.", 0, -40, 20);
+        Text(c, "Enter connects, Esc cancels.", 0, -70, 20);
+    }
 }
 
 void DrawRoom(const Canvas& c, const NetplayLobby::Snapshot& lobby) {
@@ -1797,6 +1866,14 @@ void DrawRoom(const Canvas& c, const NetplayLobby::Snapshot& lobby) {
     Window(c, height, 560);
     const bool host = lobby.localSlot == 0;
     Title(c, lobby.roomName.empty() ? "Room" : lobby.roomName, 0, height / 2 - 40, 36);
+    if (host && !lobby.hostAddresses.empty()) {
+        // What another player types into Join > Direct Connection.
+        std::string line = lobby.hostAddresses[0];
+        if (lobby.hostAddresses.size() > 1) {
+            line += "   " + lobby.hostAddresses[1];
+        }
+        Text(c, UiText::Tr("IP:Port") + "  " + line, 0, height / 2 - 72, 21, 1, 0xC8D2E6FFu);
+    }
     for (int slot = 0; slot < std::max<int>(lobby.maxPlayers, 2); ++slot) {
         const auto member = std::find_if(lobby.members.begin(), lobby.members.end(),
                                          [&](const NetplayLobby::Member& m) { return m.slot == slot; });
@@ -1804,7 +1881,7 @@ void DrawRoom(const Canvas& c, const NetplayLobby::Snapshot& lobby) {
         if (member != lobby.members.end()) {
             Text(c, PlayerLine(static_cast<uint8_t>(slot), member->name, slot == lobby.localSlot), -230, y, 28, 0);
         } else {
-            Text(c, std::to_string(slot + 1) + "P  waiting...", -230, y, 28, 0, 0xC8D2E6FFu);
+            Text(c, std::to_string(slot + 1) + UiText::Tr("P  waiting..."), -230, y, 28, 0, 0xC8D2E6FFu);
         }
     }
     std::string status;
@@ -1834,8 +1911,8 @@ void DrawRoom(const Canvas& c, const NetplayLobby::Snapshot& lobby) {
 
 void DrawMessage(const Canvas& c) {
     Window(c, 300);
-    // Up to two lines, split at a space near the middle.
-    std::string first = g_ui.message, second;
+    // Up to two lines, split at a space near the middle (of the translation: the halves aren't in UiText).
+    std::string first = UiText::Tr(g_ui.message), second;
     if (first.size() > 30) {
         const size_t mid = first.rfind(' ', first.size() / 2 + 6);
         if (mid != std::string::npos) {
@@ -1853,7 +1930,7 @@ void DrawMessage(const Canvas& c) {
 
 std::string SlotName(int slot) {
     const auto& names = NetplayStart::SessionNames();
-    return slot >= 0 && slot < static_cast<int>(names.size()) ? names[slot] : "player " + std::to_string(slot + 1);
+    return slot >= 0 && slot < static_cast<int>(names.size()) ? names[slot] : UiText::Tr("player ") + std::to_string(slot + 1);
 }
 
 // What the session shows: who the game is waiting for, a desync warning, and the way out when a
@@ -1888,7 +1965,7 @@ void DrawSession(ImDrawList* list) {
     }
     std::string line;
     if (status.waitingForSlot >= 0 && status.waitedMs > 700) {
-        line = "Waiting for " + SlotName(status.waitingForSlot) + "...";
+        line = UiText::Tr("Waiting for ") + SlotName(status.waitingForSlot) + "...";
     } else if (status.desyncFrame != 0) {
         line = "The game got out of sync between devices.";
     }
@@ -1958,14 +2035,38 @@ void HandleEvents(const NetplayLobby::Snapshot& lobby) {
         }
         break;
     case Screen::Rooms: {
+        if (g_entry.open) {
+            break;  // the address box takes the keyboard (HandleSdlEvent)
+        }
+        if (g_hasEntered.exchange(false)) {
+            std::string address;
+            {
+                std::lock_guard<std::mutex> lock(g_enteredMutex);
+                address = g_entered;
+            }
+            if (!address.empty()) {
+                NetplayLobby::ConnectDirect(address);
+            }
+        }
         const int count = static_cast<int>(lobby.rooms.size());
+        if (g_ui.cursor > count) g_ui.cursor = count;  // a room went away
         if (up) g_ui.cursor = std::max(0, g_ui.cursor - 1);
-        if (down) g_ui.cursor = std::min(std::max(0, count - 1), g_ui.cursor + 1);
+        if (down) g_ui.cursor = std::min(count, g_ui.cursor + 1);
         if (back) {
             NetplayLobby::Stop();
             Show(Screen::Lan);
         }
-        if (confirm && g_ui.cursor < count && !lobby.rooms[g_ui.cursor].full) {
+        if (confirm && g_ui.cursor == count) {
+#if defined(__ANDROID__)
+            AndroidBridge::AskDirectAddress(UiText::Tr("Direct Connection"),
+                                            UiText::Tr("The host's IP:Port, shown at the top of its room."));
+#else
+            g_entry.open = true;
+            if (SDL_Window* window = SDL_GetKeyboardFocus()) {
+                SDL_StartTextInput(window);
+            }
+#endif
+        } else if (confirm && g_ui.cursor < count && !lobby.rooms[g_ui.cursor].full) {
             NetplayLobby::Join(lobby.rooms[g_ui.cursor].id);
             Show(Screen::Room);
         }
@@ -2233,6 +2334,58 @@ bool TapScreenUp() {
 
 bool Playing() {
     return g_playing.load(std::memory_order_acquire);
+}
+
+static void CloseAddressEntry() {
+    g_entry.open = false;
+    g_entry.text.clear();
+    if (SDL_Window* window = SDL_GetKeyboardFocus()) {
+        SDL_StopTextInput(window);
+    }
+}
+
+bool HandleSdlEvent(const SDL_Event& event) {
+    if (!g_entry.open) {
+        return false;
+    }
+    if (event.type == SDL_EVENT_TEXT_INPUT && event.text.text != nullptr) {
+        for (const char* p = event.text.text; *p != '\0'; ++p) {
+            const char ch = *p;
+            const bool allowed = (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                                 ch == '.' || ch == ':' || ch == '-' || ch == '_';
+            if (allowed && g_entry.text.size() < 64) {
+                g_entry.text += ch;
+            }
+        }
+        return true;
+    }
+    if (event.type == SDL_EVENT_KEY_DOWN) {
+        switch (event.key.scancode) {
+        case SDL_SCANCODE_BACKSPACE:
+            if (!g_entry.text.empty()) g_entry.text.pop_back();
+            break;
+        case SDL_SCANCODE_RETURN:
+        case SDL_SCANCODE_KP_ENTER: {
+            const std::string text = g_entry.text;
+            CloseAddressEntry();
+            NetplayLobby::ConnectDirect(text);
+            break;
+        }
+        case SDL_SCANCODE_ESCAPE:
+            CloseAddressEntry();
+            break;
+        default:
+            break;
+        }
+        return true;
+    }
+    return event.type == SDL_EVENT_KEY_UP;
+}
+
+void DirectAddressEntered(const std::string& address) {
+    std::lock_guard<std::mutex> lock(g_enteredMutex);
+    g_entered = address;
+    g_hasEntered = true;
 }
 
 bool TakeSettingsChange(float& renderScale, bool& showFps, int& aspect, bool& spinningCoins, bool& frameGraph,

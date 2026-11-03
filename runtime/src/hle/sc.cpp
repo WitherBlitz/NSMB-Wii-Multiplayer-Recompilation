@@ -75,6 +75,8 @@ PPC_NATIVE_OVERRIDE(801DD2B0, SCGetEuRgb60Mode_HLE, uint32_t, (), ());
 // The console language (SC_LANG_*: 1 English, 3 French, 4 Spanish; the USA disc has EngUS, FraUS
 // and SpaUS). NSMBW picks its message, layout and Home Button files by it. From the Language setting
 // ([game] language), read once: a change takes effect the next time the game starts, never halfway.
+// Italian isn't on the USA disc: the game runs in English, and its language pack replaces the English
+// text (riivolution.cpp).
 extern "C" uint32_t SCGetLanguage_HLE()
 {
     static const uint32_t language = [] {

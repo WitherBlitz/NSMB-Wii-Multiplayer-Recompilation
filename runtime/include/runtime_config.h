@@ -55,7 +55,7 @@ struct RuntimeUserConfig {
     std::optional<bool> touchControls;  // NSMBW: [video] touch_controls, written by the Android app
     std::optional<uint32_t> frameGraphSize;  // NSMBW: [video] frame_graph_size, percent (5-200; 50 = the original size)
     std::optional<bool> vsync;          // NSMBW: [video] vsync, presents wait for the display (Windows)
-    std::optional<std::string> language;  // NSMBW: [game] language, "en" "es" or "fr" (the USA disc's three)
+    std::optional<std::string> language;  // NSMBW: [game] language, "en" "es" "fr" (the USA disc's) or "it"
     std::optional<uint32_t> disabledPostProcessingPaths;
     std::optional<float> audioVolume;
     std::optional<float> audioMusicVolume;
@@ -590,7 +590,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.touchControls = FindConfigValue<bool>(document, "video", "touch_controls");
     config.vsync = FindConfigValue<bool>(document, "video", "vsync");
     if (auto value = FindConfigValue<std::string>(document, "game", "language");
-        value && (*value == "en" || *value == "es" || *value == "fr")) {
+        value && (*value == "en" || *value == "es" || *value == "fr" || *value == "it")) {
         config.language = *value;
     }
     config.textureReplacements = FindConfigValue<bool>(document, "video", "texture_replacements");
@@ -832,13 +832,39 @@ inline bool SetSpinningCoins(bool value) {
     return WriteSetting("video", "spinning_coins", value ? "true" : "false");
 }
 
-// NSMBW: the language the game runs in ("en", "es" or "fr"); read by SCGetLanguage at boot.
+// NSMBW: the language the game runs in ("en", "es", "fr" or "it"); read by SCGetLanguage at boot.
 inline std::string Language(std::string fallback = "en") {
     return Get().language.value_or(std::move(fallback));
 }
 
+// The USA disc's own languages. Any other runs on the English files, with the text a language pack
+// (LanguagePackDir) puts over them.
+inline bool DiscLanguage(const std::string& code) {
+    return code == "en" || code == "es" || code == "fr";
+}
+
+// A language pack: Languages/<code> beside Config.toml, shaped like the disc's files/US/EngUS (Font,
+// Layout, Message, staffroll), or holding one folder that is. Only files the disc has are used.
+inline std::filesystem::path LanguagePackDir(const std::string& code) {
+    std::filesystem::path dir = ResolveConfigPath().parent_path() / "Languages" / PathFromUtf8(code);
+    std::error_code ec;
+    if (!std::filesystem::is_directory(dir / "Message", ec)) {
+        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+            if (entry.is_directory(ec) && std::filesystem::is_directory(entry.path() / "Message", ec)) {
+                return entry.path();
+            }
+        }
+    }
+    return dir;
+}
+
+inline bool LanguagePackInstalled(const std::string& code) {
+    std::error_code ec;
+    return std::filesystem::is_directory(LanguagePackDir(code) / "Message", ec);
+}
+
 inline bool SetLanguage(const std::string& value) {
-    if (value != "en" && value != "es" && value != "fr") {
+    if (!DiscLanguage(value) && value != "it") {
         return false;
     }
     Mutable().language = value;

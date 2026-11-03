@@ -348,6 +348,34 @@ void RiivoInitialize() {
     for (auto& overlay : g_riivoState.overlays) {
         overlay.patches = RiivoLoadPatchSet(overlay.root, g_riivoState);
     }
+
+    // A language the disc doesn't have (Italian) runs on the English files, with its language pack
+    // over them (runtime_config.h LanguagePackDir); last, so every mod outranks it.
+    const std::string language = RuntimeConfigFile::Language();
+    if (!RuntimeConfigFile::DiscLanguage(language)) {
+        if (!RuntimeConfigFile::LanguagePackInstalled(language)) {
+            RT_LOG(RT_TAG_RIIVOLUTION) << "language " << language << ": no language pack at "
+                      << PathToUtf8(RuntimeConfigFile::LanguagePackDir(language)) << ", the game's text stays English"
+                      << std::endl;
+            return;
+        }
+        RuntimeRiivolution::Overlay pack{RuntimeConfigFile::LanguagePackDir(language), RuntimeRiivolution::PatchSet{}};
+        // The French fonts under the English text: the same letters plus a e and u with accents (no
+        // disc font has i or o with a grave). A pack's own Font folder outranks them.
+        RuntimeRiivolution::Mapping fonts;
+        fonts.kind = RuntimeRiivolution::Mapping::Kind::Folder;
+        fonts.discPath = "/US/EngUS/Font";
+        fonts.hostPath = RuntimeConfigFile::ResolvedDvdRoot() / "files" / "US" / "FraUS" / "Font";
+        pack.patches->mappings.push_back(std::move(fonts));
+        RuntimeRiivolution::Mapping english;
+        english.kind = RuntimeRiivolution::Mapping::Kind::Folder;
+        english.discPath = "/US/EngUS";
+        english.hostPath = pack.root;
+        pack.patches->mappings.push_back(std::move(english));
+        RT_LOG(RT_TAG_RIIVOLUTION) << "language " << language << ": language pack " << PathToUtf8(pack.root)
+                  << std::endl;
+        g_riivoState.overlays.push_back(std::move(pack));
+    }
 }
 
 } // namespace

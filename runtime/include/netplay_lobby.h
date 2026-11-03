@@ -51,6 +51,8 @@ struct Snapshot {
     uint8_t localSlot = 0;
     std::vector<Member> members;  // slot order
     std::vector<Room> rooms;      // while browsing, newest first
+    std::string direct;           // while browsing: the address ConnectDirect is asking
+    std::vector<std::string> hostAddresses;  // hosting: this device's ip:port, Tailscale first
 };
 Snapshot Get();
 
@@ -58,6 +60,10 @@ Snapshot Get();
 void Host(uint8_t maxPlayers, int saveFile);
 void Browse();
 void Join(uint64_t roomId);
+// While browsing: ask one typed-in address ("ip", "ip:port" or a Tailscale name; the room port by
+// default) for its room and join it when it answers. False, with the message set, when the text
+// isn't an address.
+bool ConnectDirect(const std::string& address);
 // Host: start the session with everyone in the room.
 void Start();
 // Leave the room, close it, or stop looking.
