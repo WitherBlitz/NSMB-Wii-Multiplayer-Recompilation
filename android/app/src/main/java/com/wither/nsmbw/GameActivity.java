@@ -51,11 +51,13 @@ public class GameActivity extends SDLActivity
     static native boolean nativeTapScreen();
     /** Whether the player is in a course or on the world map with no menu up. */
     static native boolean nativePlaying();
+    /** A line into the game's run log (console.log, which Download Logs includes). */
+    static native void nativeLog(String line);
     /** {render scale, show FPS, aspect} after the game's own settings window changed them, else null. */
     static native float[] nativeTakeSettings();
     /**
-     * The app left the screen (true) or came back (false). Leaving, the game writes a backup Quick Save
-     * of the progress so far (deleted again when the app comes back) and pauses; nativeGamePaused says
+     * The app left the screen (true) or came back (false). Leaving, the game saves the progress so far
+     * to the player's file as a backup and pauses; nativeGamePaused says
      * when it has (runtime/src/host_suspend.h). With the screen just turned off (backup false) it only
      * pauses: the game waits in memory, nothing runs or is written.
      */
@@ -307,10 +309,10 @@ public class GameActivity extends SDLActivity
     @Override
     protected void onPause() {
         if (nativeReady) {
-            // Before SDL's pause stops the game thread: let the game write its backup Quick Save (in
+            // Before SDL's pause stops the game thread: let the game write its backup save (in
             // case Android ends the app while it is away) and pause itself. Bounded: a save that takes
             // longer is simply not published (the NAND only commits closed files).
-            // The screen turning off (sleep) only pauses: no backup Quick Save, the game waits in memory.
+            // The screen turning off (sleep) only pauses: no backup save, the game waits in memory.
             final android.os.PowerManager power = (android.os.PowerManager) getSystemService(POWER_SERVICE);
             final boolean screenOn = power == null || power.isInteractive();
             nativeSetBackground(true, screenOn);
@@ -357,6 +359,7 @@ public class GameActivity extends SDLActivity
         if (input == null) return;
         input.registerInputDeviceListener(new android.hardware.input.InputManager.InputDeviceListener() {
             @Override public void onInputDeviceAdded(int id) {
+                logInputDevice(android.view.InputDevice.getDevice(id), "connected");
                 if (isController(android.view.InputDevice.getDevice(id))) touch.setControllerHidden(true);
             }
             @Override public void onInputDeviceRemoved(int id) {
@@ -365,6 +368,35 @@ public class GameActivity extends SDLActivity
             @Override public void onInputDeviceChanged(int id) {}
         }, new android.os.Handler(android.os.Looper.getMainLooper()));
         if (anyController()) touch.setControllerHidden(true);
+        // Once the game has its run log open: every input device, for reports like issue #24.
+        menuPoll.postDelayed(() -> {
+            for (int id : android.view.InputDevice.getDeviceIds()) {
+                logInputDevice(android.view.InputDevice.getDevice(id), "present");
+            }
+        }, 4000);
+    }
+
+    /** "input device present: Ipega 9087S, 2dc8:3016, sources 0x00000501, buttons A B" (not virtual ones). */
+    private void logInputDevice(android.view.InputDevice device, String what) {
+        if (device == null || device.isVirtual() || !nativeReady) return;
+        final boolean[] keys = device.hasKeys(android.view.KeyEvent.KEYCODE_BUTTON_A,
+                android.view.KeyEvent.KEYCODE_BUTTON_B, android.view.KeyEvent.KEYCODE_BUTTON_X,
+                android.view.KeyEvent.KEYCODE_BUTTON_Y, android.view.KeyEvent.KEYCODE_BUTTON_START);
+        final String[] names = {"A", "B", "X", "Y", "Start"};
+        final StringBuilder buttons = new StringBuilder();
+        for (int i = 0; i < keys.length; ++i) {
+            if (keys[i]) buttons.append(' ').append(names[i]);
+        }
+        final String line = String.format(java.util.Locale.ROOT,
+                "input device %s: %s, %04x:%04x, sources 0x%08x, keyboard type %d, buttons%s, stick %s",
+                what, device.getName(), device.getVendorId(), device.getProductId(), device.getSources(),
+                device.getKeyboardType(), buttons.length() > 0 ? buttons : " none",
+                device.getMotionRange(android.view.MotionEvent.AXIS_X) != null ? "yes" : "no");
+        try {
+            nativeLog(line);
+        } catch (UnsatisfiedLinkError e) {
+            Log.i(TAG, line);
+        }
     }
 
     /**
@@ -422,9 +454,11 @@ public class GameActivity extends SDLActivity
     /** SDL takes the Back key as keyboard input before onBackPressed: the Back menu gets it first. */
     @Override
     public boolean dispatchKeyEvent(android.view.KeyEvent event) {
-        if (event.getAction() == android.view.KeyEvent.ACTION_DOWN && fromGamepad(event)
+        // Gamepad buttons from any real device (some controllers say they're a keyboard), the D-pad from
+        // a gamepad.
+        if (event.getAction() == android.view.KeyEvent.ACTION_DOWN && event.getDeviceId() >= 0
                 && (android.view.KeyEvent.isGamepadButton(event.getKeyCode())
-                || (event.getKeyCode() >= android.view.KeyEvent.KEYCODE_DPAD_UP
+                || (fromGamepad(event) && event.getKeyCode() >= android.view.KeyEvent.KEYCODE_DPAD_UP
                 && event.getKeyCode() <= android.view.KeyEvent.KEYCODE_DPAD_RIGHT))) {
             touch.setControllerHidden(true);
         }

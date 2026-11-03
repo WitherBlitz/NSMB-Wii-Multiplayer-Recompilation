@@ -135,8 +135,27 @@ public class SDLControllerManager
 
         return ((sources & InputDevice.SOURCE_CLASS_JOYSTICK) != 0 ||
                 ((sources & InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD) ||
-                ((sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD)
+                ((sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD) ||
+                hasGamepadButtons(device)
         );
+    }
+
+    /* NSMBW: some controllers (an Ipega 9087S in its Android mode, issue #24) report themselves as a
+     * keyboard only, so none of the sources above matched and their buttons arrived as unknown keys.
+     * A device whose own keys include the gamepad A and B buttons is a controller. hasKeys asks the
+     * input service, and this runs on every key press, so the answer is kept per device. */
+    private static final android.util.SparseBooleanArray sGamepadButtons = new android.util.SparseBooleanArray();
+
+    private static boolean hasGamepadButtons(InputDevice device) {
+        final int id = device.getId();
+        final int known = sGamepadButtons.indexOfKey(id);
+        if (known >= 0) {
+            return sGamepadButtons.valueAt(known);
+        }
+        final boolean[] keys = device.hasKeys(KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_B);
+        final boolean gamepad = !device.isVirtual() && keys.length == 2 && keys[0] && keys[1];
+        sGamepadButtons.put(id, gamepad);
+        return gamepad;
     }
 
 }
