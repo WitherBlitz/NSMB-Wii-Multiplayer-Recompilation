@@ -379,7 +379,8 @@ u32 GXSetDispCopyYScale(f32 vscale) {
 }
 
 void GXSetCopyClear(GXColor color, u32 depth) {
-  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
+  // Only queued BP writes (and the producer's bpSent): the decoder applies them in order, so the GX
+  // thread needn't be waited for here, unlike the setters below that touch decoded state.
   // BP 0x4F: clear color R + A
   u32 reg0 = 0;
   SET_REG_FIELD(0, reg0, 8, 0, color.r);
