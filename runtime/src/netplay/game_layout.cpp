@@ -489,7 +489,8 @@ std::shared_ptr<Font> LoadFontFile(const std::string& path) {
                     const float y = static_cast<float>((cell / perRow) * (font->cellHeight + 1));
                     g.u0 = x / sheetWidth;
                     g.v0 = y / sheetHeight;
-                    g.u1 = (x + g.glyphWidth) / sheetWidth;
+                    // The whole cell: the letters' edge reaches past glyphWidth (the rest is clear).
+                    g.u1 = (x + font->cellWidth) / sheetWidth;
                     g.v1 = (y + font->cellHeight) / sheetHeight;
                     // An icon: a good part of what it draws is in colour (letters are one grey).
                     if (g.sheet < colourSheets.size()) {
@@ -699,7 +700,7 @@ void DrawTextLines(ImDrawList* list, const View& view, const Mtx& m, const Font&
             // On this font's baseline.
             const float gy = y - (font.ascent * scaleY - owner->ascent * sy);
             const float gx = x + g->left * sx;
-            const float gw = g->glyphWidth * sx;
+            const float gw = owner->cellWidth * sx;
             const float gh = owner->cellHeight * sy;
             const ImVec2 p[4] = {ToScreen(view, m, gx, gy), ToScreen(view, m, gx + gw, gy),
                                  ToScreen(view, m, gx + gw, gy - gh), ToScreen(view, m, gx, gy - gh)};
