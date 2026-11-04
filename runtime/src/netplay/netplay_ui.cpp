@@ -2048,6 +2048,12 @@ void HandleEvents(const NetplayLobby::Snapshot& lobby) {
                 NetplayLobby::ConnectDirect(address);
             }
         }
+        // Direct Connection joins once the host answers (the lobby joins it itself): its room, as a
+        // room picked from the list shows.
+        if (lobby.phase == Phase::Joining || lobby.phase == Phase::InRoom) {
+            Show(Screen::Room);
+            break;
+        }
         const int count = static_cast<int>(lobby.rooms.size());
         if (g_ui.cursor > count) g_ui.cursor = count;  // a room went away
         if (up) g_ui.cursor = std::max(0, g_ui.cursor - 1);
