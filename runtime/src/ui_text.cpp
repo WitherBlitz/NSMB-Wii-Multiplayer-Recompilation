@@ -39,6 +39,16 @@ const Table& Italian() {
         {"Controller", "Controller"},
         {"Keybinds", "Tasti"},
         {"Language", "Lingua"},
+        {"Gameplay", "Partita"},
+        // Gameplay
+        {"No Time Limit", "Tempo infinito"},
+        {"Infinite Lives", "Vite infinite"},
+        {"P1", "G1"},
+        {"Blue Toad", "Toad blu"},
+        {"Yellow Toad", "Toad giallo"},
+        {"The course timer stands still: take your time.", "Il tempo del livello si ferma: fai con calma."},
+        {"A miss costs no life.", "Perdere non costa vite."},
+        {"These keep the game's own rules in LAN play.", "In LAN valgono le regole normali del gioco."},
         // Video
         {"Resolution", "Risoluzione"},
         {"Native", "Nativa"},

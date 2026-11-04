@@ -1,4 +1,5 @@
 #include "frame_input.h"
+#include "gameplay_options.h"
 #include "det_hash.h"
 #include "timebase_contract.h"
 #include "det_clock.h"
@@ -646,6 +647,7 @@ void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool servic
     StartStallWatchdogOnce();
     LogGuestModulesOnce();
     LogSceneChanges();
+    GameplayOptions::OnRetrace();
 
     uint32_t preCb = 0;
     uint32_t postCb = 0;

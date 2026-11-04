@@ -1,5 +1,6 @@
 #include "netplay_ui.h"
 
+#include "hle/gameplay_options.h"
 #include "netplay/game_layout.h"
 #include "netplay/game_menus.h"
 #include "netplay/world_map_nav.h"
@@ -1153,9 +1154,9 @@ void DrawToggle(const Canvas& c) {
 constexpr float kScales[] = {0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f};
 std::atomic<bool> g_settingsChanged{false};
 std::atomic<bool> g_touchControlsToggled{false};  // the Keybinds tab's Touch Controls, since the last take  // the Android app copies them into its own settings
-enum SettingsTab { kTabVideo, kTabAudio, kTabKeybinds, kTabLanguage };
+enum SettingsTab { kTabVideo, kTabAudio, kTabKeybinds, kTabGameplay, kTabLanguage };
 int g_settingsTab = kTabVideo;
-constexpr int kSettingsTabs = 4;
+constexpr int kSettingsTabs = 5;
 
 // Cursor rows. Video: 0 tabs, 1 resolution (Native the last choice), 2 fullscreen, then renderer,
 // V-Sync, Performance Monitor (FPS counter and frametime graph), spinning coins and OK, one a row.
@@ -1334,17 +1335,88 @@ void Checkbox(const Canvas& c, float x, float y, bool on) {
     }
 }
 
+// P1's character, one a save file (gameplay_options.cpp plays it): on the file select, in the empty
+// middle of the Erase / Copy bar under the files, for the highlighted file. B (unused there) or a
+// tap on it moves to the next character, a tap on the left arrow back. Couch play only. Newer's
+// layout stacks the files and has the bar at the bottom: the picker goes in its middle there.
+constexpr const char* kCharacterNames[] = {"Mario", "Luigi", "Blue Toad", "Yellow Toad"};
+constexpr float kCharRowY = -68.0f, kCharStackedY = -190.0f;  // the bar's middle, in a row / stacked
+constexpr float kCharX = 0.0f, kCharW = 190.0f, kCharH = 36.0f, kCharArrow = 117.0f;
+std::atomic<int> g_fileCharacterStep{0};  // B pressed (the remote's thread): taken while drawing
+
+float CharY() {
+    return FilesStacked() ? kCharStackedY : kCharRowY;
+}
+
+int CharacterFile() {
+    if (g_ui.screen != Screen::None || !g_ui.toggleShown || g_ui.toggleFocus) {
+        return -1;
+    }
+    const int file = GameMenus::FileSelectRawCursor();
+    return file >= 0 && file <= 2 ? file : -1;
+}
+
+void StepFileCharacter(int file, int step) {
+    RuntimeConfigFile::SetFileCharacter(file, (RuntimeConfigFile::FileCharacter(file) + 4 + step) % 4);
+    settings_overlay::PlayGameSound(settings_overlay::kGameSoundDecide);
+}
+
+void DrawFileCharacter(const Canvas& c) {
+    const int file = CharacterFile();
+    if (file >= 0) {
+        GameplayOptions::SetActiveFile(file);
+    }
+    const int step = g_fileCharacterStep.exchange(0);
+    if (file < 0) {
+        return;
+    }
+    if (step != 0) {
+        StepFileCharacter(file, step);
+    }
+    const uint32_t character = std::min<uint32_t>(RuntimeConfigFile::FileCharacter(file), 3);
+    const float y = CharY();
+    Button(c, "", kCharX, y, kCharW, false, true, g_ui.frame, 21.0f, kCharH);
+    Text(c, UiText::Tr("P1") + ": " + UiText::Tr(kCharacterNames[character]), kCharX + 13.0f, y, 20);
+    Arrow(c, kCharX - kCharArrow, y, false, false);
+    Arrow(c, kCharX + kCharArrow, y, true, false);
+    // The B button at the left end, drawn like the game's own (-) and (+) beside Erase and Copy.
+    const float bx = kCharX - kCharW / 2 + 19.0f;
+    const ImVec2 b = ToScreen(c, bx, y);
+    const float r = 12.0f * c.view.scale;
+    c.list->AddCircleFilled(b, r, IM_COL32(250, 250, 250, static_cast<int>(240 * c.alpha)));
+    c.list->AddCircle(b, r, IM_COL32(90, 90, 100, static_cast<int>(230 * c.alpha)), 0, 2.0f * c.view.scale);
+    Text(c, "B", bx, y, 17, 1, 0x505060FFu);
+}
+
+// A tap on the picker: true when it took the tap.
+bool TapFileCharacter(float lx, float ly) {
+    const int file = CharacterFile();
+    if (file < 0 || std::fabs(ly - CharY()) > kCharH / 2 + 6.0f) {
+        return false;
+    }
+    if (std::fabs(lx - (kCharX - kCharArrow)) <= 30.0f) {
+        StepFileCharacter(file, -1);
+        return true;
+    }
+    if (std::fabs(lx - kCharX) <= kCharW / 2 + 4.0f || std::fabs(lx - (kCharX + kCharArrow)) <= 30.0f) {
+        StepFileCharacter(file, 1);
+        return true;
+    }
+    return false;
+}
+
 constexpr float kSettingsHeight = 440.0f, kSettingsWidth = 720.0f;
 
 void DrawSettingsTabs(const Canvas& c) {
     const float y = kSettingsHeight / 2 - 42.0f;
     const char* names[kSettingsTabs] = {"Video", "Audio",
-                                        settings_overlay::ControllerConnected() ? "Controller" : "Keybinds", "Language"};
+                                        settings_overlay::ControllerConnected() ? "Controller" : "Keybinds", "Gameplay",
+                                        "Language"};
     for (int tab = 0; tab < kSettingsTabs; ++tab) {
-        const float x = (tab - 1.5f) * 168.0f;
-        Button(c, names[tab], x, y, 156, g_ui.cursor == 0 && g_settingsTab == tab, g_settingsTab == tab, g_ui.frame,
-               28.0f);
-        AddHitEvent(x, y, 164, 60, 0, kEvTab0 << tab);
+        const float x = (tab - 2.0f) * 138.0f;
+        Button(c, names[tab], x, y, 130, g_ui.cursor == 0 && g_settingsTab == tab, g_settingsTab == tab, g_ui.frame,
+               23.0f);
+        AddHitEvent(x, y, 136, 60, 0, kEvTab0 << tab);
     }
 }
 
@@ -1491,6 +1563,29 @@ void DrawLanguageTab(const Canvas& c) {
     AddHit(0, -kSettingsHeight / 2 + 43.0f, 240, 60, kLanguageOk);
 }
 
+// The Gameplay tab (gameplay_options.cpp applies it): No Time Limit and Infinite Lives, each a button
+// with its checkbox. LAN play keeps the game's own rules. Cursor rows: 1-2, then 3 OK. (P1's
+// character is picked on the file select, one a save file: DrawFileCharacter.)
+constexpr int kGameplayTime = 1, kGameplayLives = 2, kGameplayOk = 3;
+
+void DrawGameplayTab(const Canvas& c) {
+    const bool time = RuntimeConfigFile::NoTimeLimit(), lives = RuntimeConfigFile::InfiniteLives();
+    const float rows[] = {104.0f, 36.0f};
+    const char* labels[] = {"No Time Limit", "Infinite Lives"};
+    const bool on[] = {time, lives};
+    for (int i = 0; i < 2; ++i) {
+        Button(c, labels[i], 24, rows[i], 380, g_ui.cursor == 1 + i, true, g_ui.frame, 28.0f, 48.0f);
+        Checkbox(c, -140, rows[i], on[i]);
+        AddHit(24, rows[i], 386, 54, 1 + i);
+    }
+    const char* note = g_ui.cursor == kGameplayTime    ? "The course timer stands still: take your time."
+                       : g_ui.cursor == kGameplayLives ? "A miss costs no life."
+                                                       : "These keep the game's own rules in LAN play.";
+    Text(c, note, 0, -100, 21);
+    Button(c, "OK", 0, -kSettingsHeight / 2 + 43.0f, 232, g_ui.cursor == kGameplayOk, true, g_ui.frame);
+    AddHit(0, -kSettingsHeight / 2 + 43.0f, 240, 60, kGameplayOk);
+}
+
 void DrawVideoTab(const Canvas& c) {
     const std::vector<VideoChoice> choices = VideoChoices();
     const VideoChoice shown = choices[CurrentChoice(choices)];
@@ -1633,6 +1728,8 @@ void DrawSettings(const Canvas& c) {
         DrawAudioTab(c);
     } else if (g_settingsTab == kTabKeybinds) {
         DrawKeybindsTab(c);
+    } else if (g_settingsTab == kTabGameplay) {
+        DrawGameplayTab(c);
     } else {
         DrawLanguageTab(c);
     }
@@ -1716,6 +1813,20 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
             const int next = left ? (now - 1) / 5 * 5 : (now + 5) / 5 * 5;
             settings_overlay::SetVolumePercent(which, next, true);
         } else if (confirm && cursor == kAudioOk) {
+            CloseSettings();
+        }
+        return;
+    }
+    if (g_settingsTab == kTabGameplay) {
+        if (up) cursor = cursor - 1;
+        if (down) cursor = std::min(kGameplayOk, cursor + 1);
+        if (confirm && cursor == kGameplayTime) {
+            RuntimeConfigFile::SetNoTimeLimit(!RuntimeConfigFile::NoTimeLimit());
+            g_settingsChanged = true;
+        } else if (confirm && cursor == kGameplayLives) {
+            RuntimeConfigFile::SetInfiniteLives(!RuntimeConfigFile::InfiniteLives());
+            g_settingsChanged = true;
+        } else if (confirm && cursor == kGameplayOk) {
             CloseSettings();
         }
         return;
@@ -2194,6 +2305,9 @@ void TapAt(float lx, float ly, float gx, uint16_t scene, bool title) {
     if (g_ui.toggleShown && g_ui.screen == Screen::None && in(kGearX, kGearY, kGearW + 16, 66)) {
         g_ui.toggleFocus = false;
         Show(Screen::Settings);
+        return;
+    }
+    if (TapFileCharacter(lx, ly)) {
         return;
     }
     // Anywhere else is the game's: the cursor leaves the toggle so the game takes the presses.
@@ -2834,6 +2948,7 @@ void Draw() {
         if (g_ui.toggleShown) {
             ++g_ui.frame;
             DrawToggle(Canvas{list, GameLayout::GameView(), 1.0f});
+            DrawFileCharacter(Canvas{list, GameLayout::GameView(), 1.0f});
         }
         if (scene == kSceneStage) {
             ++g_ui.frame;
@@ -3039,6 +3154,11 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
             g_ui.topItem = 0;
             g_ui.events &= ~kEvUp;
             g_ui.heldFromMenu |= screenUp;
+        }
+        // B on a highlighted file: its P1 character (DrawFileCharacter).
+        if ((pressed & kB) != 0 && !Modal() && CharacterFile() >= 0) {
+            g_fileCharacterStep.fetch_add(1);
+            g_ui.heldFromMenu |= kB;
         }
         // Create Room: the game's own screen picks the number; its confirm press is ours.
         if (g_ui.screen == Screen::Count && (pressed & (kTwo | kA)) != 0 &&

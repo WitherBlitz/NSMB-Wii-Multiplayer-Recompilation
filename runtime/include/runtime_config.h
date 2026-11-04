@@ -57,6 +57,11 @@ struct RuntimeUserConfig {
     std::optional<uint32_t> frameGraphSize;  // NSMBW: [video] frame_graph_size, percent (5-200; 50 = the original size)
     std::optional<bool> vsync;          // NSMBW: [video] vsync, presents wait for the display (Windows)
     std::optional<std::string> language;  // NSMBW: [game] language, "en" "es" "fr" (the USA disc's) or "it"
+    std::optional<bool> noTimeLimit;      // NSMBW: [game] no_time_limit, the course timer stands still
+    std::optional<bool> infiniteLives;    // NSMBW: [game] infinite_lives, a miss costs no life
+    // NSMBW: [game] file1_character..file3_character, P1's character on each save file (the file
+    // select's picker): 0 Mario, 1 Luigi, 2 Blue Toad, 3 Yellow Toad.
+    std::array<std::optional<uint32_t>, 3> fileCharacters;
     std::optional<uint32_t> disabledPostProcessingPaths;
     std::optional<float> audioVolume;
     std::optional<float> audioMusicVolume;
@@ -617,6 +622,14 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         value && (*value == "en" || *value == "es" || *value == "fr" || *value == "it")) {
         config.language = *value;
     }
+    config.noTimeLimit = FindConfigValue<bool>(document, "game", "no_time_limit");
+    config.infiniteLives = FindConfigValue<bool>(document, "game", "infinite_lives");
+    for (size_t file = 0; file < config.fileCharacters.size(); ++file) {
+        const std::string key = "file" + std::to_string(file + 1) + "_character";
+        if (auto value = FindConfigUint(document, "game", key.c_str()); value && *value <= 3) {
+            config.fileCharacters[file] = *value;
+        }
+    }
     config.textureReplacements = FindConfigValue<bool>(document, "video", "texture_replacements");
     config.textureDumps = FindConfigValue<bool>(document, "video", "texture_dumps");
     if (auto value = FindConfigUint(document, "video", "disabled_post_processing_paths");
@@ -893,6 +906,41 @@ inline bool SetLanguage(const std::string& value) {
     }
     Mutable().language = value;
     return WriteSetting("game", "language", FormatString(value));
+}
+
+// NSMBW: the Gameplay tab (gameplay_options.cpp applies them).
+inline bool NoTimeLimit() {
+    return Get().noTimeLimit.value_or(false);
+}
+
+inline bool SetNoTimeLimit(bool value) {
+    Mutable().noTimeLimit = value;
+    return WriteSetting("game", "no_time_limit", value ? "true" : "false");
+}
+
+inline bool InfiniteLives() {
+    return Get().infiniteLives.value_or(false);
+}
+
+inline bool SetInfiniteLives(bool value) {
+    Mutable().infiniteLives = value;
+    return WriteSetting("game", "infinite_lives", value ? "true" : "false");
+}
+
+// P1's character on save file `file` (0-2): 0 Mario, 1 Luigi, 2 Blue Toad, 3 Yellow Toad.
+inline uint32_t FileCharacter(int file) {
+    if (file < 0 || file > 2) {
+        return 0;
+    }
+    return Get().fileCharacters[static_cast<size_t>(file)].value_or(0);
+}
+
+inline bool SetFileCharacter(int file, uint32_t value) {
+    if (file < 0 || file > 2 || value > 3) {
+        return false;
+    }
+    Mutable().fileCharacters[static_cast<size_t>(file)] = value;
+    return WriteSetting("game", "file" + std::to_string(file + 1) + "_character", std::to_string(value));
 }
 
 inline bool FrameGraph(bool fallback = false) {
