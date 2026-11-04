@@ -689,6 +689,9 @@ public class GameActivity extends SDLActivity
             field.setSingleLine(true);
             field.setHint("192.168.1.20:52130");
             field.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+            // In landscape the keyboard would take the whole screen and hide the dialog; its Go connects.
+            field.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                    | android.view.inputmethod.EditorInfo.IME_ACTION_GO);
             final android.widget.FrameLayout box = new android.widget.FrameLayout(this);
             final int pad = (int) (20 * getResources().getDisplayMetrics().density);
             box.setPadding(pad, pad / 2, pad, 0);
@@ -700,6 +703,15 @@ public class GameActivity extends SDLActivity
                     .setPositiveButton(Lang.t("Connect"), (d, w) -> nativeDirectAddress(field.getText().toString().trim()))
                     .setNegativeButton(Lang.t("Cancel"), null)
                     .create();
+            field.setOnEditorActionListener((v, action, event) -> {
+                // Go, or Enter on a hardware keyboard.
+                final boolean enter = event != null && event.getKeyCode() == android.view.KeyEvent.KEYCODE_ENTER
+                        && event.getAction() == android.view.KeyEvent.ACTION_DOWN;
+                if (action != android.view.inputmethod.EditorInfo.IME_ACTION_GO && !enter) return false;
+                nativeDirectAddress(field.getText().toString().trim());
+                dialog.dismiss();
+                return true;
+            });
             dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
             dialog.show();
             field.requestFocus();
