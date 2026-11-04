@@ -182,6 +182,38 @@ std::string Problem(const fs::path& root) {
         return "That is " + id + " revision " + std::to_string(revision) + ". This build runs only " + disc +
                " (Dolphin shows the revision under Properties > Info).";
     }
+    // The game's code modules were translated with the rest: a disc whose modules were changed (a
+    // repacked or modded image keeps the disc ID) would link nothing and stop at the first scene.
+    // Each is the original's LZ file or, decompressed, the original's .rel. Newer's disc has the same.
+    struct Module {
+        const char* name;
+        uintmax_t lzSize, relSize;
+    };
+    static constexpr Module kModules[] = {
+        {"d_profileNP", 8791, 24244},
+        {"d_basesNP", 1190805, 3019336},
+        {"d_enemiesNP", 779805, 2137424},
+        {"d_en_bossNP", 229984, 605552},
+    };
+    for (const Module& module : kModules) {
+        const std::string lz = "files/rels/" + std::string(module.name) + ".rel.LZ";
+        const std::string rel = "files/rels/" + std::string(module.name) + ".rel";
+        std::error_code lzError, relError;
+        const uintmax_t lzSize = fs::file_size(root / fs::u8path(lz), lzError);
+        const uintmax_t relSize = fs::file_size(root / fs::u8path(rel), relError);
+        if ((!lzError && lzSize == module.lzSize) || (!relError && relSize == module.relSize)) {
+            continue;
+        }
+        if (lzError && relError) {
+            return "That copy of " + id + " has no " + lz + ". This build needs " + disc +
+                   " as Dolphin's Extract Entire Disc makes it, with nothing changed or left out.";
+        }
+        const std::string& present = lzError ? rel : lz;
+        return "That copy of " + id + " has a changed " + present + " (" + std::to_string(lzError ? relSize : lzSize) +
+               " bytes, not " + std::to_string(lzError ? module.relSize : module.lzSize) +
+               "): it isn't the original disc (a modded or repacked image?). This build runs only " + disc +
+               ", unchanged: it was translated from that disc's code.";
+    }
     // A mod keeps its disc ID from version to version; its own code tells them apart.
     if (!product.versionFile.empty()) {
         const std::string file = "files/" + std::string(product.versionFile);
@@ -278,7 +310,12 @@ bool EnsureConfigured() {
         return true;
     }
 #else
-    return true;  // the app chose and checked the folder
+    // The app chose and checked the folder; what this side finds still goes into the log.
+    if (const std::string problem = Problem(configured.empty() ? RuntimeConfigFile::ResolvedDvdRoot() : configured);
+        !problem.empty()) {
+        RT_LOGF(RT_TAG_RUNTIME, "game folder problem: %s\n", problem.c_str());
+    }
+    return true;
 #endif
 }
 
