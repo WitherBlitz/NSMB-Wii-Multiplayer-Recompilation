@@ -386,6 +386,11 @@ extern "C" int32_t WPADSendStreamData_HLE(uint32_t chan, uint32_t bufferPtr, uin
         return WpadContract::kErrorBadChannel;
     }
     SpeakerChannel& speaker = g_speakers[chan];
+    // #18: whether the game streams to a remote's speaker at all.
+    static std::atomic<bool> s_streamLogged{false};
+    if (!s_streamLogged.exchange(true, std::memory_order_relaxed)) {
+        RT_LOGF(RT_TAG_AUDIO, "remote %u speaker: the game sends its first stream data\n", chan + 1);
+    }
     // A remote connected (or gone) since the game turned its speaker on: set it up, or hand its
     // sound to this device's speakers.
     const bool real = WiiRemoteInput::HasRealRemote(chan);

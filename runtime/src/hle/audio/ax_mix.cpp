@@ -1074,6 +1074,12 @@ private:
         mix(MIX_AUXC_S, MIX_AUXC_S_RAMP, buffers[kBusAuxCS], pb.mixer.auxC_surround, pb.dpop.auxC_surround);
 
         if (pb.remote) {
+            // #18: whether any sound reaches the Wii Remotes' buses at all.
+            static std::atomic<bool> s_remoteLogged{false};
+            if (pb.remote_mixer_control != 0 && !s_remoteLogged.exchange(true, std::memory_order_relaxed)) {
+                RT_LOGF(RT_TAG_AUDIO, "a voice is mixed to the Wii Remote speakers (control 0x%04X)\n",
+                        pb.remote_mixer_control);
+            }
             if (newFilter && pb.remote_iir.on) {
                 if (pb.remote_iir.on == 2) {
                     BiquadFilter(samples.data(), count, pb.remote_iir.biquad);
