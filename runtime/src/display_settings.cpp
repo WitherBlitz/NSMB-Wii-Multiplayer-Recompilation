@@ -1,6 +1,7 @@
 #include "det_clock.h"
 #include "display_settings.h"
 
+#include "hle_stubs.h"
 #include "memory.h"
 #include "runtime_log.h"
 
@@ -12,6 +13,7 @@
 #include <cstring>
 #include <string>
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 
 namespace DisplaySettings {
@@ -114,12 +116,15 @@ void ApplyRenderer(const Settings& settings) {
 
 // Fill: widen the game's 16:9 canvas to the surface (Hor+), keeping the game's own pixel aspect
 // (its 832 units stand for 16:9). Otherwise keep, or put back, the game's own width.
+std::atomic<float> g_wideAspect{0.0f};  // what aurora widens 16:9 cameras to, or 0
+
 void ApplyGameCanvas(int32_t aspect) {
     // 3D: cameras set up for 16:9 are widened to the screen (aurora's projection), the same view
     // height with more to the sides, instead of being stretched across it.
     const bool widened = aspect == kAspectFill && SurfaceWiderThan169();
-    AuroraSetWidePerspectiveAspect(
-        widened ? static_cast<float>(g_surfaceWidth) / static_cast<float>(g_surfaceHeight) : 0.0f);
+    g_wideAspect.store(widened ? static_cast<float>(g_surfaceWidth) / static_cast<float>(g_surfaceHeight) : 0.0f,
+                       std::memory_order_relaxed);
+    AuroraSetWidePerspectiveAspect(g_wideAspect.load(std::memory_order_relaxed));
     uint32_t root = 0;
     if (!Memory::TryRead32(kRootScreen, root) || root == 0) {
         return;  // EGG::Screen::Initialize has not run yet
@@ -323,3 +328,33 @@ bool SurfaceWide() {
 }
 
 } // namespace DisplaySettings
+
+// 0x800B32E0 CrapUpPositions(Point3d* out, const Point3d* in): a layout position (608 units across
+// 4:3, centred) to the 2D scenes' 3D space, the W x H top-left orthographic camera the Items screen,
+// player select and the like draw their models with (W = mVideo's 640 x 4/3 in widescreen). Aurora
+// widens that camera to the surface when Fill is wider than 16:9, which keeps the models' shape but
+// pulls them toward the middle; their layout cards don't move, so the models are spread out again by
+// the same factor here. Otherwise the game's own arithmetic, step for step.
+extern "C" void CrapUpPositions_800b32e0(uint32_t out, uint32_t in) {
+    constexpr uint32_t kVideo = 0x8042A480u;         // mVideo::m_video
+    constexpr uint32_t kAspectRatio = 0x80428750u;   // mVideo::l_AspectRatio (4:3 to 16:9)
+    constexpr uint32_t kHalf = 0x8042C578u, kLayoutWidth = 0x8042C588u;  // 0.5, 608
+    const uint32_t video = Memory::Read32(Memory::Read32(kVideo));
+    float width = static_cast<float>(Memory::Read16(video + 4u));
+    const float height = static_cast<float>(Memory::Read16(video + 6u));
+    if (DisplaySettings::GameWidescreen()) width *= Memory::ReadFloat32(kAspectRatio);
+    const float half = Memory::ReadFloat32(kHalf);
+    const float scale = width / Memory::ReadFloat32(kLayoutWidth);
+    const float x = Memory::ReadFloat32(in), y = Memory::ReadFloat32(in + 4u), z = Memory::ReadFloat32(in + 8u);
+    const float centreX = half * width, centreY = half * height;
+    float offset = -((centreX - (centreX + x)) * scale);
+    const float wide = DisplaySettings::g_wideAspect.load(std::memory_order_relaxed);
+    if (wide > 0.0f && height > 0.0f) {
+        const float cameraAspect = width / height;  // aurora widens cameras from 1.68 to 1.88
+        if (cameraAspect > 1.68f && cameraAspect < 1.88f) offset *= wide / cameraAspect;
+    }
+    Memory::WriteFloat32(out + 8u, z);
+    Memory::WriteFloat32(out + 4u, centreY + y);
+    Memory::WriteFloat32(out, centreX + offset);
+}
+PPC_NATIVE_OVERRIDE_VOID(800B32E0, CrapUpPositions_800b32e0, (uint32_t out, uint32_t in), (out, in));
