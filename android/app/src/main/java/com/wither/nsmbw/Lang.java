@@ -464,6 +464,21 @@ final class Lang {
                 "Le texte du jeu a besoin d'un pack de langue : le bouton de langue du menu de départ en importe un.",
                 "Il testo del gioco ha bisogno di un pacchetto lingua: il pulsante della lingua nel menu iniziale "
                 + "ne importa uno.");
+        // --- The game's code modules (AppFiles.moduleProblem) ---
+        newer("It has no files/rels/%s.rel.LZ: this port needs the whole disc, as Dolphin's Extract Entire Disc makes it.",
+                "No tiene files/rels/%s.rel.LZ: este port necesita el disco completo, como lo hace Extraer disco "
+                + "completo de Dolphin.",
+                "Il n'a pas files/rels/%s.rel.LZ : ce port a besoin du disque entier, comme le fait Extraire "
+                + "tout le disque de Dolphin.",
+                "Manca files/rels/%s.rel.LZ: questo port ha bisogno del disco intero, come lo crea Estrai disco "
+                + "intero di Dolphin.");
+        newer("Its files/rels/%s is changed: it isn't the original disc (a modded or repacked image?). This port runs only the unchanged disc.",
+                "Su files/rels/%s está modificado: no es el disco original (¿una imagen con mods o reempaquetada?). "
+                + "Este port solo funciona con el disco sin cambios.",
+                "Son files/rels/%s est modifié : ce n'est pas le disque d'origine (une image moddée ou "
+                + "reconditionnée ?). Ce port ne fonctionne qu'avec le disque d'origine.",
+                "Il suo files/rels/%s è modificato: non è il disco originale (un'immagine modificata o "
+                + "ricompattata?). Questo port funziona solo con il disco originale.");
         // --- Settings: the Gameplay tab ---
         newer("Gameplay", "Juego", "Jeu", "Partita");
         newer("No Time Limit", "Sin límite de tiempo", "Sans limite de temps", "Tempo infinito");

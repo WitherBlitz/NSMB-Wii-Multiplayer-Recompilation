@@ -91,7 +91,31 @@ final class AppFiles {
         if (problem == null && newer && new File(root, "files/NewerRes/DLCodeUS_1.bin").length() != NEWER_CODE_SIZE) {
             return Lang.t("That is another version of Newer Super Mario Bros. Wii. This port runs v1.30 for the USA.");
         }
-        return problem;
+        return problem != null ? problem : moduleProblem(root);
+    }
+
+    /**
+     * The game's code modules were translated with the rest (runtime/src/game_folder.cpp checks the
+     * same): a modded or repacked disc image keeps its ID but links nothing and stops at the first
+     * scene. Each is the original's LZ file or, decompressed, the original's .rel; Newer's are the same.
+     */
+    private static final String[] MODULES = {"d_profileNP", "d_basesNP", "d_enemiesNP", "d_en_bossNP"};
+    private static final long[] MODULE_LZ_SIZES = {8791, 1190805, 779805, 229984};
+    private static final long[] MODULE_REL_SIZES = {24244, 3019336, 2137424, 605552};
+
+    private static String moduleProblem(File root) {
+        for (int i = 0; i < MODULES.length; ++i) {
+            final File lz = new File(root, "files/rels/" + MODULES[i] + ".rel.LZ");
+            final File rel = new File(root, "files/rels/" + MODULES[i] + ".rel");
+            if (lz.length() == MODULE_LZ_SIZES[i] || rel.length() == MODULE_REL_SIZES[i]) continue;
+            if (!lz.isFile() && !rel.isFile()) {
+                return Lang.f("It has no files/rels/%s.rel.LZ: this port needs the whole disc, as Dolphin's "
+                        + "Extract Entire Disc makes it.", MODULES[i]);
+            }
+            return Lang.f("Its files/rels/%s is changed: it isn't the original disc (a modded or repacked "
+                    + "image?). This port runs only the unchanged disc.", (lz.isFile() ? lz : rel).getName());
+        }
+        return null;
     }
 
     private static final long NEWER_CODE_SIZE = 463252;
