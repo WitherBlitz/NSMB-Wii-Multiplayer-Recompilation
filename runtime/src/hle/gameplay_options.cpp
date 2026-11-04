@@ -8,22 +8,32 @@
 //    undone. Lives only drop by a miss; a file's own counts are loaded on the file select.
 //  - P1 Character (picked on the file select, one a save file): daPyMng_c::mPlayerType (the
 //    character of each player slot) gets the active file's in slot 0, swapped with whichever slot
-//    had it, so no two players share a character. It is held
-//    everywhere but the boot and strap screens, the file select included, so the player select, the
-//    world map and each course create P1 as the chosen character. The world map's other players
-//    and its own P1 take their models from elsewhere (HoldMapModels, PyMdlMngConstruct).
+//    had it, so no two players share a character. It is held everywhere but the boot and strap
+//    screens, the file select included, so the player select, the world map and each course create
+//    P1 as the chosen character. The world map's other players and its own P1 take their models
+//    from elsewhere (HoldMapModels, PyMdlMngConstruct).
+//  - Power-Up: given on the game thread (OnGameThread). In a course P1's dAcPy_c is asked for it
+//    the way an item does (ChangePowerupWithAnimation: the player changes, with the animation, as
+//    soon as it moves again); on the world map P1's daPyMng_c::mPlayerMode (one a character) is set
+//    and the map's own figure takes it, as from the map's Items screen (0x808C6DF0).
 // Lockstep (LAN) play keeps the game's own rules: every machine has to run the same ones.
 #include "gameplay_options.h"
 
 #include "abi_bridge.h"
 #include "det_clock.h"
+#include "guest_interrupt_context.h"
 #include "hle_stubs.h"
 #include "memory.h"
+#include "netplay/game_menus.h"
 #include "runtime_config.h"
+#include "runtime_log.h"
+#include "runtime_product.h"
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
 
 namespace GameplayOptions {
 namespace {
@@ -32,15 +42,33 @@ constexpr uint32_t kScene = 0x80428730u;                // dScene_c::m_nextScene
 constexpr uint32_t kStageTimerInstance = 0x8042A070u;   // dStageTimer_c::m_instance
 constexpr uint32_t kPlayerType = 0x80354E60u;           // daPyMng_c::mPlayerType[4]
 constexpr uint32_t kRest = 0x80354E90u;                 // daPyMng_c::mRest[4]
+constexpr uint32_t kPlayerMode = 0x80354E70u;           // daPyMng_c::mPlayerMode[4], each character's power-up
 constexpr uint32_t kMapModels = 0x8093CDF0u;            // the world map player's model of each slot (d_basesNP)
-constexpr uint16_t kSceneBoot = 0x000, kSceneStage = 0x005, kSceneBootStrap = 0x2EE;
+constexpr uint32_t kWmFigures = 0x809A2390u;            // the world map's players (d_basesNP bss)
+constexpr uint32_t kWmFiguresByCharacter = 1304;        // their figures, one a character
+constexpr uint32_t kWmFigureModels = 296;               // a figure's dPyMdlMng_c (+568 its power-up)
+constexpr uint32_t kWmFigureChange = 0x808C6DF0u;       // a figure's power-up and model (the Items screen's call)
+constexpr uint32_t kGetPlayer = 0x8005F900u;            // getPlayer__9daPyMng_cFi
+constexpr uint32_t kChangePowerUp = 0x80145AC0u;        // dAcPy_c__ChangePowerupWithAnimation
+constexpr uint16_t kSceneBoot = 0x000, kSceneWorldMap = 0x003, kSceneStage = 0x005, kSceneBootStrap = 0x2EE;
+constexpr uint16_t kProfileOpeningTitle = 0x2BB;        // only on the title screen (its course is a stage too)
 constexpr int32_t kTimerStep = 92;                      // one frame of the course timer
 constexpr int32_t kTimerSlack = 4 * kTimerStep;         // a few frames between two retraces
 
 std::atomic<int> g_activeFile{-1};
+std::atomic<int> g_pendingPowerUp{-1};
+std::atomic<bool> g_ourMap{false};  // the world map is the game's own (a mod's may differ): HoldMapModels
 
 uint32_t ChosenCharacter() {
     return RuntimeConfigFile::FileCharacter(g_activeFile.load(std::memory_order_relaxed));
+}
+
+// Infinite Lives or the Power-Up did something: the file being played says "Cheated" from now on.
+void MarkCheated() {
+    const int file = g_activeFile.load(std::memory_order_relaxed);
+    if (file >= 0 && !RuntimeConfigFile::FileCheated(file)) {
+        RuntimeConfigFile::SetFileCheated(file, true);
+    }
 }
 
 bool InGuestRam(uint32_t address) {
@@ -81,6 +109,7 @@ void HoldLives(uint16_t scene) {
         const int32_t now = static_cast<int32_t>(value);
         if (s_valid && now == s_last[i] - 1) {
             Memory::Write32(kRest + 4 * i, static_cast<uint32_t>(s_last[i]));
+            MarkCheated();
             continue;
         }
         s_last[i] = now;
@@ -106,6 +135,7 @@ void HoldMapModels(const std::array<uint32_t, 4>& types, bool chosen) {
         }
         s_ours = models == kOriginal;  // anything else (a mod's own map) is left alone
         s_checked = true;
+        g_ourMap = s_ours;
     }
     if (!s_ours) {
         return;
@@ -169,6 +199,121 @@ void OnRetrace() {
 void SetActiveFile(int file) {
     if (file >= 0 && file <= 2) {
         g_activeFile.store(file, std::memory_order_relaxed);
+    }
+}
+
+int ActiveFile() {
+    return g_activeFile.load(std::memory_order_relaxed);
+}
+
+namespace {
+
+bool IsNewer() {
+    return RuntimeProduct::Active().gameId == "SMNE03";
+}
+
+// A call into the game, as it could make one itself: on a private copy of this thread's registers.
+uint32_t CallGame(uint32_t target, uint32_t r3, uint32_t r4) {
+    GuestInterruptCallbackContext call;
+    CpuContext* cpu = call.get();
+    cpu->gpr[3] = r3;
+    cpu->gpr[4] = r4;
+    InvokeIndirectCpu(target, cpu);
+    return cpu->gpr[3];
+}
+
+// True once the pending power-up is P1's.
+bool GiveInCourse(int powerUp) {
+    if (GameMenus::HasProfile(kProfileOpeningTitle)) {
+        return false;  // the title screen's course: wait for the game
+    }
+    const uint32_t player = CallGame(kGetPlayer, 0, 0);
+    if (!InGuestRam(player)) {
+        return false;  // not in the course yet
+    }
+    CallGame(kChangePowerUp, player, static_cast<uint32_t>(powerUp));
+    return true;
+}
+
+// As the map's Items screen does with a power-up item: daPyMng_c::mPlayerMode, then the figure's
+// own power-up (which it takes into the next course) and model, through its change function.
+bool GiveOnMap(int powerUp) {
+    uint32_t type = 0;
+    if (!Memory::TryRead32(kPlayerType, type) || type > 3) {
+        return false;
+    }
+    Memory::Write32(kPlayerMode + 4 * type, static_cast<uint32_t>(powerUp));
+    // Going into a course takes each figure's power-up back into mPlayerMode, so the figure has to
+    // have it as well.
+    uint32_t map = 0, figure = 0, models = 0;
+    const bool ours = !IsNewer() && g_ourMap && Memory::TryRead32(kWmFigures, map) && InGuestRam(map) &&
+                      Memory::TryRead32(map + kWmFiguresByCharacter + 4 * type, figure) && InGuestRam(figure) &&
+                      Memory::TryRead32(figure + kWmFigureModels, models) && InGuestRam(models);
+    if (ours) {
+        CallGame(kWmFigureChange, figure, static_cast<uint32_t>(powerUp));
+    }
+    RT_LOGF(RT_TAG_RUNTIME, "gameplay: P1 (character %u) gets power-up %d on the world map%s\n", type, powerUp,
+            ours ? ", its figure too" : "");
+    return true;
+}
+
+} // namespace
+
+int PowerUpCount() {
+    return IsNewer() ? 8 : 7;
+}
+
+const char* PowerUpName(int powerUp) {
+    static constexpr const char* kNames[] = {"Small", "Super Mushroom", "Fire Flower", "Mini Mushroom",
+                                             "Propeller Mushroom", "Penguin Suit", "Ice Flower", "Hammer Suit"};
+    return powerUp >= 0 && powerUp < PowerUpCount() ? kNames[powerUp] : "";
+}
+
+void GivePowerUp(int powerUp) {
+    if (!DetClock::Enabled() && powerUp >= 0 && powerUp < PowerUpCount()) {
+        g_pendingPowerUp.store(powerUp, std::memory_order_relaxed);
+    }
+}
+
+bool PowerUpWaiting() {
+    return g_pendingPowerUp.load(std::memory_order_relaxed) >= 0;
+}
+
+namespace {
+
+// Automated runs: NSMBW_GIVE_POWERUP="<power-up>[@<ms>]" presses Power-Up that long after the
+// first frame, as the Gameplay tab would.
+void ScriptedPowerUp() {
+    static int s_powerUp = -2;
+    static std::chrono::steady_clock::time_point s_at;
+    if (s_powerUp == -2) {
+        s_powerUp = -1;
+        if (const char* value = std::getenv("NSMBW_GIVE_POWERUP"); value != nullptr && *value != '\0') {
+            char* end = nullptr;
+            s_powerUp = static_cast<int>(std::strtol(value, &end, 10));
+            const long delay = end != nullptr && *end == '@' ? std::strtol(end + 1, nullptr, 10) : 0;
+            s_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(delay);
+        }
+    }
+    if (s_powerUp >= 0 && std::chrono::steady_clock::now() >= s_at) {
+        GivePowerUp(s_powerUp);
+        s_powerUp = -1;
+    }
+}
+
+} // namespace
+
+void OnGameThread() {
+    ScriptedPowerUp();
+    int powerUp = g_pendingPowerUp.load(std::memory_order_relaxed);
+    if (powerUp < 0 || DetClock::Enabled()) {
+        return;
+    }
+    const uint16_t scene = GameMenus::CurrentScene();
+    const bool given = scene == kSceneStage ? GiveInCourse(powerUp) : scene == kSceneWorldMap && GiveOnMap(powerUp);
+    if (given) {
+        g_pendingPowerUp.compare_exchange_strong(powerUp, -1, std::memory_order_relaxed);
+        MarkCheated();
     }
 }
 

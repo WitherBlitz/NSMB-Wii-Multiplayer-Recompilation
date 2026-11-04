@@ -62,6 +62,9 @@ struct RuntimeUserConfig {
     // NSMBW: [game] file1_character..file3_character, P1's character on each save file (the file
     // select's picker): 0 Mario, 1 Luigi, 2 Blue Toad, 3 Yellow Toad.
     std::array<std::optional<uint32_t>, 3> fileCharacters;
+    // NSMBW: [game] file1_cheated..file3_cheated, the file select's "Cheated" on a save file that
+    // Infinite Lives or the Power-Up was used on.
+    std::array<std::optional<bool>, 3> fileCheated;
     std::optional<uint32_t> disabledPostProcessingPaths;
     std::optional<float> audioVolume;
     std::optional<float> audioMusicVolume;
@@ -629,6 +632,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         if (auto value = FindConfigUint(document, "game", key.c_str()); value && *value <= 3) {
             config.fileCharacters[file] = *value;
         }
+        config.fileCheated[file] = FindConfigValue<bool>(document, "game", "file" + std::to_string(file + 1) + "_cheated");
     }
     config.textureReplacements = FindConfigValue<bool>(document, "video", "texture_replacements");
     config.textureDumps = FindConfigValue<bool>(document, "video", "texture_dumps");
@@ -941,6 +945,18 @@ inline bool SetFileCharacter(int file, uint32_t value) {
     }
     Mutable().fileCharacters[static_cast<size_t>(file)] = value;
     return WriteSetting("game", "file" + std::to_string(file + 1) + "_character", std::to_string(value));
+}
+
+inline bool FileCheated(int file) {
+    return file >= 0 && file <= 2 && Get().fileCheated[static_cast<size_t>(file)].value_or(false);
+}
+
+inline bool SetFileCheated(int file, bool value) {
+    if (file < 0 || file > 2) {
+        return false;
+    }
+    Mutable().fileCheated[static_cast<size_t>(file)] = value;
+    return WriteSetting("game", "file" + std::to_string(file + 1) + "_cheated", value ? "true" : "false");
 }
 
 inline bool FrameGraph(bool fallback = false) {

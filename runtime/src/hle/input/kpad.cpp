@@ -1,6 +1,7 @@
 #include "netplay_ui.h"
 #include "settings_overlay.h"
 #include "host_suspend.h"
+#include "hle/gameplay_options.h"
 #include "frame_input.h"
 #include "hle_stubs.h"
 #include "input_bindings.h"
@@ -301,6 +302,7 @@ extern "C" int32_t KPAD__ReadEx_HLE(uint32_t chan, uint32_t statusPtr, uint32_t 
     if (chan == 0) {
         settings_overlay::FlushGameSound();  // a Settings button's sound, from the game's own thread
         HostSuspend::OnGameThread();         // a backup save before Android's pause, likewise
+        GameplayOptions::OnGameThread();     // the Gameplay tab's Power-Up, likewise
     }
     const int32_t read = KPAD__Read_HLE(chan, statusPtr, count);
     if (errPtr != 0) {
