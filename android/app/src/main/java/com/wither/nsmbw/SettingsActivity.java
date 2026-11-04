@@ -24,8 +24,8 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 
 /**
- * The start menu's Settings, laid out like the game's own settings window: the Video, Audio, Controls
- * and Language tabs along the top, one setting a row (a label and its value between arrows, a
+ * The start menu's Settings, laid out like the game's own settings window: the Video, Audio, Controls,
+ * Gameplay and Language tabs along the top, one setting a row (a label and its value between arrows, a
  * checkbox bar, or a slider), a line explaining the row last touched, and OK. In landscape the rows
  * are the game's (label and value side by side); in portrait each label sits above its value, with
  * room to spare. Choices are saved to the app's preferences and written to Config.toml before every
@@ -33,7 +33,7 @@ import android.widget.TextView;
  */
 public final class SettingsActivity extends Activity {
     private static final String TAG = "NSMBW";
-    private static final String[] TABS = {"Video", "Audio", "Controls", "Language"};
+    private static final String[] TABS = {"Video", "Audio", "Controls", "Gameplay", "Language"};
     private static final String EXTRA_TAB = "tab";
 
     // The game's window: cream with faint stripes, green buttons outlined in brown, yellow arrows.
@@ -94,18 +94,19 @@ public final class SettingsActivity extends Activity {
         final int inset = dp(portrait ? 16 : 12);
         window.setPadding(inset, inset, inset, inset);
 
-        // The tabs: two rows of two in portrait, one row of four in landscape, as in the game.
+        // The tabs: a row of three over a row of two in portrait, one row of five in landscape, as in
+        // the game.
         final LinearLayout tabRows = new LinearLayout(this);
         tabRows.setOrientation(LinearLayout.VERTICAL);
         LinearLayout tabRow = null;
         for (int i = 0; i < TABS.length; ++i) {
-            if (tabRow == null || (portrait && i == 2)) {
+            if (tabRow == null || (portrait && i == 3)) {
                 tabRow = new LinearLayout(this);
                 tabRow.setOrientation(LinearLayout.HORIZONTAL);
                 tabRows.addView(tabRow, rowParams(i == 0 ? 0 : dp(8)));
             }
             final int index = i;
-            final TextView button = greenButton(Lang.t(TABS[i]), i == tab, portrait ? 17 : 19, dp(portrait ? 46 : 40));
+            final TextView button = greenButton(Lang.t(TABS[i]), i == tab, 17, dp(portrait ? 46 : 40));
             button.setOnClickListener(v -> {
                 tab = index;
                 pendingHint = null;
@@ -143,6 +144,7 @@ public final class SettingsActivity extends Activity {
         if (tab == 0) videoTab();
         else if (tab == 1) audioTab();
         else if (tab == 2) controlsTab();
+        else if (tab == 3) gameplayTab();
         else languageTab();
 
         final FrameLayout.LayoutParams windowParams;
@@ -262,6 +264,27 @@ public final class SettingsActivity extends Activity {
                 Lang.t("A short buzz when a touch button is pressed."),
                 () -> settings.setHaptics(!settings.haptics()));
         hint.setText(Lang.t("The on-screen Wii Remote. A controller hides it while you use it."));
+    }
+
+    /** The game's Gameplay tab: its [game] keys, kept in Config.toml (AppFiles.setGameSetting). P1's
+     *  character is picked on the game's file select, one a save file. */
+    private void gameplayTab() {
+        gameToggle("No Time Limit", "no_time_limit", "The course timer stands still: take your time.");
+        gameToggle("Infinite Lives", "infinite_lives", "A miss costs no life.");
+        hint.setText(Lang.t("These keep the game's own rules in LAN play."));
+    }
+
+    private void gameToggle(String label, String key, String help) {
+        final boolean on = "true".equals(AppFiles.gameSetting(this, key));
+        toggle(Lang.t(label), on, Lang.t(help), () -> setGameSetting(key, on ? "false" : "true"));
+    }
+
+    private void setGameSetting(String key, String literal) {
+        try {
+            AppFiles.setGameSetting(this, key, literal);
+        } catch (Exception e) {
+            Log.e(TAG, "could not save " + key, e);
+        }
     }
 
     private void languageTab() {

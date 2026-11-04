@@ -464,6 +464,20 @@ final class Lang {
                 "Le texte du jeu a besoin d'un pack de langue : le bouton de langue du menu de départ en importe un.",
                 "Il testo del gioco ha bisogno di un pacchetto lingua: il pulsante della lingua nel menu iniziale "
                 + "ne importa uno.");
+        // --- Settings: the Gameplay tab ---
+        newer("Gameplay", "Juego", "Jeu", "Partita");
+        newer("No Time Limit", "Sin límite de tiempo", "Sans limite de temps", "Tempo infinito");
+        newer("Infinite Lives", "Vidas infinitas", "Vies infinies", "Vite infinite");
+        newer("The course timer stands still: take your time.",
+                "El tiempo del nivel se detiene: tómate tu tiempo.",
+                "Le chrono du niveau s'arrête : prenez votre temps.",
+                "Il tempo del livello si ferma: fai con calma.");
+        newer("A miss costs no life.", "Perder no cuesta vidas.", "Perdre ne coûte aucune vie.",
+                "Perdere non costa vite.");
+        newer("These keep the game's own rules in LAN play.",
+                "En LAN se juega con las reglas normales del juego.",
+                "En LAN, ce sont les règles normales du jeu.",
+                "In LAN valgono le regole normali del gioco.");
         // --- Edit Touch Controls (TouchLayoutEditor) ---
         newer("Edit Touch Controls", "Editar controles táctiles", "Modifier les commandes tactiles",
                 "Modifica i controlli touch");

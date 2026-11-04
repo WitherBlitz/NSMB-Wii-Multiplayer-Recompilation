@@ -295,6 +295,19 @@ final class AppFiles {
         setKey(config, "audio", key, String.format(Locale.ROOT, "%.2f", volume));
     }
 
+    /** A [game] setting of the Gameplay tab (no_time_limit, infinite_lives), as
+     *  the game has it: the game's own Gameplay tab writes the same keys while it runs. */
+    static String gameSetting(Context context, String key) {
+        return readKey(new File(productDir(context, newerActive(context)), "Config.toml"), "game", key);
+    }
+
+    /** Sets a [game] setting for New Super Mario Bros. Wii and, once it has its folder, Newer. */
+    static void setGameSetting(Context context, String key, String literal) throws IOException {
+        setKey(new File(dataDir(context), "Config.toml"), "game", key, literal);
+        final File newer = productDir(context, true);
+        if (newer.isDirectory()) setKey(new File(newer, "Config.toml"), "game", key, literal);
+    }
+
     /** Sets [game] language in Config.toml, as the game's Language tab does; the game reads it at boot. */
     static void setGameLanguage(Context context, String code) throws IOException {
         setLanguage(new File(dataDir(context), "Config.toml"), code);
