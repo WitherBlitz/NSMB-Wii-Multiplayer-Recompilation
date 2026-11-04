@@ -1076,7 +1076,7 @@ private:
         if (pb.remote) {
             // #18: whether any sound reaches the Wii Remotes' buses at all.
             static std::atomic<bool> s_remoteLogged{false};
-            if (pb.remote_mixer_control != 0 && !s_remoteLogged.exchange(true, std::memory_order_relaxed)) {
+            if (!s_remoteLogged.exchange(true, std::memory_order_relaxed)) {
                 RT_LOGF(RT_TAG_AUDIO, "a voice is mixed to the Wii Remote speakers (control 0x%04X)\n",
                         pb.remote_mixer_control);
             }

@@ -1,4 +1,5 @@
 #include "frame_input.h"
+#include "guest_interrupt_context.h"
 #include "hle_stubs.h"
 #include "memory.h"
 #include "runtime_log.h"
@@ -92,6 +93,16 @@ PPC_NATIVE_OVERRIDE(801BF3B4, WPADInitSub_HLE, int32_t, (), ());
 
 extern "C" int32_t WPADInit_HLE()
 {
+    // __wpadInitSub's speaker volume (_wpadSpeakerVol): the console's setting
+    // (SCGetWpadSpeakerVolume, 89 without one), what WPADGetSpeakerVolume hands the game's remote
+    // speaker manager. Left at 0, the game sends no sound to the remotes at all (#18).
+    constexpr uint32_t kScGetWpadSpeakerVolume = 0x801DD670u;
+    constexpr uint32_t kWpadSpeakerVolume = 0x8042AAB7u;
+    GuestInterruptCallbackContext call;
+    InvokeIndirectCpu(kScGetWpadSpeakerVolume, call.get());
+    const auto volume = static_cast<uint8_t>(call.get()->gpr[3]);
+    Memory::Write8(kWpadSpeakerVolume, volume);
+    RT_LOGF(RT_TAG_AUDIO, "remote speaker volume %u\n", volume);
     return InitializeWpadLibrary();
 }
 PPC_NATIVE_OVERRIDE(801DFA50, WPADInit_HLE, int32_t, (), ());
