@@ -10,6 +10,8 @@ import struct
 import sys
 from pathlib import Path
 
+import p1_character
+
 # The folder unpack_game.py filled (default: "game" next to this repository), or the first argument.
 GAME = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[3].parent / "game"
 OUT_REL = GAME / "nsmbw_linked.rel"
@@ -148,6 +150,29 @@ for m in mods.values():
 names = {v: k for k, v in R.items()}
 print("relocations applied:", ", ".join(f"{names[t]}={n}" for t, n in sorted(counts.items())))
 
+# P1 can pick any character (p1_character.py): into a patched main.dol and the linked RELs, with its
+# stubs in a code section after them. Only the translator reads either; the game loads its own.
+dol = bytearray((GAME / "main.dol").read_bytes())
+
+
+def patch_rd32(addr):
+    at = p1_character.dol_location(dol, addr)
+    return struct.unpack_from(">I", dol, at)[0] if at is not None else rd32(addr)
+
+
+def patch_wr32(addr, value):
+    at = p1_character.dol_location(dol, addr)
+    if at is not None:
+        struct.pack_into(">I", dol, at, value)
+    else:
+        wr32(addr, value)
+
+
+stub_base = align_up(end, 0x20)
+p1_stubs = p1_character.apply(patch_rd32, patch_wr32, stub_base)
+(GAME / "main_patched.dol").write_bytes(dol)
+mem += bytes(stub_base - end) + p1_stubs
+
 # Synthetic REL: header + section table at the start of the image, sections as absolute ranges.
 syn_sections = [(0, False, 0)]
 layout = {"image_start": f"0x{base:08X}", "image_end": f"0x{end:08X}", "modules": []}
@@ -174,6 +199,7 @@ for m in mods.values():
         "sections": sec_abs,
     })
 
+syn_sections.append((stub_base - base, True, len(p1_stubs)))
 hdr_size = 0x4C + 8 * len(syn_sections)
 first_payload = min(o for o, _e, s in syn_sections if s)
 assert hdr_size <= first_payload, f"synthetic header (0x{hdr_size:X}) would overwrite payload at 0x{first_payload:X}"

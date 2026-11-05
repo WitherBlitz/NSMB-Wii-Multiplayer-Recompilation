@@ -38,7 +38,8 @@ python projects/nsmbw/tools/prelink_rels.py
 `unpack_game.py` checks the disc (SMNE01 revision 1, clean `main.dol`), copies `sys/main.dol` and
 unpacks the four boot RELs (`files/rels/*.rel.LZ`) into `..\game`. `prelink_rels.py` links the RELs
 offline the way the game links them at boot, into the one `nsmbw_linked.rel` the translator reads
-([`recomp.yml`](recomp.yml)).
+([`recomp.yml`](recomp.yml)). It also applies [`p1_character.py`](tools/p1_character.py) (mkwcat's "Player
+1 Can Change Character" code) to it and to `main_patched.dol`, the `main.dol` the translator reads.
 
 ## 3. Translate
 
