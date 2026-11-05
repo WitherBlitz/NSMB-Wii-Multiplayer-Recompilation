@@ -22,7 +22,8 @@ public final class TouchEditorActivity extends Activity {
         root.setBackgroundColor(Color.rgb(36, 74, 128));
         final TouchControlsView touch = new TouchControlsView(this);
         touch.setOpacity(settings.touchOpacity());
-        touch.setLayout(settings.touchLayout());
+        touch.setLayout(TouchLayoutEditor.startingLayout(this, settings));
+        touch.setCheatButton("true".equals(AppFiles.gameSetting(this, "cheat_button")));
         root.addView(touch, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         setContentView(root);

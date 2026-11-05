@@ -29,6 +29,7 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.BufferedInputStream;
 import java.io.File;
@@ -55,6 +56,7 @@ public final class LauncherActivity extends Activity {
     private static final int REQUEST_LOGS = 3;
     private static final int REQUEST_LANGUAGE_PACK = 4;
     private static final int REQUEST_ISO = 5;
+    private static final int REQUEST_GPU_DRIVER = 6;
     /** Set by GameActivity.restartForSession: open the game again once its old process is gone. */
     static final String EXTRA_RESTART_GAME = "restartGame";
     /** Set by the game's "Start Menu": show this screen even with Skip Start Menu on. */
@@ -81,6 +83,7 @@ public final class LauncherActivity extends Activity {
     /** Skip Start Menu with Auto Update on: open the game once the update check finds nothing. */
     private boolean skipAfterCheck;
     private TextView mainProcess;
+    private TextView gpuDriver;
     private boolean updating;
     /** An update waiting for the player to allow installs from this app. */
     private Updater.Release waitingUpdate;
@@ -220,6 +223,21 @@ public final class LauncherActivity extends Activity {
                     showToggle(mainProcess, settings.gameInMainProcess());
                 });
         showToggle(mainProcess, settings.gameInMainProcess());
+        final boolean snapdragon = GpuDrivers.supported();
+        gpuDriver = toggle(options, Lang.t("GPU Driver"), Lang.t(snapdragon
+                ? "Run the game on a driver from a zip, such as Turnip, in place of the phone's own. If a new "
+                + "driver stops the game from starting, Default comes back by itself."
+                : "Only for phones with a Snapdragon chip."), v -> pickGpuDriver());
+        gpuDriver.setSingleLine(true);
+        gpuDriver.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        gpuDriver.setMaxWidth(dp(180));
+        if (!snapdragon) {
+            final View row = (View) gpuDriver.getParent();
+            row.setOnClickListener(null);
+            row.setClickable(false);
+            row.setAlpha(0.4f);
+        }
+        showGpuDriver();
 
         final LinearLayout gameData = card(Lang.t(newer ? "Newer Game Data" : "Game Data"));
         // How to get the game files, the same steps KartPad gives, until a game is imported.
@@ -350,6 +368,12 @@ public final class LauncherActivity extends Activity {
         // The game's Language tab may have changed the language since this screen was drawn.
         final int shown = Lang.index();
         Lang.load(this);
+        if (GpuDrivers.takeFailure(this)) {
+            new AlertDialog.Builder(this).setMessage(Lang.t("The game closed right after starting on the new GPU "
+                    + "driver, so it's back on Default. You can pick that driver again under GPU Driver."))
+                    .setPositiveButton(Lang.t("OK"), null).show();
+        }
+        if (gpuDriver != null) showGpuDriver();
         if (Lang.index() != shown) {
             recreate();
             return;
@@ -682,7 +706,69 @@ public final class LauncherActivity extends Activity {
             runImport(Lang.t("Importing the language pack"), progress -> copyLanguagePack(uri, progress));
         } else if (requestCode == REQUEST_ISO) {
             runImport(Lang.t("Extracting the disc image"), progress -> copyIso(uri, progress));
+        } else if (requestCode == REQUEST_GPU_DRIVER) {
+            runImport(Lang.t("Importing the GPU driver"), progress -> {
+                progress.update(0, 0, Lang.t("Importing the GPU driver"));
+                return Lang.f("%s is ready. The game uses it from its next start.",
+                        GpuDrivers.install(this, uri).name);
+            }, this::showGpuDriver);
         }
+    }
+
+    // --- GPU Driver -----------------------------------------------------------------------------
+
+    private void showGpuDriver() {
+        final GpuDrivers.Driver driver = GpuDrivers.supported() ? GpuDrivers.selected(this) : null;
+        showToggle(gpuDriver, driver != null);
+        gpuDriver.setText(driver != null ? driver.name : Lang.t("Default"));
+    }
+
+    private void pickGpuDriver() {
+        final List<GpuDrivers.Driver> drivers = GpuDrivers.installed(this);
+        final GpuDrivers.Driver current = GpuDrivers.selected(this);
+        final String[] names = new String[drivers.size() + 1];
+        names[0] = Lang.t("Default");
+        int checked = 0;
+        for (int i = 0; i < drivers.size(); ++i) {
+            names[i + 1] = drivers.get(i).name;
+            if (current != null && current.folder.equals(drivers.get(i).folder)) checked = i + 1;
+        }
+        final AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle(Lang.t("GPU Driver"))
+                .setSingleChoiceItems(names, checked, (picker, which) -> {
+                    try {
+                        GpuDrivers.select(this, which == 0 ? null : drivers.get(which - 1));
+                    } catch (IOException e) {
+                        Toast.makeText(this, e.getMessage(), Toast.LENGTH_LONG).show();
+                    }
+                    showGpuDriver();
+                    picker.dismiss();
+                })
+                .setPositiveButton(Lang.t("Import…"), (picker, which) -> {
+                    final Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("*/*");
+                    startActivityForResult(intent, REQUEST_GPU_DRIVER);
+                })
+                .setNegativeButton(Lang.t("Cancel"), null);
+        if (!drivers.isEmpty()) {
+            dialog.setNeutralButton(Lang.t("Delete…"), (picker, which) -> askDeleteGpuDriver(drivers));
+        }
+        dialog.show();
+    }
+
+    private void askDeleteGpuDriver(List<GpuDrivers.Driver> drivers) {
+        final String[] names = new String[drivers.size()];
+        for (int i = 0; i < names.length; ++i) names[i] = drivers.get(i).name;
+        new AlertDialog.Builder(this).setTitle(Lang.t("Delete a GPU driver"))
+                .setItems(names, (picker, which) -> {
+                    try {
+                        GpuDrivers.delete(this, drivers.get(which));
+                    } catch (IOException e) {
+                        Toast.makeText(this, e.getMessage(), Toast.LENGTH_LONG).show();
+                    }
+                    showGpuDriver();
+                })
+                .setNegativeButton(Lang.t("Cancel"), null).show();
     }
 
     private void saveLogs(Uri destination) {

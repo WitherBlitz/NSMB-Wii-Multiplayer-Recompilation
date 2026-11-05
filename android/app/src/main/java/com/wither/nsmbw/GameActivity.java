@@ -29,6 +29,14 @@ public class GameActivity extends SDLActivity
 
     /** Player 1's on-screen remote and motion (runtime/src/android/android_bridge.cpp). */
     static native void nativeSetTouchState(int buttons, boolean shake, float tilt);
+    /** The Cheat button: whether this save is marked "Cheated" already, and giving the Power-Up. */
+    static native boolean nativeFileCheated();
+    static native void nativeGivePowerUp(int powerUp);
+    /** The game's Gameplay tab's Cheat Button. */
+    static native boolean nativeCheatButton();
+    static native void nativeSetCheatButton(boolean on);
+    /** Whether player 1's controller has motion sensors of its own. */
+    static native boolean nativeControllerMotion();
     /** The touch controls setting, for the game's Keybinds tab (which can switch it too). */
     static native void nativeSetTouchControls(boolean on);
 
@@ -100,6 +108,7 @@ public class GameActivity extends SDLActivity
             // Read by runtime/src/platform/host_platform.cpp before anything else starts.
             Os.setenv("WIICOMPILED_RUNTIME_DIR", AppFiles.runtimeDir(this).getAbsolutePath(), true);
             Os.setenv("WIICOMPILED_DATA_DIR", AppFiles.dataDir(this).getAbsolutePath(), true);
+            GpuDrivers.applyToGame(this);
         } catch (Exception e) {
             Log.e(TAG, "could not prepare the game's files", e);
             Toast.makeText(this, "Could not prepare the game's files: " + e.getMessage(), Toast.LENGTH_LONG).show();
@@ -109,6 +118,8 @@ public class GameActivity extends SDLActivity
         if (nativeReady) {
             nativeSetDeviceName(deviceName());
         }
+        final android.content.Context app = getApplicationContext();
+        new android.os.Handler(getMainLooper()).postDelayed(() -> GpuDrivers.markProven(app), GpuDrivers.PROVEN_AFTER_MS);
         // LAN rooms are found with broadcasts, which many Wi-Fi drivers drop unless an app holds this.
         final WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         if (wifi != null) {
@@ -260,6 +271,7 @@ public class GameActivity extends SDLActivity
     // after they go, so it doesn't blink while one menu screen hands over to the next.
     private final android.os.Handler menuPoll = new android.os.Handler(android.os.Looper.getMainLooper());
     private long lastTapScreen;
+    private boolean lastCheatButton;
     private final Runnable pollMenu = new Runnable() {
         @Override
         public void run() {
@@ -282,6 +294,12 @@ public class GameActivity extends SDLActivity
                     if (renderer >= 0 && renderer < AppSettings.RENDERERS.length) {
                         settings.setGraphicsApi(AppSettings.RENDERERS[renderer]);  // the Video tab's Renderer
                     }
+                }
+                // The game's Gameplay tab's Cheat Button, when it changes (the start menu's: onResume).
+                final boolean cheat = nativeCheatButton();
+                if (cheat != lastCheatButton) {
+                    lastCheatButton = cheat;
+                    applyControlSettings();
                 }
             }
             if (nativeReady && nativeTapScreen()) {
@@ -603,7 +621,10 @@ public class GameActivity extends SDLActivity
     private void pushInput() {
         if (!nativeReady) return;
         try {
-            nativeSetTouchState(touchButtons, touchShake || motionShake, motionTilt);
+            // A controller with motion sensors of its own has the remote's motion: the phone's is for
+            // one without.
+            final boolean phoneShake = motionShake && !nativeControllerMotion();
+            nativeSetTouchState(touchButtons, touchShake || phoneShake, motionTilt);
         } catch (UnsatisfiedLinkError e) {
             nativeReady = false;
             Log.e(TAG, "touch input bridge missing from libmain.so", e);
@@ -619,7 +640,40 @@ public class GameActivity extends SDLActivity
         }
         touch.setOpacity(settings.touchOpacity());
         touch.setHaptics(settings.haptics());
-        touch.setLayout(settings.touchLayout());
+        touch.setLayout(TouchLayoutEditor.startingLayout(this, settings));
+        // LAN play keeps the game's own rules, so there's nothing for it to do there.
+        touch.setCheatButton("true".equals(AppFiles.gameSetting(this, "cheat_button"))
+                && !(nativeReady && nativeSessionActive()));
+    }
+
+    /** The Cheat button: the Power-Up picked in the settings. Using a cheat asks first, once a save. */
+    @Override
+    public void onCheat() {
+        if (!nativeReady) return;
+        final int powerUp = SettingsActivity.powerUpChoice(this);
+        if (nativeFileCheated()) {
+            nativeGivePowerUp(powerUp);
+            return;
+        }
+        touch.release();
+        new AlertDialog.Builder(this)
+                .setTitle(Lang.t("Are you sure?"))
+                .setMessage(Lang.t("This will mark your save as cheated."))
+                .setPositiveButton(Lang.t("Yes"), (dialog, which) -> nativeGivePowerUp(powerUp))
+                .setNegativeButton(Lang.t("No"), null)
+                .show();
+    }
+
+    /** The touch editor's Add or Delete of the Power-Up button. */
+    void cheatButtonChanged(boolean on) {
+        if (!nativeReady) return;
+        nativeSetCheatButton(on);
+        lastCheatButton = on;
+    }
+
+    /** The game's Controls tab's Edit Touch Layout (android_bridge.cpp, off the UI thread). */
+    void editTouchLayoutFromGame() {
+        runOnUiThread(this::editTouchControls);
     }
 
     /** The menu's Edit Touch Controls: the game waits (as with the screen off) while the remote is edited. */

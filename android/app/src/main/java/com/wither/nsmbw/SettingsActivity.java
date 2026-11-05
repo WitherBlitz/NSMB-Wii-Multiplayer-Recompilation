@@ -87,7 +87,7 @@ public final class SettingsActivity extends Activity {
         // A change redraws the page: it stays scrolled where it was (a new tab starts at the top).
         final int keepY = scroll != null ? scroll.getScrollY() : 0;
         final FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.rgb(36, 74, 128));
+        root.setBackgroundColor(Color.rgb(16, 20, 24));  // the start menu's
         final LinearLayout window = new LinearLayout(this);
         window.setOrientation(LinearLayout.VERTICAL);
         window.setBackground(new WindowDrawable());
@@ -210,11 +210,11 @@ public final class SettingsActivity extends Activity {
         value(Lang.t("Spinning Coins"), Lang.t(settings.spinningCoins() ? "On" : "Off"),
                 Lang.t("Animated coins and blocks. Off saves a little GPU work."),
                 () -> settings.setSpinningCoins(!settings.spinningCoins()));
-        final String[] aspects = {Lang.t("Original 4:3"), "16:9", Lang.t("Fill Screen")};
-        choice(Lang.t("Aspect Ratio"), aspects[Math.max(0, Math.min(2, settings.aspectMode()))],
+        final String[] aspects = {Lang.t("Original 4:3"), "16:9", Lang.t("Fill Screen"), "16:10"};
+        choice(Lang.t("Aspect Ratio"), aspects[Math.max(0, Math.min(3, settings.aspectMode()))],
                 Lang.t("Fill Screen: a wider view filling the whole screen. 16:9 and 4:3 add black bars."),
                 step -> {
-                    settings.setAspectMode(Math.floorMod(settings.aspectMode() + step, 3));
+                    settings.setAspectMode(Math.floorMod(settings.aspectMode() + step, 4));
                     save();
                 });
         final String[] compat = {Lang.t("Auto"), Lang.t("On"), Lang.t("Off")};
@@ -266,17 +266,36 @@ public final class SettingsActivity extends Activity {
         hint.setText(Lang.t("The on-screen Wii Remote. A controller hides it while you use it."));
     }
 
-    /** The game's Gameplay tab: its [game] keys, kept in Config.toml (AppFiles.setGameSetting). P1's
-     *  character is picked on the game's file select, one a save file. */
+    /** The game's Gameplay tab: its [game] keys, kept in Config.toml (AppFiles.setGameSetting), and the
+     *  on-screen Cheat button. P1's character is picked on the game's own character screen. */
     private void gameplayTab() {
         gameToggle("No Time Limit", "no_time_limit", "The course timer stands still: take your time.");
         gameToggle("Infinite Lives", "infinite_lives", "A miss costs no life.");
+        final String[] powerUps = {"Small", "Super Mushroom", "Fire Flower", "Mini Mushroom", "Propeller Mushroom",
+                "Penguin Suit", "Ice Flower", "Star", "Hammer Suit"};  // GameplayOptions's list
+        final int count = AppFiles.newerActive(this) ? powerUps.length : powerUps.length - 1;
+        final int current = Math.floorMod(powerUpChoice(this), count);
+        choice(Lang.t("Power-Up"), Lang.t(powerUps[current]), Lang.t("What the Cheat button gives you."), step -> {
+            setGameSetting("power_up", Integer.toString(Math.floorMod(current + step, count)));
+        });
+        gameToggle("Cheat Button", "cheat_button",
+                "An on-screen button that gives you the Power-Up. Edit Touch Controls moves it.");
         hint.setText(Lang.t("These keep the game's own rules in LAN play."));
+    }
+
+    /** The Power-Up picked, in GameplayOptions's list; the Fire Flower until one is. */
+    static int powerUpChoice(android.content.Context context) {
+        try {
+            return Integer.parseInt(AppFiles.gameSetting(context, "power_up").trim());
+        } catch (RuntimeException e) {
+            return 2;
+        }
     }
 
     private void gameToggle(String label, String key, String help) {
         final boolean on = "true".equals(AppFiles.gameSetting(this, key));
-        toggle(Lang.t(label), on, Lang.t(help), () -> setGameSetting(key, on ? "false" : "true"));
+        // A label and a button below it, like the Video tab's top rows.
+        value(Lang.t(label), Lang.t(on ? "On" : "Off"), Lang.t(help), () -> setGameSetting(key, on ? "false" : "true"));
     }
 
     private void setGameSetting(String key, String literal) {

@@ -116,6 +116,41 @@ final class Lang {
                 "Activé : le jeu tourne dans le processus principal de l'appli. Pour les téléphones Xiaomi, "
                 + "Redmi et POCO (activé par défaut sur ceux-ci), dont le système ferme le processus du jeu "
                 + "et laisse un écran noir.");
+        put("GPU Driver", "Controlador de GPU", "Pilote GPU");
+        put("Run the game on a driver from a zip, such as Turnip, in place of the phone's own. If a new "
+                + "driver stops the game from starting, Default comes back by itself.",
+                "Ejecuta el juego con un controlador de un zip, como Turnip, en lugar del propio del teléfono. "
+                + "Si uno nuevo impide que el juego arranque, se vuelve solo a Predeterminado.",
+                "Lance le jeu avec un pilote fourni dans un zip, comme Turnip, à la place de celui du téléphone. "
+                + "Si un nouveau pilote empêche le jeu de démarrer, Par défaut revient tout seul.");
+        put("Only for phones with a Snapdragon chip.", "Solo para teléfonos con chip Snapdragon.",
+                "Uniquement pour les téléphones à puce Snapdragon.");
+        put("Default", "Predeterminado", "Par défaut");
+        put("Import…", "Importar…", "Importer…");
+        put("Delete…", "Eliminar…", "Supprimer…");
+        put("Delete a GPU driver", "Eliminar un controlador de GPU", "Supprimer un pilote GPU");
+        put("Importing the GPU driver", "Importando el controlador de GPU", "Importation du pilote GPU");
+        put("%s is ready. The game uses it from its next start.",
+                "%s está listo. El juego lo usará desde su próximo inicio.",
+                "%s est prêt. Le jeu l'utilisera dès son prochain démarrage.");
+        put("This zip isn't a GPU driver: it has no meta.json.",
+                "Este zip no es un controlador de GPU: no tiene meta.json.",
+                "Ce zip n'est pas un pilote GPU : il n'a pas de meta.json.");
+        put("This zip isn't a GPU driver: its meta.json can't be read.",
+                "Este zip no es un controlador de GPU: no se puede leer su meta.json.",
+                "Ce zip n'est pas un pilote GPU : son meta.json est illisible.");
+        put("This zip isn't a GPU driver: the library its meta.json names isn't in it.",
+                "Este zip no es un controlador de GPU: no contiene la biblioteca que indica su meta.json.",
+                "Ce zip n'est pas un pilote GPU : la bibliothèque indiquée par son meta.json n'y est pas.");
+        put("This driver needs Android API %s or newer.",
+                "Este controlador necesita la API %s de Android o posterior.",
+                "Ce pilote nécessite l'API Android %s ou plus récente.");
+        put("The game closed right after starting on the new GPU driver, so it's back on Default. You can "
+                + "pick that driver again under GPU Driver.",
+                "El juego se cerró justo después de iniciarse con el nuevo controlador de GPU, así que se ha "
+                + "vuelto a Predeterminado. Puedes elegirlo de nuevo en Controlador de GPU.",
+                "Le jeu s'est fermé juste après son démarrage avec le nouveau pilote GPU, il est donc revenu à "
+                + "Par défaut. Vous pouvez le choisir à nouveau sous Pilote GPU.");
         put("On", "Sí", "Oui");
         put("Off", "No", "Non");
         put("Game Data", "Datos del juego", "Données du jeu");
@@ -483,6 +518,37 @@ final class Lang {
         newer("Gameplay", "Juego", "Jeu", "Partita");
         newer("No Time Limit", "Sin límite de tiempo", "Sans limite de temps", "Tempo infinito");
         newer("Infinite Lives", "Vidas infinitas", "Vies infinies", "Vite infinite");
+        newer("Cancel", "Cancelar", "Annuler", "Annulla");
+        newer("Add", "Añadir", "Ajouter", "Aggiungi");
+        newer("Delete", "Eliminar", "Supprimer", "Elimina");
+        newer("Profiles", "Perfiles", "Profils", "Profili");
+        newer("Save as a new profile", "Guardar como perfil nuevo", "Enregistrer comme nouveau profil", "Salva come nuovo profilo");
+        newer("Every button is on the screen already.", "Todos los botones ya están en pantalla.",
+                "Tous les boutons sont déjà à l'écran.", "Tutti i pulsanti sono già sullo schermo.");
+        newer("D-Pad", "Cruceta", "Croix directionnelle", "Croce direzionale");
+        newer("Shake", "Sacudir", "Secouer", "Scuoti");
+        newer("Are you sure?", "¿Seguro?", "Êtes-vous sûr ?", "Sei sicuro?");
+        newer("This will mark your save as cheated.", "Esto marcará tu partida como trucada.",
+                "Votre sauvegarde sera marquée comme trichée.", "Il salvataggio verrà segnato come truccato.");
+        newer("Yes", "Sí", "Oui", "Sì");
+        newer("No", "No", "Non", "No");
+        newer("Power-Up", "Potenciador", "Bonus", "Potenziamento");
+        newer("What the Cheat button gives you.", "Lo que te da el botón de truco.",
+                "Ce que le bouton de triche vous donne.", "Ciò che ti dà il pulsante trucco.");
+        newer("Cheat Button", "Botón de truco", "Bouton de triche", "Pulsante trucco");
+        newer("An on-screen button that gives you the Power-Up. Edit Touch Controls moves it.",
+                "Un botón en pantalla que te da el potenciador. Se mueve en Editar controles táctiles.",
+                "Un bouton à l'écran qui vous donne le bonus. Modifier les commandes tactiles le déplace.",
+                "Un pulsante su schermo che ti dà il potenziamento. Si sposta da Modifica controlli touch.");
+        newer("Small", "Pequeño", "Petit", "Piccolo");
+        newer("Super Mushroom", "Superchampiñón", "Super champignon", "Super fungo");
+        newer("Fire Flower", "Flor de fuego", "Fleur de feu", "Fiore di fuoco");
+        newer("Mini Mushroom", "Minichampiñón", "Mini champignon", "Minifungo");
+        newer("Propeller Mushroom", "Champiñón hélice", "Champignon hélice", "Fungo elica");
+        newer("Penguin Suit", "Traje de pingüino", "Costume de pingouin", "Costume da pinguino");
+        newer("Ice Flower", "Flor de hielo", "Fleur de glace", "Fiore di ghiaccio");
+        newer("Star", "Estrella", "Étoile", "Stella");
+        newer("Hammer Suit", "Traje de martillo", "Costume de marteau", "Tuta martello");
         newer("The course timer stands still: take your time.",
                 "El tiempo del nivel se detiene: tómate tu tiempo.",
                 "Le chrono du niveau s'arrête : prenez votre temps.",
@@ -626,6 +692,31 @@ final class Lang {
                 "Sì: il gioco gira nel processo principale dell'app. Per i telefoni Xiaomi, Redmi e POCO "
                 + "(attiva di serie su di essi), il cui sistema chiude il processo del gioco e lascia lo "
                 + "schermo nero.");
+        it("GPU Driver", "Driver GPU");
+        it("Run the game on a driver from a zip, such as Turnip, in place of the phone's own. If a new "
+                + "driver stops the game from starting, Default comes back by itself.",
+                "Esegue il gioco con un driver da uno zip, come Turnip, al posto di quello del telefono. Se un "
+                + "nuovo driver impedisce l'avvio del gioco, Predefinito torna da solo.");
+        it("Only for phones with a Snapdragon chip.", "Solo per i telefoni con chip Snapdragon.");
+        it("Default", "Predefinito");
+        it("Import…", "Importa…");
+        it("Delete…", "Elimina…");
+        it("Delete a GPU driver", "Elimina un driver GPU");
+        it("Importing the GPU driver", "Importazione del driver GPU");
+        it("%s is ready. The game uses it from its next start.",
+                "%s è pronto. Il gioco lo userà dal prossimo avvio.");
+        it("This zip isn't a GPU driver: it has no meta.json.",
+                "Questo zip non è un driver GPU: non ha un meta.json.");
+        it("This zip isn't a GPU driver: its meta.json can't be read.",
+                "Questo zip non è un driver GPU: il suo meta.json non si può leggere.");
+        it("This zip isn't a GPU driver: the library its meta.json names isn't in it.",
+                "Questo zip non è un driver GPU: non contiene la libreria indicata dal suo meta.json.");
+        it("This driver needs Android API %s or newer.",
+                "Questo driver richiede l'API Android %s o successiva.");
+        it("The game closed right after starting on the new GPU driver, so it's back on Default. You can "
+                + "pick that driver again under GPU Driver.",
+                "Il gioco si è chiuso subito dopo l'avvio con il nuovo driver GPU, quindi è tornato a "
+                + "Predefinito. Puoi sceglierlo di nuovo in Driver GPU.");
         it("On", "Sì");
         it("Off", "No");
         it("Game Data", "Dati del gioco");
