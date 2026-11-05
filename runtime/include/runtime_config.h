@@ -59,6 +59,8 @@ struct RuntimeUserConfig {
     std::optional<std::string> language;  // NSMBW: [game] language, "en" "es" "fr" (the USA disc's) or "it"
     std::optional<bool> noTimeLimit;      // NSMBW: [game] no_time_limit, the course timer stands still
     std::optional<bool> infiniteLives;    // NSMBW: [game] infinite_lives, a miss costs no life
+    std::optional<uint32_t> powerUp;      // NSMBW: [game] power_up, the Power-Up picked (GameplayOptions)
+    std::optional<bool> cheatButton;      // NSMBW: [game] cheat_button, Android's on-screen Cheat button
     // NSMBW: [game] file1_character..file3_character, P1's character on each save file (the file
     // select's picker): 0 Mario, 1 Luigi, 2 Blue Toad, 3 Yellow Toad.
     std::array<std::optional<uint32_t>, 3> fileCharacters;
@@ -575,7 +577,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
 
     config.widescreen = FindConfigValue<bool>(document, "video", "widescreen");
     config.forceAspect169 = FindConfigValue<bool>(document, "video", "force_16_9");
-    if (auto value = FindConfigInt(document, "video", "aspect_mode"); value && *value >= 0 && *value <= 2) {
+    if (auto value = FindConfigInt(document, "video", "aspect_mode"); value && *value >= 0 && *value <= 3) {
         config.aspectMode = *value;
     }
     if (auto value = FindConfigInt(document, "video", "gpu_compat"); value && *value >= 0 && *value <= 2) {
@@ -627,6 +629,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     }
     config.noTimeLimit = FindConfigValue<bool>(document, "game", "no_time_limit");
     config.infiniteLives = FindConfigValue<bool>(document, "game", "infinite_lives");
+    config.powerUp = FindConfigUint(document, "game", "power_up");
+    config.cheatButton = FindConfigValue<bool>(document, "game", "cheat_button");
     for (size_t file = 0; file < config.fileCharacters.size(); ++file) {
         const std::string key = "file" + std::to_string(file + 1) + "_character";
         if (auto value = FindConfigUint(document, "game", key.c_str()); value && *value <= 3) {
@@ -929,6 +933,25 @@ inline bool InfiniteLives() {
 inline bool SetInfiniteLives(bool value) {
     Mutable().infiniteLives = value;
     return WriteSetting("game", "infinite_lives", value ? "true" : "false");
+}
+
+// The Gameplay tab's Power-Up (the list in GameplayOptions); the Fire Flower until one is picked.
+inline uint32_t PowerUp() {
+    return Get().powerUp.value_or(2);
+}
+
+inline bool SetPowerUp(uint32_t value) {
+    Mutable().powerUp = value;
+    return WriteSetting("game", "power_up", std::to_string(value));
+}
+
+inline bool CheatButton() {
+    return Get().cheatButton.value_or(false);
+}
+
+inline bool SetCheatButton(bool value) {
+    Mutable().cheatButton = value;
+    return WriteSetting("game", "cheat_button", value ? "true" : "false");
 }
 
 // P1's character on save file `file` (0-2): 0 Mario, 1 Luigi, 2 Blue Toad, 3 Yellow Toad.

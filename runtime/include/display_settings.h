@@ -18,7 +18,7 @@
 // effect on the next start; switching between 16:9 and Fill, and the resolution, apply at once.
 namespace DisplaySettings {
 
-enum Aspect : int32_t { kAspect4x3 = 0, kAspect16x9 = 1, kAspectFill = 2 };
+enum Aspect : int32_t { kAspect4x3 = 0, kAspect16x9 = 1, kAspectFill = 2, kAspect16x10 = 3 };
 
 struct Settings {
     int32_t aspect = kAspectFill;

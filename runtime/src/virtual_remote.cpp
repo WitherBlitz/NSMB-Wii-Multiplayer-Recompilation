@@ -12,6 +12,7 @@
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_mouse.h>
+#include <SDL3/SDL_sensor.h>
 #include <SDL3/SDL_video.h>
 #include <SDL3/SDL_timer.h>
 
@@ -147,6 +148,71 @@ void ApplyMouseGyro(Intent& intent) {
     }
 }
 
+// Smart Spin QoL: a press of the jump button it's set on (Space, or on the on-screen remote its 2) while
+// the player is jumping or falling is a shake, a spin, rather than 2; the button then counts as no button
+// until it is let go. Falling, a press within a small Mario's height (16 units) of the ground is meant
+// as the next jump: the press waits that long at the current fall speed (2 to 7 frames), and becomes 2 if
+// the player lands meanwhile, else the spin. On a springboard a press is always 2, and a spin's button
+// still held when he lands on one becomes 2 held. The player's state is looked at on a press, during that
+// wait and while a spin's button is held, never otherwise.
+class SmartSpinButton {
+public:
+    void Update(bool down, bool applies, Intent& intent) {
+        const uint64_t now = SDL_GetTicksNS();
+        const auto player = [] { return NetplaySession::Active() ? NetplaySession::GetStatus().localSlot : 0; };
+        if (down && !m_wasDown && Keybinds::SmartSpin() && applies) {
+            float moving = 0.0f;
+            m_is = Is::Two;
+            if (GameMenus::PlayerInSpinnableAir(player(), &moving)) {
+                if (moving >= 0.0f) {
+                    m_is = Is::Spin;  // still rising: nowhere near the ground
+                    intent.shake = true;
+                    SmartSpinLog("rising: spin");
+                } else {
+                    constexpr float kSmallMarioHeight = 16.0f, kFrameNs = 16'666'667.0f;
+                    // +1: the player's state shows the landing a frame after he touches down.
+                    const float frames = std::clamp(kSmallMarioHeight / -moving + 1.0f, 2.0f, 7.0f);
+                    m_is = Is::Waiting;
+                    m_waitUntilNs = now + static_cast<uint64_t>(frames * kFrameNs);
+                    SmartSpinLog("falling: waiting to see if he lands");
+                }
+            }
+        } else if (m_is == Is::Spin && down) {
+            // Held through the spin onto a springboard: it is 2 held there again, for the high
+            // bounce holding the jump button gives.
+            bool onSpringboard = false;
+            GameMenus::PlayerInSpinnableAir(player(), nullptr, &onSpringboard);
+            if (onSpringboard) {
+                m_is = Is::Two;
+                SmartSpinLog("held onto a springboard: 2 (the high bounce)");
+            }
+        } else if (m_is == Is::Waiting) {
+            if (!GameMenus::PlayerInSpinnableAir(player())) {
+                m_is = Is::Two;  // landed (or grabbed a wall...): the press was the next jump
+                m_twoUntilNs = now + 40'000'000;  // a 2 press long enough to be read, held or not
+                SmartSpinLog("landed in the margin: 2 (a jump)");
+            } else if (now >= m_waitUntilNs) {
+                m_is = Is::Spin;
+                intent.shake = true;
+                SmartSpinLog("still in the air: spin");
+            }
+        }
+        if (!down && m_is != Is::Waiting) {
+            m_is = Is::Two;
+        }
+        m_wasDown = down;
+    }
+    // Whether the button counts as 2 now; TwoPulse: 2 for a moment after a press that landed.
+    bool IsTwo() const { return m_is == Is::Two; }
+    bool TwoPulse() const { return SDL_GetTicksNS() < m_twoUntilNs; }
+
+private:
+    enum class Is { Two, Spin, Waiting };
+    bool m_wasDown = false;
+    Is m_is = Is::Two;
+    uint64_t m_waitUntilNs = 0, m_twoUntilNs = 0;
+};
+
 // The built-in layout for port 1, used while no port has aurora's keyboard switched on.
 Intent KeyboardIntent() {
     Intent intent;
@@ -163,65 +229,12 @@ Intent KeyboardIntent() {
     if (Held(kRight)) intent.buttons |= kScreenRight;
     if (Held(kUp)) intent.buttons |= kScreenUp;
     if (Held(kDown)) intent.buttons |= kScreenDown;
-    // Space Smart Spin QoL: a Space press (Space being a Jump key) while the player is jumping or
-    // falling is a shake, a spin, rather than 2; Space then counts as no button until it is let go.
-    // Falling, a press within a small Mario's height (16 units) of the ground is meant as the next
-    // jump: the press waits that long at the current fall speed (2 to 7 frames), and becomes 2 if
-    // the player lands meanwhile, else the spin. On a springboard a press is always 2, and a spin's
-    // Space still held when he lands on one becomes 2 held. The player's state is looked at on a
-    // press, during that wait and while a spin's Space is held, never otherwise.
-    enum class SpaceIs { Two, Spin, Waiting };
-    static bool spaceWasDown = false;
-    static SpaceIs spaceIs = SpaceIs::Two;
-    static uint64_t waitUntilNs = 0, twoUntilNs = 0;
+    static SmartSpinButton space;
     int keyCount = 0;
     const bool* keys = SDL_GetKeyboardState(&keyCount);
     const bool spaceDown = keys != nullptr && SDL_SCANCODE_SPACE < keyCount && keys[SDL_SCANCODE_SPACE];
-    const uint64_t now = SDL_GetTicksNS();
-    const auto player = [] { return NetplaySession::Active() ? NetplaySession::GetStatus().localSlot : 0; };
-    if (spaceDown && !spaceWasDown && SmartSpin() && Bound(kJump, SDL_SCANCODE_SPACE)) {
-        float moving = 0.0f;
-        spaceIs = SpaceIs::Two;
-        if (GameMenus::PlayerInSpinnableAir(player(), &moving)) {
-            if (moving >= 0.0f) {
-                spaceIs = SpaceIs::Spin;  // still rising: nowhere near the ground
-                intent.shake = true;
-                SmartSpinLog("rising: spin");
-            } else {
-                constexpr float kSmallMarioHeight = 16.0f, kFrameNs = 16'666'667.0f;
-                // +1: the player's state shows the landing a frame after he touches down.
-                const float frames = std::clamp(kSmallMarioHeight / -moving + 1.0f, 2.0f, 7.0f);
-                spaceIs = SpaceIs::Waiting;
-                waitUntilNs = now + static_cast<uint64_t>(frames * kFrameNs);
-                SmartSpinLog("falling: waiting to see if he lands");
-            }
-        }
-    } else if (spaceIs == SpaceIs::Spin && spaceDown) {
-        // Space held through the spin onto a springboard: it is 2 held there again, for the high
-        // bounce holding the jump button gives.
-        bool onSpringboard = false;
-        GameMenus::PlayerInSpinnableAir(player(), nullptr, &onSpringboard);
-        if (onSpringboard) {
-            spaceIs = SpaceIs::Two;
-            SmartSpinLog("held onto a springboard: 2 (the high bounce)");
-        }
-    } else if (spaceIs == SpaceIs::Waiting) {
-        if (!GameMenus::PlayerInSpinnableAir(player())) {
-            spaceIs = SpaceIs::Two;  // landed (or grabbed a wall...): the press was the next jump
-            twoUntilNs = now + 40'000'000;  // a 2 press long enough to be read, Space held or not
-            SmartSpinLog("landed in the margin: 2 (a jump)");
-        } else if (now >= waitUntilNs) {
-            spaceIs = SpaceIs::Spin;
-            intent.shake = true;
-            SmartSpinLog("still in the air: spin");
-        }
-    }
-    if (!spaceDown && spaceIs != SpaceIs::Waiting) {
-        spaceIs = SpaceIs::Two;
-    }
-    spaceWasDown = spaceDown;
-    const bool two = spaceIs == SpaceIs::Two ? Held(kJump) || now < twoUntilNs
-                                             : HeldIgnoring(kJump, SDL_SCANCODE_SPACE);
+    space.Update(spaceDown, Bound(kJump, SDL_SCANCODE_SPACE), intent);
+    const bool two = space.IsTwo() ? Held(kJump) || space.TwoPulse() : HeldIgnoring(kJump, SDL_SCANCODE_SPACE);
     if (two) intent.buttons |= kWpadTwo;
     if (Held(kRun)) intent.buttons |= kWpadOne;
     if (Held(Keybinds::kA)) intent.buttons |= kWpadA;
@@ -243,10 +256,14 @@ Intent TouchIntent() {
     if (touch & kTouchUp) intent.buttons |= kScreenUp;
     if (touch & kTouchDown) intent.buttons |= kScreenDown;
     if (touch & kTouchOne) intent.buttons |= kWpadOne;
-    if (touch & kTouchTwo) intent.buttons |= kWpadTwo;
+    static SmartSpinButton two;
+    two.Update((touch & kTouchTwo) != 0, true, intent);
+    if (two.IsTwo() ? (touch & kTouchTwo) != 0 || two.TwoPulse() : false) intent.buttons |= kWpadTwo;
     if (touch & kTouchA) intent.buttons |= kWpadA;
     if (touch & kTouchPlus) intent.buttons |= kWpadPlus;
     if (touch & kTouchMinus) intent.buttons |= kWpadMinus;
+    if (touch & kTouchB) intent.buttons |= 0x0400;     // WPAD_BUTTON_B
+    if (touch & kTouchHome) intent.buttons |= 0x8000;  // WPAD_BUTTON_HOME
     intent.shake = g_touchShake.load(std::memory_order_relaxed) ||
                    g_touchShakeSinceRead.exchange(false, std::memory_order_relaxed);
     intent.tilt = std::clamp(g_touchTilt.load(std::memory_order_relaxed), -1.0f, 1.0f);
@@ -278,6 +295,68 @@ Intent PadIntent(const PADStatus& pad) {
     const float x = static_cast<float>(pad.substickX) / 127.0f;
     intent.tilt = std::fabs(x) < kTiltDeadZone ? 0.0f : std::clamp(x, -1.0f, 1.0f);
     return intent;
+}
+
+// A controller's own motion sensors as the remote's: turned like a steering wheel it tilts the remote,
+// at the same angles as a phone (MotionInput.java), and a sharp jolt is a shake. SDL gives the
+// accelerometer with gravity pulling +y on a controller lying flat and x to its right, so the turn
+// shows up on x, however far the controller is pitched towards the player.
+constexpr float kPadGravityFollow = 0.25f;     // share of each sample that enters gravity
+constexpr float kPadShakeThreshold = 13.0f;    // m/s^2 of motion beyond gravity
+constexpr uint64_t kPadShakeHoldMs = 180;      // long enough for the game's 4-frame test
+constexpr float kPadTiltDeadZoneDeg = 4.0f;    // a slightly crooked grip does nothing
+constexpr float kPadTiltFullDeg = 30.0f;       // the controller's angle that is a full remote tilt
+
+struct PadMotion {
+    SDL_JoystickID sensorsFor = 0;
+    bool haveGravity = false;
+    float gravity[3] = {};
+    uint64_t shakeUntilMs = 0;
+};
+std::array<PadMotion, PAD_MAX_CONTROLLERS> g_padMotion{};
+std::atomic<bool> g_p1ControllerMotion{false};
+
+// Adds the sensors' tilt and shake to the intent; false if the port's controller has none.
+bool ApplyControllerMotion(uint32_t chan, Intent& intent) {
+    PadMotion& motion = g_padMotion[chan];
+    const s32 index = PADGetIndexForPort(chan);
+    SDL_Gamepad* gamepad = index >= 0 ? PADGetSDLGamepadForIndex(static_cast<u32>(index)) : nullptr;
+    if (gamepad == nullptr || !SDL_GamepadHasSensor(gamepad, SDL_SENSOR_ACCEL)) {
+        motion = {};
+        return false;
+    }
+    const SDL_JoystickID id = SDL_GetGamepadID(gamepad);
+    if (motion.sensorsFor != id) {
+        if (!SDL_SetGamepadSensorEnabled(gamepad, SDL_SENSOR_ACCEL, true)) {
+            return false;
+        }
+        motion = {};
+        motion.sensorsFor = id;
+    }
+    float a[3] = {};
+    if (!SDL_GetGamepadSensorData(gamepad, SDL_SENSOR_ACCEL, a, 3) || (a[0] == 0.0f && a[1] == 0.0f && a[2] == 0.0f)) {
+        return true;  // nothing yet, but the controller has the sensors
+    }
+    if (!motion.haveGravity) {
+        std::copy(a, a + 3, motion.gravity);
+        motion.haveGravity = true;
+    }
+    for (int i = 0; i < 3; ++i) motion.gravity[i] += (a[i] - motion.gravity[i]) * kPadGravityFollow;
+    const float lx = a[0] - motion.gravity[0], ly = a[1] - motion.gravity[1], lz = a[2] - motion.gravity[2];
+    const uint64_t now = SDL_GetTicks();
+    if (lx * lx + ly * ly + lz * lz > kPadShakeThreshold * kPadShakeThreshold) {
+        motion.shakeUntilMs = now + kPadShakeHoldMs;
+    }
+    intent.shake = intent.shake || now < motion.shakeUntilMs;
+    const float length = std::sqrt(motion.gravity[0] * motion.gravity[0] + motion.gravity[1] * motion.gravity[1] +
+                                   motion.gravity[2] * motion.gravity[2]);
+    if (length > 1.0f && intent.tilt == 0.0f) {  // the right stick, when it's in use, comes first
+        // Turned clockwise, the right side drops and the reading on x goes negative.
+        const float degrees = std::asin(std::clamp(-motion.gravity[0] / length, -1.0f, 1.0f)) * 57.29578f;
+        const float magnitude = std::max(0.0f, std::fabs(degrees) - kPadTiltDeadZoneDeg);
+        intent.tilt = std::copysign(std::min(1.0f, magnitude / (kPadTiltFullDeg - kPadTiltDeadZoneDeg)), degrees);
+    }
+    return true;
 }
 
 // Accelerometer for the requested motion, in KPAD's frame (rest: y = -1). Tilting clockwise lowers
@@ -328,6 +407,10 @@ void SetTouchState(uint32_t touchButtons, bool shake, float tilt) {
     g_touchTilt.store(std::isfinite(tilt) ? tilt : 0.0f, std::memory_order_relaxed);
 }
 
+bool ControllerMotion() {
+    return g_p1ControllerMotion.load(std::memory_order_relaxed);
+}
+
 bool Present(uint32_t chan) {
     if (chan >= PAD_MAX_CONTROLLERS) {
         return false;
@@ -349,8 +432,13 @@ bool Sample(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
     }
     AnnounceLocked(chan, pad);
     Intent intent;
+    bool padMotion = false;
     if (pad) {
         intent = PadIntent(g_pads[chan]);
+        padMotion = ApplyControllerMotion(chan, intent);
+    }
+    if (chan == 0) {
+        g_p1ControllerMotion.store(padMotion, std::memory_order_relaxed);
     }
     const auto merge = [&intent](const Intent& other) {
         intent.buttons |= other.buttons;
@@ -363,7 +451,11 @@ bool Sample(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
         merge(KeyboardIntent());
     }
     if (chan == 0) {
-        merge(TouchIntent());
+        Intent touch = TouchIntent();
+        if (padMotion) {
+            touch.tilt = 0.0f;  // the controller's own sensors, over the phone's (ControllerMotion)
+        }
+        merge(touch);
     }
     // Reverse Tilt QoL: whatever the tilt came from (motion sensors, a stick, keys), mirrored.
     if (Keybinds::ReverseTilt()) {

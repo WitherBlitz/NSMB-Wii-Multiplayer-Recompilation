@@ -186,19 +186,34 @@ void Vibrate(bool on);
 // The remote's rumble (WPAD_MOTOR_RUMBLE 1, WPAD_MOTOR_STOP 0): a real Wii Remote, or a controller,
 // on the channel rumbles through SDL; with neither, on Android, player 1's phone vibrates. A rumble is
 // asked for 2 s at most and stopped by the game's own STOP, so a missed STOP can't run on.
+//
+// The game calls this every frame while it runs a rumble (EGG::ControllerRumbleMgr::calc). A Wii
+// Remote's motor is only on or off, and writes over a PC's or phone's Bluetooth arrive later and
+// bunched compared with the console's, which holds it on for longer than the game's patterns mean:
+// every third frame of a real remote's "on" is off. A controller's motors are bigger than the remote's,
+// so they run well under full strength.
 extern "C" void WPADControlMotor_HLE(uint32_t chan, uint32_t command)
 {
+    constexpr uint32_t kRemoteOnFrames = 2, kRemoteCycleFrames = 3;
+    constexpr uint16_t kControllerLow = 0x3000, kControllerHigh = 0x7000;
     static std::array<bool, WpadContract::kChannelCount> s_on{};
+    static std::array<uint32_t, WpadContract::kChannelCount> s_frame{};
     if (chan >= WpadContract::kChannelCount) {
         return;
     }
-    const bool on = command == 1 && PAD_HLE_RumbleEnabled();
+    const bool wanted = command == 1 && PAD_HLE_RumbleEnabled();
+    bool on = wanted;
+    if (!wanted) {
+        s_frame[chan] = 0;
+    } else if (WiiRemoteInput::HasRealRemote(chan)) {
+        on = s_frame[chan]++ % kRemoteCycleFrames < kRemoteOnFrames;
+    }
     if (s_on[chan] == on) {
         return;
     }
     s_on[chan] = on;
     if (SDL_Gamepad* pad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan))) {
-        SDL_RumbleGamepad(pad, on ? 0xC000 : 0, on ? 0xC000 : 0, on ? 2000 : 0);
+        SDL_RumbleGamepad(pad, on ? kControllerLow : 0, on ? kControllerHigh : 0, on ? 2000 : 0);
         return;
     }
 #if defined(__ANDROID__)
@@ -267,8 +282,7 @@ PPC_NATIVE_OVERRIDE(801DFAD0, WPADStopSimpleSync_HLE, int32_t, (), ());
 // The translated originals talk to a Bluetooth stack that isn't there, so the game never got a
 // speaker and its remote sounds were silent (issue #18). These answer as a working remote would,
 // on every channel alike. A real remote on the channel gets the same reports the console sends
-// (WiiBrew, "Wiimote/Speaker": 4-bit Yamaha ADPCM at 6 kHz, the rate AX mixes the remote buses
-// at), through SDL's Wii driver.
+// (4-bit Yamaha ADPCM at 6 kHz, the rate AX mixes the remote buses at), through SDL's Wii driver.
 namespace {
 
 enum SpeakerCommand : uint32_t {
@@ -301,15 +315,16 @@ void WriteRegister(uint32_t chan, uint32_t address, std::initializer_list<uint8_
     WiiRemoteInput::SendRawReport(chan, report.data(), static_cast<int>(report.size()));
 }
 
+// What the console's own WPADControlSpeaker sends for "on" (0x801E25B0 on), byte for byte; the
+// stream starts with "play" (a20008 = 1), which the game asks for next. The volume is _wpadSpeakerVol.
 void SetUpRealSpeaker(uint32_t chan)
 {
     SendReport(chan, {0x14, 0x04});  // speaker on
     SendReport(chan, {0x19, 0x04});  // muted while it is configured
     WriteRegister(chan, 0xA20009, {0x01});
-    WriteRegister(chan, 0xA20001, {0x08});
-    // 4-bit ADPCM, sample rate 6 MHz / 1000 = 6 kHz, volume 0x40.
-    WriteRegister(chan, 0xA20001, {0x00, 0x00, 0xE8, 0x03, 0x40, 0x00, 0x00});
-    WriteRegister(chan, 0xA20008, {0x01});
+    WriteRegister(chan, 0xA20001, {0x80});
+    const uint8_t volume = Memory::Read8(0x8042AAB7u);
+    WriteRegister(chan, 0xA20001, {0x00, 0x00, 0xD0, 0x07, volume, 0x0C, 0x0E});  // the SDK's config
     SendReport(chan, {0x19, 0x00});  // unmuted
 }
 

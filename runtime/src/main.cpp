@@ -1670,7 +1670,7 @@ int RuntimeMain(int argc, char** argv) {
                                          auroraInfo.windowSize.native_fb_height);
         settings_overlay::InitializeRuntimeSettings();
         Updater::Start();  // the file select's Update button: checks GitHub in the background
-        static constexpr const char* kAspectNames[] = {"original 4:3", "16:9", "fill"};
+        static constexpr const char* kAspectNames[] = {"original 4:3", "16:9", "fill", "16:10"};
         RT_LOG(RT_TAG_CONFIG) << "display aspect=" << kAspectNames[displaySettings.aspect]
                   << " SCGetAspectRatio=" << (configWidescreen ? 1 : 0)
                   << " render=" << DisplaySettings::LinesForScale(displaySettings.renderScale) << " lines ("

@@ -4,6 +4,7 @@
 #include "display_settings.h"
 #include "host_suspend.h"
 #include "graphics_info.h"
+#include "hle/gameplay_options.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
 #include "settings_overlay.h"
@@ -87,6 +88,26 @@ void Vibrate(bool on) {
     env->DeleteLocalRef(activity);
 }
 
+// The game's Controls tab's Edit Touch Layout: GameActivity's layout editor, on the UI thread.
+void EditTouchLayout() {
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (env == nullptr || activity == nullptr) {
+        return;
+    }
+    jclass type = env->GetObjectClass(activity);
+    jmethodID edit = type != nullptr ? env->GetMethodID(type, "editTouchLayoutFromGame", "()V") : nullptr;
+    if (edit == nullptr) {
+        env->ExceptionClear();
+    } else {
+        env->CallVoidMethod(activity, edit);
+    }
+    if (type != nullptr) {
+        env->DeleteLocalRef(type);
+    }
+    env->DeleteLocalRef(activity);
+}
+
 // Join's Direct Connection: GameActivity.askDirectAddress asks for the host's address with a dialog,
 // which answers through nativeDirectAddress.
 void AskDirectAddress(const std::string& title, const std::string& hint) {
@@ -125,6 +146,36 @@ JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeSetTouchState(
     VirtualRemote::SetTouchState(static_cast<uint32_t>(buttons), shake == JNI_TRUE, tilt);
 }
 
+// GameActivity's Cheat button: whether the save being played is marked "Cheated" already (no need to
+// ask again), and P1 getting the Power-Up picked in the settings (GameplayOptions).
+JNIEXPORT jboolean JNICALL Java_com_wither_nsmbw_GameActivity_nativeFileCheated(JNIEnv*, jclass)
+{
+    return RuntimeConfigFile::FileCheated(GameplayOptions::ActiveFile()) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeGivePowerUp(JNIEnv*, jclass, jint powerUp)
+{
+    GameplayOptions::GivePowerUp(powerUp);
+}
+
+// The game's Gameplay tab's Cheat Button, for the on-screen remote.
+JNIEXPORT jboolean JNICALL Java_com_wither_nsmbw_GameActivity_nativeCheatButton(JNIEnv*, jclass)
+{
+    return RuntimeConfigFile::CheatButton() ? JNI_TRUE : JNI_FALSE;
+}
+
+// The touch editor's Add and Delete for it.
+JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeSetCheatButton(JNIEnv*, jclass, jboolean on)
+{
+    RuntimeConfigFile::SetCheatButton(on == JNI_TRUE);
+}
+
+// Whether player 1's controller has motion sensors of its own: the phone's then stay out of it.
+JNIEXPORT jboolean JNICALL Java_com_wither_nsmbw_GameActivity_nativeControllerMotion(JNIEnv*, jclass)
+{
+    return VirtualRemote::ControllerMotion() ? JNI_TRUE : JNI_FALSE;
+}
+
 // GameActivity.nativeApplyDisplaySettings: the Display menu. The aspect (0 original 4:3, 1 16:9,
 // 2 fill the screen) and the render scale (480 lines per 1x) apply at the next frame; 4:3 versus a
 // widescreen mode only at the next start, since the game reads it at boot. performanceMonitor: the
@@ -134,7 +185,7 @@ JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeApplyDisplaySett
 {
     // Through the settings overlay, so the game's own settings window shows the same choice. A scale
     // of 0 is "match the screen".
-    settings_overlay::SetAspect(aspect < 0 || aspect > 2 ? DisplaySettings::kAspectFill : static_cast<int32_t>(aspect));
+    settings_overlay::SetAspect(aspect < 0 || aspect > 3 ? DisplaySettings::kAspectFill : static_cast<int32_t>(aspect));
     settings_overlay::SetRenderScale(renderScale >= 0.0f ? renderScale : 1.0f);
     if (settings_overlay::FrameGraph() != (performanceMonitor == JNI_TRUE)) {
         settings_overlay::SetFrameGraph(performanceMonitor == JNI_TRUE);

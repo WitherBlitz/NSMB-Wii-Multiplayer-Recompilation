@@ -1407,6 +1407,8 @@ View GameView() {
     float aspect = 0.0f;  // 0 = fills the window
     if (!wide || settings.aspect == DisplaySettings::kAspect4x3) {
         aspect = 4.0f / 3.0f;
+    } else if (settings.aspect == DisplaySettings::kAspect16x10) {
+        aspect = 16.0f / 10.0f;
     } else if (settings.aspect == DisplaySettings::kAspect16x9 || w / std::max(h, 1.0f) <= 16.0f / 9.0f) {
         aspect = 16.0f / 9.0f;
     }

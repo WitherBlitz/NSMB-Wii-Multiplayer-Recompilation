@@ -60,6 +60,7 @@ constexpr float kTileColumnsBase = 28.0f;
 
 constexpr float kLinesPerScale = 480.0f;
 constexpr float kRatio16x9 = 16.0f / 9.0f;
+constexpr float kRatio16x10 = 16.0f / 10.0f;
 
 std::mutex g_mutex;
 Settings g_current;
@@ -90,7 +91,7 @@ float RenderLines(float renderScale, int32_t aspect) {
     }
     const float w = static_cast<float>(g_surfaceWidth), h = static_cast<float>(g_surfaceHeight);
     const bool fillsSurface = aspect == kAspectFill && SurfaceWiderThan169();
-    const float pictureAspect = aspect == kAspect4x3 ? 4.0f / 3.0f : kRatio16x9;
+    const float pictureAspect = aspect == kAspect4x3 ? 4.0f / 3.0f : aspect == kAspect16x10 ? kRatio16x10 : kRatio16x9;
     return fillsSurface ? h : std::min(h, w / pictureAspect);
 }
 
@@ -99,6 +100,10 @@ void ApplyRenderer(const Settings& settings) {
     if (aspect == kAspect4x3) {
         AuroraSetViewportPolicy(AURORA_VIEWPORT_FIT);
         VILockAspectRatio(4, 3);
+    } else if (aspect == kAspect16x10) {
+        // A 16:10 picture, with bars only on a screen that isn't: the game draws a narrower view into it.
+        AuroraSetViewportPolicy(AURORA_VIEWPORT_FIT);
+        VILockAspectRatio(16, 10);
     } else if (aspect == kAspect16x9 || !SurfaceWiderThan169()) {
         // 16:9, or Fill on a surface no wider than 16:9 (the picture is never squashed).
         VIUnlockAspectRatio();
@@ -122,7 +127,9 @@ void ApplyGameCanvas(int32_t aspect) {
     // 3D: cameras set up for 16:9 are widened to the screen (aurora's projection), the same view
     // height with more to the sides, instead of being stretched across it.
     const bool widened = aspect == kAspectFill && SurfaceWiderThan169();
-    g_wideAspect.store(widened ? static_cast<float>(g_surfaceWidth) / static_cast<float>(g_surfaceHeight) : 0.0f,
+    g_wideAspect.store(aspect == kAspect16x10 ? kRatio16x10
+                       : widened              ? static_cast<float>(g_surfaceWidth) / static_cast<float>(g_surfaceHeight)
+                                              : 0.0f,
                        std::memory_order_relaxed);
     AuroraSetWidePerspectiveAspect(g_wideAspect.load(std::memory_order_relaxed));
     uint32_t root = 0;
@@ -142,6 +149,8 @@ void ApplyGameCanvas(int32_t aspect) {
     if (aspect == kAspectFill && SurfaceWiderThan169()) {
         const float surfaceAspect = static_cast<float>(g_surfaceWidth) / static_cast<float>(g_surfaceHeight);
         target = static_cast<uint16_t>(std::lround(g_gameWideWidth * surfaceAspect / kRatio16x9));
+    } else if (aspect == kAspect16x10) {
+        target = static_cast<uint16_t>(std::lround(g_gameWideWidth * kRatio16x10 / kRatio16x9));
     }
     if (target == width) {
         return;

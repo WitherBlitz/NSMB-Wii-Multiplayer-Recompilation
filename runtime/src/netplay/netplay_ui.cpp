@@ -42,6 +42,7 @@ extern std::atomic_bool g_auroraFrameActive;
 #if defined(__ANDROID__)
 namespace AndroidBridge {
 void AskDirectAddress(const std::string& title, const std::string& hint);
+void EditTouchLayout();
 }
 #endif
 
@@ -564,6 +565,15 @@ MenuLayout g_menuLayout;
 std::atomic<bool> g_menuFocus{false};  // "Settings" holds the menu's cursor
 int g_menuFocusFrom = 2;               // the game's own cursor meanwhile: Quick Save or Title Screen
 std::atomic<bool> g_menuOpenSettings{false};
+
+// The file select's Back button is for a touch screen or a mouse: on a phone from the start, on a PC once
+// the mouse moves or clicks; a press on a remote, controller or the keyboard takes it away again.
+#if defined(__ANDROID__)
+bool g_pointerInUse = true;
+#else
+bool g_pointerInUse = false;
+#endif
+constexpr float kFileBackY = -192.0f, kFileBackW = 130.0f, kFileBackH = 40.0f;
 
 bool InGuestRam(uint32_t a) {
     return (a >= 0x80000000u && a < 0x81800000u) || (a >= 0x90000000u && a < 0x94000000u);
@@ -1146,6 +1156,24 @@ void DrawToggle(const Canvas& c) {
     Gear(c, kGearX, kGearY, 13.0f);
 }
 
+// Where the file select's Back goes: the bottom right of the picture, under the buttons there.
+float FileBackX() {
+    const GameLayout::View view = GameLayout::GameView();
+    const int aspect = settings_overlay::Aspect();
+    const float half = ImGui::GetIO().DisplaySize.x / 2 / view.scale;
+    const float picture = aspect == DisplaySettings::kAspect4x3     ? 304.0f
+                          : aspect == DisplaySettings::kAspect16x10 ? 365.0f
+                          : aspect == DisplaySettings::kAspect16x9  ? 405.0f
+                                                                    : half;
+    return std::min(half, picture) - kFileBackW / 2 - 8.0f;
+}
+
+void DrawFileBack(const Canvas& c) {
+    if (g_pointerInUse && GameMenus::FileSelectWaiting()) {
+        Button(c, "Back", FileBackX(), kFileBackY, kFileBackW, false, true, g_ui.frame, 26.0f, kFileBackH);
+    }
+}
+
 // ---------------------------------------------------------------- settings
 // Two tabs. Video: "Nx" renders N x 480 lines in a 16:9 picture (black bars beside it on a wider
 // screen), "Nx Ultrawide" (offered on screens wider than 16:9) the same lines across the whole
@@ -1234,18 +1262,24 @@ constexpr int kKeyToggleCount = 3;
 struct VideoChoice {
     float scale;
     bool wide;
+    bool sixteenTen = false;
 };
 
 bool CurrentWide() {
     return settings_overlay::Aspect() == DisplaySettings::kAspectFill;
 }
 
-// The multipliers, each plain and (on a wide screen) Ultrawide, then Native: scale 0, the screen's own
-// resolution across the whole screen.
+bool CurrentSixteenTen() {
+    return settings_overlay::Aspect() == DisplaySettings::kAspect16x10;
+}
+
+// The multipliers, each plain, 16:10 and (on a wide screen) Ultrawide, then Native: scale 0, the
+// screen's own resolution across the whole screen.
 std::vector<VideoChoice> VideoChoices() {
     std::vector<VideoChoice> choices;
     for (const float scale : kScales) {
         choices.push_back({scale, false});
+        choices.push_back({scale, false, true});
         if (DisplaySettings::SurfaceWide()) {
             choices.push_back({scale, true});
         }
@@ -1260,16 +1294,18 @@ int CurrentChoice(const std::vector<VideoChoice>& choices) {
         return static_cast<int>(choices.size()) - 1;  // Native
     }
     const float scale = current;
-    const bool wide = CurrentWide() && DisplaySettings::SurfaceWide();
+    const bool wide = CurrentWide() && DisplaySettings::SurfaceWide(), sixteenTen = CurrentSixteenTen();
     int best = -1;
     for (int i = 0; i < static_cast<int>(choices.size()); ++i) {
-        if (std::fabs(choices[i].scale - scale) < 0.01f && choices[i].wide == wide) {
+        if (std::fabs(choices[i].scale - scale) < 0.01f && choices[i].wide == wide &&
+            choices[i].sixteenTen == sixteenTen) {
             best = i;
         }
     }
     if (best < 0) {
         for (int i = 0; i < static_cast<int>(choices.size()); ++i) {
-            if (std::fabs(choices[i].scale - 1.0f) < 0.01f && choices[i].wide == wide) {
+            if (std::fabs(choices[i].scale - 1.0f) < 0.01f && choices[i].wide == wide &&
+                choices[i].sixteenTen == sixteenTen) {
                 best = i;
             }
         }
@@ -1284,6 +1320,8 @@ std::string ChoiceLabel(const VideoChoice& choice) {
     }
     if (choice.wide) {
         std::snprintf(text, sizeof(text), "%gx %s", choice.scale, UiText::Tr("Ultrawide").c_str());
+    } else if (choice.sixteenTen) {
+        std::snprintf(text, sizeof(text), "%gx 16:10", choice.scale);
     } else {
         std::snprintf(text, sizeof(text), "%gx (%dp)", choice.scale,
                       static_cast<int>(std::lround(480.0f * choice.scale)));
@@ -1291,9 +1329,11 @@ std::string ChoiceLabel(const VideoChoice& choice) {
     return text;
 }
 
-void ApplyVideo(float scale, bool wide) {
+void ApplyVideo(float scale, bool wide, bool sixteenTen) {
     if (settings_overlay::Aspect() != DisplaySettings::kAspect4x3) {
-        settings_overlay::SetAspect(wide ? DisplaySettings::kAspectFill : DisplaySettings::kAspect16x9);
+        settings_overlay::SetAspect(sixteenTen ? DisplaySettings::kAspect16x10
+                                    : wide     ? DisplaySettings::kAspectFill
+                                               : DisplaySettings::kAspect16x9);
     }
     settings_overlay::SetRenderScale(scale);
     g_settingsChanged = true;
@@ -1308,7 +1348,7 @@ void StepVideo(int direction, bool wrap) {
     } else if (next < 0) {
         next = wrap ? count - 1 : 0;
     }
-    ApplyVideo(choices[next].scale, choices[next].wide);
+    ApplyVideo(choices[next].scale, choices[next].wide, choices[next].sixteenTen);
 }
 
 void Arrow(const Canvas& c, float x, float y, bool right, bool selected, bool enabled = true) {
@@ -1335,57 +1375,15 @@ void Checkbox(const Canvas& c, float x, float y, bool on) {
     }
 }
 
-// P1's character, one a save file (gameplay_options.cpp plays it): on the file select, in the empty
-// middle of the Erase / Copy bar under the files, for the highlighted file. B (unused there) or a
-// tap on it moves to the next character, a tap on the left arrow back. Couch play only. Newer's
-// layout stacks the files and has the bar at the bottom: the picker goes in its middle there.
-constexpr const char* kCharacterNames[] = {"Mario", "Luigi", "Blue Toad", "Yellow Toad"};
-constexpr float kCharRowY = -68.0f, kCharStackedY = -190.0f;  // the bar's middle, in a row / stacked
-constexpr float kCharX = 0.0f, kCharW = 190.0f, kCharH = 36.0f, kCharArrow = 117.0f;
-std::atomic<int> g_fileCharacterStep{0};  // B pressed (the remote's thread): taken while drawing
-
-float CharY() {
-    return FilesStacked() ? kCharStackedY : kCharRowY;
-}
-
-int CharacterFile() {
+// The highlighted file is the one being played once it's picked (gameplay_options.cpp).
+void TrackActiveFile() {
     if (g_ui.screen != Screen::None || !g_ui.toggleShown || g_ui.toggleFocus) {
-        return -1;
-    }
-    const int file = GameMenus::FileSelectRawCursor();
-    return file >= 0 && file <= 2 ? file : -1;
-}
-
-void StepFileCharacter(int file, int step) {
-    RuntimeConfigFile::SetFileCharacter(file, (RuntimeConfigFile::FileCharacter(file) + 4 + step) % 4);
-    settings_overlay::PlayGameSound(settings_overlay::kGameSoundDecide);
-}
-
-void DrawFileCharacter(const Canvas& c) {
-    const int file = CharacterFile();
-    if (file >= 0) {
-        GameplayOptions::SetActiveFile(file);
-    }
-    const int step = g_fileCharacterStep.exchange(0);
-    if (file < 0) {
         return;
     }
-    if (step != 0) {
-        StepFileCharacter(file, step);
+    const int file = GameMenus::FileSelectRawCursor();
+    if (file >= 0 && file <= 2) {
+        GameplayOptions::SetActiveFile(file);
     }
-    const uint32_t character = std::min<uint32_t>(RuntimeConfigFile::FileCharacter(file), 3);
-    const float y = CharY();
-    Button(c, "", kCharX, y, kCharW, false, true, g_ui.frame, 21.0f, kCharH);
-    Text(c, UiText::Tr("P1") + ": " + UiText::Tr(kCharacterNames[character]), kCharX + 13.0f, y, 20);
-    Arrow(c, kCharX - kCharArrow, y, false, false);
-    Arrow(c, kCharX + kCharArrow, y, true, false);
-    // The B button at the left end, drawn like the game's own (-) and (+) beside Erase and Copy.
-    const float bx = kCharX - kCharW / 2 + 19.0f;
-    const ImVec2 b = ToScreen(c, bx, y);
-    const float r = 12.0f * c.view.scale;
-    c.list->AddCircleFilled(b, r, IM_COL32(250, 250, 250, static_cast<int>(240 * c.alpha)));
-    c.list->AddCircle(b, r, IM_COL32(90, 90, 100, static_cast<int>(230 * c.alpha)), 0, 2.0f * c.view.scale);
-    Text(c, "B", bx, y, 17, 1, 0x505060FFu);
 }
 
 // "Cheated" on each file Infinite Lives or the Power-Up was used on (RuntimeConfigFile::FileCheated),
@@ -1444,27 +1442,10 @@ void DrawFileCheated(const Canvas& c) {
             RuntimeConfigFile::SetFileCheated(file, false);
             continue;
         }
-        // Beside the card's number in a row (the game's own); at the bar's right end where stacked.
-        const float gx = x[file] + (stacked ? 210.0f : 48.0f), gy = y[file] + (stacked ? 24.0f : 108.0f);
+        // Centred above the card's "World N" in a row (the game's own); at the bar's right end where stacked.
+        const float gx = x[file] + (stacked ? 210.0f : 0.0f), gy = y[file] + (stacked ? 24.0f : 76.0f);
         Text(c, "Cheated", gx * c.view.gameScaleX / c.view.scale, gy, 21, 1, 0xFF9040FFu);
     }
-}
-
-// A tap on the picker: true when it took the tap.
-bool TapFileCharacter(float lx, float ly) {
-    const int file = CharacterFile();
-    if (file < 0 || std::fabs(ly - CharY()) > kCharH / 2 + 6.0f) {
-        return false;
-    }
-    if (std::fabs(lx - (kCharX - kCharArrow)) <= 30.0f) {
-        StepFileCharacter(file, -1);
-        return true;
-    }
-    if (std::fabs(lx - kCharX) <= kCharW / 2 + 4.0f || std::fabs(lx - (kCharX + kCharArrow)) <= 30.0f) {
-        StepFileCharacter(file, 1);
-        return true;
-    }
-    return false;
 }
 
 constexpr float kSettingsHeight = 440.0f, kSettingsWidth = 720.0f;
@@ -1472,8 +1453,10 @@ constexpr float kSettingsHeight = 440.0f, kSettingsWidth = 720.0f;
 void DrawSettingsTabs(const Canvas& c) {
     const float y = kSettingsHeight / 2 - 42.0f;
     const char* names[kSettingsTabs] = {"Video", "Audio",
-                                        settings_overlay::ControllerConnected() ? "Controller" : "Keybinds", "Gameplay",
-                                        "Language"};
+                                        settings_overlay::ControllerConnected() ? "Controller"
+                                        : kTouchToggle                          ? "Controls"
+                                                                                : "Keybinds",
+                                        "Gameplay", "Language"};
     for (int tab = 0; tab < kSettingsTabs; ++tab) {
         const float x = (tab - 2.0f) * 138.0f;
         Button(c, names[tab], x, y, 130, g_ui.cursor == 0 && g_settingsTab == tab, g_settingsTab == tab, g_ui.frame,
@@ -1625,13 +1608,13 @@ void DrawLanguageTab(const Canvas& c) {
     AddHit(0, -kSettingsHeight / 2 + 43.0f, 240, 60, kLanguageOk);
 }
 
-// The Gameplay tab (gameplay_options.cpp applies it): No Time Limit and Infinite Lives, each a button
-// with its checkbox, and Power-Up: left and right pick one, a press gives it to P1 (in a course or
-// on the world map at once; from the title screen or the file select once the game is on). LAN play
-// keeps the game's own rules. Cursor rows: 1-3, then 4 OK. (P1's character is picked on the file
-// select, one a save file: DrawFileCharacter.)
-constexpr int kGameplayTime = 1, kGameplayLives = 2, kGameplayPowerUp = 3, kGameplayOk = 4;
-int g_powerUpChoice = 2;     // the Fire Flower
+// The Gameplay tab (gameplay_options.cpp applies it): No Time Limit and Infinite Lives, and Power-Up:
+// left and right pick one, a press gives it to P1 (in a course or on the world map at once; from the
+// title screen or the file select once the game is on), and on Android the on-screen Cheat Button. LAN
+// play keeps the game's own rules. Cursor rows: one each, then OK.
+constexpr int kGameplayTime = 1, kGameplayLives = 2, kGameplayPowerUp = 3;
+constexpr int kGameplayCheat = kTouchToggle ? 4 : -1, kGameplayOk = kTouchToggle ? 5 : 4;
+int g_powerUpChoice = -1;    // GameplayOptions's list; from Config.toml when the tab is first drawn
 int g_powerUpGivenAt = -1;   // the frame Power-Up was last pressed, for its note
 
 // Turning Infinite Lives on and Power-Up ask first (No Time Limit doesn't): "Are you sure? This will
@@ -1694,49 +1677,95 @@ bool HandleCheatAsk(bool left, bool right, bool confirm, bool back) {
     return true;
 }
 
+// The Video tab's rows: one setting a row, Resolution, Fullscreen (desktop), Renderer, V-Sync (Windows
+// and Android), Performance Monitor and Spinning Coins, between the tabs and the hint line. The
+// Gameplay tab's rows are the same.
+constexpr int kRows = 4 + (kFullscreenRow ? 1 : 0) + (kVSyncRow ? 1 : 0);
+constexpr float kRowH = kRows >= 7 ? 33.0f : kRows == 6 ? 37.0f : 42.0f;
+constexpr float kRowStep = kRows >= 7 ? 37.0f : kRows == 6 ? 43.0f : 50.0f;
+constexpr float kRowsTop = kRows >= 7 ? 125.0f : kRows == 6 ? 123.0f : 118.0f;
+constexpr float kRowLabelSize = kRows >= 7 ? 24.0f : 26.0f, kRowButtonSize = kRows >= 7 ? 27.0f : 30.0f;
+constexpr float kRowsNoteY = kRows >= 7 ? -136.0f : kRows == 6 ? -133.0f : -126.0f;
+
 void DrawGameplayTab(const Canvas& c) {
-    const bool time = RuntimeConfigFile::NoTimeLimit(), lives = RuntimeConfigFile::InfiniteLives();
-    const float rows[] = {108.0f, 48.0f, -18.0f};
-    const char* labels[] = {"No Time Limit", "Infinite Lives"};
-    const bool on[] = {time, lives};
-    for (int i = 0; i < 2; ++i) {
-        Button(c, labels[i], 24, rows[i], 380, g_ui.cursor == 1 + i, true, g_ui.frame, 28.0f, 48.0f);
-        Checkbox(c, -140, rows[i], on[i]);
-        AddHit(24, rows[i], 386, 54, 1 + i);
+    int index = 0;
+    // A label and, beside it, a button showing the setting; a press changes it.
+    const auto labeled = [&](const char* label, const std::string& value, int cursor) {
+        const float y = kRowsTop - index++ * kRowStep;
+        Text(c, label, -300, y, kRowLabelSize, 0);
+        Button(c, value, 105, y, 270, g_ui.cursor == cursor, true, g_ui.frame, kRowButtonSize, kRowH);
+        AddHit(105, y, 276, kRowStep - 2, cursor);
+        return y;
+    };
+    labeled("No Time Limit", RuntimeConfigFile::NoTimeLimit() ? "On" : "Off", kGameplayTime);
+    labeled("Infinite Lives", RuntimeConfigFile::InfiniteLives() ? "On" : "Off", kGameplayLives);
+    if (g_powerUpChoice < 0) {
+        g_powerUpChoice = static_cast<int>(RuntimeConfigFile::PowerUp());
     }
     g_powerUpChoice = std::clamp(g_powerUpChoice, 0, GameplayOptions::PowerUpCount() - 1);
-    const float y = rows[2];
-    const bool selected = g_ui.cursor == kGameplayPowerUp;
-    Text(c, "Power-Up", -300, y, 26, 0);
-    Button(c, GameplayOptions::PowerUpName(g_powerUpChoice), 105, y, 270, selected, true, g_ui.frame, 26.0f, 48.0f);
-    Arrow(c, -50, y, false, selected);
-    Arrow(c, 260, y, true, selected);
-    AddHitEvent(-50, y, 54, 54, kGameplayPowerUp, kEvLeft);
-    AddHitEvent(260, y, 54, 54, kGameplayPowerUp, kEvRight);
-    AddHit(105, y, 276, 54, kGameplayPowerUp);
+    {
+        // Picked with the arrows, like Resolution; a press gives it. The longer names need a smaller size.
+        const float y = kRowsTop - index++ * kRowStep;
+        const bool selected = g_ui.cursor == kGameplayPowerUp;
+        const char* name = GameplayOptions::PowerUpName(g_powerUpChoice);
+        Text(c, "Power-Up", -300, y, kRowLabelSize, 0);
+        Button(c, name, 105, y, 270, selected, true, g_ui.frame, std::strlen(name) > 14 ? 22.0f : kRowButtonSize, kRowH);
+        Arrow(c, -50, y, false, selected);
+        Arrow(c, 260, y, true, selected);
+        AddHitEvent(-50, y, 54, kRowStep - 2, kGameplayPowerUp, kEvLeft);
+        AddHitEvent(260, y, 54, kRowStep - 2, kGameplayPowerUp, kEvRight);
+        AddHit(105, y, 276, kRowStep - 2, kGameplayPowerUp);
+    }
+    if (kGameplayCheat > 0) {
+        labeled("Cheat Button", RuntimeConfigFile::CheatButton() ? "On" : "Off", kGameplayCheat);
+    }
     const bool pressed = g_powerUpGivenAt >= 0 && g_ui.frame - g_powerUpGivenAt < 180;
     const char* note = g_ui.cursor == kGameplayTime    ? "The course timer stands still: take your time."
                        : g_ui.cursor == kGameplayLives ? "A miss costs no life."
+                       : g_ui.cursor == kGameplayCheat ? "An on-screen button that gives you the Power-Up."
                        : g_ui.cursor == kGameplayPowerUp
                            ? (GameplayOptions::PowerUpWaiting() ? "P1 gets it once the game is on."
                               : pressed                         ? "Given to P1."
                                                                 : "Left and right pick one; press it to give it to P1.")
                            : "These keep the game's own rules in LAN play.";
-    Text(c, note, 0, -100, 21);
+    Text(c, note, 0, kRowsNoteY, 21);
     Button(c, "OK", 0, -kSettingsHeight / 2 + 43.0f, 232, g_ui.cursor == kGameplayOk, true, g_ui.frame);
     AddHit(0, -kSettingsHeight / 2 + 43.0f, 240, 60, kGameplayOk);
+}
+
+// Android, playing by touch: the Keybinds tab has nothing to bind, so it's the touch controls' tab.
+bool TouchControlsTab() {
+    return kTouchToggle && !settings_overlay::ControllerConnected();
+}
+
+constexpr int kTouchEdit = 1, kTouchReverseTilt = 2, kTouchSmartSpin = 3, kTouchOk = 4;
+
+void DrawTouchControlsTab(const Canvas& c) {
+    constexpr float kTop = 92.0f, kStep = 62.0f;
+    Button(c, "Edit Touch Layout", 0, kTop, 420, g_ui.cursor == kTouchEdit, true, g_ui.frame, 28.0f, 50.0f);
+    AddHit(0, kTop, 426, 56, kTouchEdit);
+    const char* labels[] = {"Reverse Tilt", "Smart Spin"};
+    const bool on[] = {Keybinds::ReverseTilt(), Keybinds::SmartSpin()};
+    for (int i = 0; i < 2; ++i) {
+        const float y = kTop - (i + 1) * kStep;
+        Button(c, labels[i], 0, y, 420, g_ui.cursor == kTouchReverseTilt + i, true, g_ui.frame, 28.0f, 50.0f);
+        Checkbox(c, -176, y, on[i]);
+        AddHit(0, y, 426, 56, kTouchReverseTilt + i);
+    }
+    const char* note = g_ui.cursor == kTouchEdit          ? "Move and resize the on-screen controls."
+                       : g_ui.cursor == kTouchReverseTilt ? "Tilting the phone the other way tilts the remote."
+                       : g_ui.cursor == kTouchSmartSpin   ? "Pressing 2 in the air does a spin."
+                                                          : "";
+    Text(c, note, 0, -106, 21);
+    Button(c, "OK", 0, -kSettingsHeight / 2 + 43.0f, 232, g_ui.cursor == kTouchOk, true, g_ui.frame);
+    AddHit(0, -kSettingsHeight / 2 + 43.0f, 240, 60, kTouchOk);
 }
 
 void DrawVideoTab(const Canvas& c) {
     const std::vector<VideoChoice> choices = VideoChoices();
     const VideoChoice shown = choices[CurrentChoice(choices)];
-    // One setting a row: Resolution, Fullscreen (desktop), Renderer, V-Sync (Windows and Android),
-    // Performance Monitor and Spinning Coins, between the tabs and the hint line.
-    constexpr int kRows = 4 + (kFullscreenRow ? 1 : 0) + (kVSyncRow ? 1 : 0);
-    const float kRowH = kRows >= 7 ? 33.0f : kRows == 6 ? 37.0f : 42.0f;
-    const float step = kRows >= 7 ? 37.0f : kRows == 6 ? 43.0f : 50.0f;
-    const float top = kRows >= 7 ? 125.0f : kRows == 6 ? 123.0f : 118.0f;
-    const float labelSize = kRows >= 7 ? 24.0f : 26.0f, buttonSize = kRows >= 7 ? 27.0f : 30.0f;
+    const float step = kRowStep, top = kRowsTop;
+    const float labelSize = kRowLabelSize, buttonSize = kRowButtonSize;
     Text(c, "Resolution", -300, top, labelSize, 0);
     Button(c, ChoiceLabel(shown), 105, top, 270, g_ui.cursor == 1, true, g_ui.frame, buttonSize, kRowH);
     Arrow(c, -50, top, false, g_ui.cursor == 1);
@@ -1795,6 +1824,7 @@ void DrawVideoTab(const Canvas& c) {
     labeled("Spinning Coins", settings_overlay::SpinningCoins() ? "On" : "Off", kVideoCoins, true);
     const bool match = shown.scale <= 0.0f;
     const char* hint = match ? "The screen's own resolution, filling the whole screen."
+                       : shown.sixteenTen ? "For a 16:10 screen: fills it, with a slightly narrower view."
                        : !DisplaySettings::SurfaceWide() ? "Rendered at this many lines, then scaled to the screen."
                        : shown.wide                      ? "Fills the whole screen with a wider view."
                                                          : "16:9, with black bars at the sides.";
@@ -1811,7 +1841,7 @@ void DrawVideoTab(const Canvas& c) {
                        : g_ui.cursor == kVideoCoins ? "Animated coins and blocks. Off saves a little GPU work."
                        : g_ui.cursor == kVideoVSync ? "No tearing: frames wait for the display, the game keeps its pace."
                                                     : hint;
-    Text(c, note, 0, kRows >= 7 ? -136 : kRows == 6 ? -133 : -126, 21);
+    Text(c, note, 0, kRowsNoteY, 21);
     Button(c, "OK", 0, -kSettingsHeight / 2 + 43.0f, 232, g_ui.cursor == kVideoOk, true, g_ui.frame);
     AddHit(0, -kSettingsHeight / 2 + 43.0f, 240, 60, kVideoOk);
 }
@@ -1867,6 +1897,8 @@ void DrawSettings(const Canvas& c) {
         DrawVideoTab(c);
     } else if (g_settingsTab == kTabAudio) {
         DrawAudioTab(c);
+    } else if (g_settingsTab == kTabKeybinds && TouchControlsTab()) {
+        DrawTouchControlsTab(c);
     } else if (g_settingsTab == kTabKeybinds) {
         DrawKeybindsTab(c);
     } else if (g_settingsTab == kTabGameplay) {
@@ -1978,9 +2010,30 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
         } else if ((left || right) && cursor == kGameplayPowerUp) {
             const int count = GameplayOptions::PowerUpCount();
             g_powerUpChoice = (g_powerUpChoice + (left ? count - 1 : 1)) % count;
+            RuntimeConfigFile::SetPowerUp(static_cast<uint32_t>(g_powerUpChoice));
         } else if (confirm && cursor == kGameplayPowerUp) {
             AskCheat(CheatAsk::PowerUp);
+        } else if ((confirm || left || right) && cursor == kGameplayCheat) {
+            RuntimeConfigFile::SetCheatButton(!RuntimeConfigFile::CheatButton());
         } else if (confirm && cursor == kGameplayOk) {
+            CloseSettings();
+        }
+        return;
+    }
+    if (g_settingsTab == kTabKeybinds && TouchControlsTab()) {
+        cursor = std::min(cursor, kTouchOk);
+        if (up) cursor = cursor - 1;
+        if (down) cursor = std::min(kTouchOk, cursor + 1);
+        if (confirm && cursor == kTouchEdit) {
+            CloseSettings();
+#if defined(__ANDROID__)
+            AndroidBridge::EditTouchLayout();
+#endif
+        } else if (confirm && cursor == kTouchReverseTilt) {
+            Keybinds::SetReverseTilt(!Keybinds::ReverseTilt());
+        } else if (confirm && cursor == kTouchSmartSpin) {
+            Keybinds::SetSmartSpin(!Keybinds::SmartSpin());
+        } else if (confirm && cursor == kTouchOk) {
             CloseSettings();
         }
         return;
@@ -2461,9 +2514,6 @@ void TapAt(float lx, float ly, float gx, uint16_t scene, bool title) {
         Show(Screen::Settings);
         return;
     }
-    if (TapFileCharacter(lx, ly)) {
-        return;
-    }
     // Anywhere else is the game's: the cursor leaves the toggle so the game takes the presses.
     g_ui.toggleFocus = false;
     if (g_nav.kind == NavKind::MapWalk) {
@@ -2552,6 +2602,11 @@ void TapAt(float lx, float ly, float gx, uint16_t scene, bool title) {
         return;
     }
     if (GameMenus::FileSelectWaiting()) {
+        if (g_pointerInUse && std::fabs(lx - FileBackX()) <= kFileBackW / 2 + 4.0f &&
+            std::fabs(ly - kFileBackY) <= kFileBackH / 2 + 4.0f) {
+            StartNav(NavKind::Press, static_cast<int>(kOne));  // 1 is the file select's way back to the title
+            return;
+        }
         for (int file = 0; file < 3; ++file) {
             if (inGame(-190.0f + 190.0f * file, 45, 184, 196)) {
                 StartNav(NavKind::File, file);
@@ -3090,6 +3145,9 @@ void Draw() {
             tapX = io.MousePos.x;
             tapY = io.MousePos.y;
         }
+        if (tapX >= 0.0f || io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f) {
+            g_pointerInUse = true;
+        }
         if (tapX >= 0.0f) {
             const GameLayout::View view = GameLayout::GameView();
             TapAt((tapX - view.centerX) / view.scale, (view.centerY - tapY) / view.scale,
@@ -3102,8 +3160,9 @@ void Draw() {
         if (g_ui.toggleShown) {
             ++g_ui.frame;
             DrawToggle(Canvas{list, GameLayout::GameView(), 1.0f});
-            DrawFileCharacter(Canvas{list, GameLayout::GameView(), 1.0f});
+            TrackActiveFile();
             DrawFileCheated(Canvas{list, GameLayout::GameView(), 1.0f});
+            DrawFileBack(Canvas{list, GameLayout::GameView(), 1.0f});
         }
         if (scene == kSceneStage) {
             ++g_ui.frame;
@@ -3183,6 +3242,13 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
         // A tap on the game's own screens plays back as presses of the first remote. Those steer the
         // game's cursor straight to the tapped button, so the Settings rows below leave them alone.
         const bool tapping = g_nav.kind == NavKind::Cursor;
+        // A press on a real controller or keyboard takes the Back button away, not the presses a tap
+        // plays back, nor the on-screen remote's.
+        static uint32_t s_realHold = 0;
+        if ((sample.hold & ~s_realHold) != 0 && (!kTouchToggle || settings_overlay::ControllerConnected())) {
+            g_pointerInUse = false;
+        }
+        s_realHold = sample.hold;
         if (!Modal()) {
             sample.hold |= NavButtons();
         }
@@ -3309,11 +3375,6 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
             g_ui.topItem = 0;
             g_ui.events &= ~kEvUp;
             g_ui.heldFromMenu |= screenUp;
-        }
-        // B on a highlighted file: its P1 character (DrawFileCharacter).
-        if ((pressed & kB) != 0 && !Modal() && CharacterFile() >= 0) {
-            g_fileCharacterStep.fetch_add(1);
-            g_ui.heldFromMenu |= kB;
         }
         // Create Room: the game's own screen picks the number; its confirm press is ours.
         if (g_ui.screen == Screen::Count && (pressed & (kTwo | kA)) != 0 &&

@@ -90,6 +90,10 @@ bool HasProfile(uint16_t profile) {
     return Find(profile) != 0;
 }
 
+uint32_t ProfileObject(uint16_t profile) {
+    return Find(profile);
+}
+
 bool PlayerInSpinnableAir(int player, float* verticalSpeed, bool* onSpringboard) {
     // dBaseActor_c's last frame's movement (position minus the one before, set in postExecute).
     constexpr uint32_t kActorMoveY = 0xC8u;

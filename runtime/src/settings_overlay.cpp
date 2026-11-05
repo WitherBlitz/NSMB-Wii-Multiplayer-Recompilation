@@ -200,8 +200,9 @@ struct AspectItem {
     const char* label;
     int32_t mode;
 };
-constexpr std::array<AspectItem, 3> kAspects = {{
+constexpr std::array<AspectItem, 4> kAspects = {{
     {"Original 4:3", DisplaySettings::kAspect4x3},
+    {"16:10", DisplaySettings::kAspect16x10},
     {"16:9", DisplaySettings::kAspect16x9},
     {"Fill Window", DisplaySettings::kAspectFill},
 }};
