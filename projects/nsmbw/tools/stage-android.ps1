@@ -62,12 +62,24 @@ $staged = Join-Path $libDir 'libmain.so'
 if ($LASTEXITCODE -ne 0) { throw 'llvm-strip failed' }
 # Shared libraries the build made for libmain.so's own dependencies (aurora's libpng16.so). Android
 # resolves them from the app's library folder when libmain.so loads; system libraries stay out.
+$gpuHookNames = 'libadrenotools.so', 'libhook_impl.so', 'libmain_hook.so'
 Get-ChildItem -LiteralPath $BuildDirectory -Recurse -Filter '*.so' |
-    Where-Object { $_.Name -ne 'libmain.so' } | ForEach-Object {
+    Where-Object { $_.Name -ne 'libmain.so' -and $_.Name -notin $gpuHookNames -and $_.FullName -notmatch '\\libadrenotools\\' } | ForEach-Object {
         & $strip --strip-unneeded -o (Join-Path $libDir $_.Name) $_.FullName
         if ($LASTEXITCODE -ne 0) { throw "llvm-strip failed for $($_.Name)" }
         "bundled $($_.Name)"
     }
+# libadrenotools and its hooks, for a picked GPU driver (GpuDrivers.java). They are assets, unpacked only
+# when a driver is picked: as native libraries they would make Android extract every library at install.
+$gpuHooks = Join-Path $NativeDirectory 'assets\gpu_hooks'
+if (Test-Path -LiteralPath $gpuHooks) { Remove-Item -LiteralPath $gpuHooks -Recurse -Force }
+New-Item -ItemType Directory -Force $gpuHooks | Out-Null
+foreach ($name in $gpuHookNames) {
+    $hook = Get-ChildItem -LiteralPath (Join-Path $BuildDirectory 'libadrenotools') -Recurse -Filter $name | Select-Object -First 1
+    if (-not $hook) { throw "$name is missing from the build" }
+    & $strip --strip-unneeded -o (Join-Path $gpuHooks $name) $hook.FullName
+    if ($LASTEXITCODE -ne 0) { throw "llvm-strip failed for $name" }
+}
 
 $assets = Join-Path $NativeDirectory 'assets\runtime'
 if (Test-Path -LiteralPath $assets) { Remove-Item -LiteralPath $assets -Recurse -Force }

@@ -92,6 +92,8 @@ elseif(MKW_PLATFORM_LINUX)
     target_link_libraries(mkw_runtime_common PRIVATE mkw::libco ${CMAKE_DL_LIBS})
 elseif(MKW_PLATFORM_ANDROID)
     target_link_libraries(mkw_runtime_common PRIVATE android log ${CMAKE_DL_LIBS})
+    target_include_directories(mkw_runtime_common PRIVATE
+        "${MKW_RUNTIME_SOURCE_DIR}/third_party/libadrenotools/include")
 endif()
 
 if(MKW_PLATFORM_MACOS)
@@ -251,6 +253,10 @@ function(mkw_configure_product target)
         # devices that use them.
         target_link_libraries(${target} PRIVATE android log ${CMAKE_DL_LIBS})
         target_link_options(${target} PRIVATE "LINKER:-z,max-page-size=16384" "LINKER:--no-undefined")
+        # A picked GPU driver: Dawn's dlopen of libvulkan.so lands in src/android/gpu_driver.cpp, which
+        # opens libadrenotools.so only then. Built here, staged as assets by stage-android.ps1.
+        target_link_options(${target} PRIVATE "LINKER:--wrap=dlopen" "LINKER:--wrap=dlclose")
+        add_dependencies(${target} adrenotools main_hook hook_impl)
         set_target_properties(${target} PROPERTIES OUTPUT_NAME main)
     endif()
     if(MKW_PLATFORM_WINDOWS)

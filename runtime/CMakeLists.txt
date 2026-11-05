@@ -525,6 +525,18 @@ if(MKW_BUILD_PRODUCTS)
         "${MKW_PROFILE_SENSITIVE_CALLER_COUNT} profile-sensitive callers; "
         "${MKW_RETRO_REWIND_FUNCTION_COUNT} Retro Rewind functions")
 
+    if(MKW_PLATFORM_ANDROID)
+        # Loads a GPU driver the user picked in place of the phone's own (src/android/gpu_driver.cpp).
+        # Never linked into the product: linkernsbypass, inside it, changes memory protections and reads
+        # the linker's code as soon as it loads, which only someone who picked a driver should run. It
+        # and the two hook libraries are files of their own, shipped as assets and opened on demand.
+        set(MKW_SAVED_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+        set(BUILD_SHARED_LIBS ON)
+        add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/third_party/libadrenotools"
+            "${CMAKE_BINARY_DIR}/libadrenotools" EXCLUDE_FROM_ALL)
+        set(BUILD_SHARED_LIBS ${MKW_SAVED_BUILD_SHARED_LIBS})
+    endif()
+
     set(MKW_RUNTIME_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}")
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/PublicProducts.cmake")
 else()

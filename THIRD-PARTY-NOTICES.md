@@ -110,6 +110,16 @@ fallback - though this project's x86_64-only target only ever compiles amd64.c) 
 Source: <https://github.com/higan-emu/libco>. Full license text:
 `runtime/third_party/libco/LICENSE`.
 
+### libadrenotools and liblinkernsbypass - BSD-2-Clause
+
+Copyright Billy Laws.
+On Android, these load a GPU driver the user picked in place of the phone's own
+(`runtime/src/android/gpu_driver.cpp`). Vendored without their `tools` folder in
+`runtime/third_party/libadrenotools` from commit `8fae8ce254dfc1344527e05301e43f37dea2df80`, with
+liblinkernsbypass from commit `aa3975893d83ef1bc84c321ec60c65fbf1287887`.
+Source: <https://github.com/bylaws/libadrenotools>. Full license text:
+`runtime/third_party/libadrenotools/LICENSE` and `lib/linkernsbypass/LICENSE` beside it.
+
 ---
 
 ## Fetched at build time and redistributed in release builds
