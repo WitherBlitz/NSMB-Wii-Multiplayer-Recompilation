@@ -123,6 +123,9 @@ uint64_t AuroraTakeUnmergedDraws(void);
 // and End, which both drain first: lets the runtime check that a piece of guest drawing produced
 // exactly the same commands as the last time it ran.
 void AuroraBeginCommandDigest(void);
+// NSMBW: whether this GPU's driver can choke on light textures kept from an earlier frame, so the
+// runtime should watch for it (runtime/src/hle/gx/light_texture_cache.cpp).
+int AuroraLightTextureReuseWatched(void);
 uint64_t AuroraEndCommandDigest(void);
 // NSMBW: aurora's vertex descriptor (vcdLo, vcdHi), format `fmt`'s attribute table (vatA/B/C) and
 // normal type, as last set through the GX API.

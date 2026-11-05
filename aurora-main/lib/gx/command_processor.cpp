@@ -2776,6 +2776,8 @@ extern "C" uint64_t AuroraTakeUnmergedDraws() {
 
 extern "C" void AuroraGxSync() { aurora::gx::fifo::sync_if_threaded(); }
 
+extern "C" int AuroraLightTextureReuseWatched() { return aurora::webgpu::g_watchLightTextureReuse ? 1 : 0; }
+
 extern "C" void AuroraBeginCommandDigest() {
   aurora::gx::fifo::drain();
   aurora::gx::fifo::g_commandDigest = 0;

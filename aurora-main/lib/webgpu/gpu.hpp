@@ -61,6 +61,12 @@ extern bool g_bcTexturesSupported;
 // Vertex fetch written for drivers that miscompile aurora's storage-buffer vertex pulling (Adreno:
 // skinned models' texture coordinates and normals come out scrambled). See gx/shader.cpp.
 extern bool g_safeVertexFetch;
+// TEV stages in float math instead of byte-exact integer math where that's safe: much less work per
+// pixel, for GPUs too weak to afford exactness (gx/shader.cpp, tev_fast_op).
+extern bool g_fastTev;
+// This driver can choke on light texture copies kept from an earlier frame, so the runtime watches for
+// that (runtime/src/hle/gx/light_texture_cache.cpp).
+extern bool g_watchLightTextureReuse;
 // Shader diagnostics from AURORA_GFX_FLAGS (gx/shader.cpp apply_shader_debug).
 enum ShaderDebug : uint32_t {
   ShaderDebugNoTextures = 1u << 0,

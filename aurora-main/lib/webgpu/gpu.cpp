@@ -75,6 +75,8 @@ static wgpu::AdapterInfo g_adapterInfo;
 static wgpu::SurfaceCapabilities g_surfaceCapabilities;
 bool g_bcTexturesSupported;
 bool g_safeVertexFetch = false;
+bool g_fastTev = false;
+bool g_watchLightTextureReuse = false;
 uint32_t g_shaderDebug = 0;
 static std::string g_adapterName;
 // Written by Dawn's device-loss callback and consumed at ordered frame boundaries. Keep the
@@ -95,6 +97,7 @@ static std::atomic_bool g_initialized{false};
 //   nobc       do not enable BC texture compression
 //   nomono     do not use one Vulkan pipeline cache for all pipelines
 //   safefetch / nosafefetch   force the GPU compatibility vertex fetch on or off
+//   fasttev / nofasttev       force the float-math TEV shaders on or off
 //   notex      every texture samples as grey (is it geometry or texturing?)
 //   uvvis      texture samples show their coordinates instead
 //   dumpwgsl   write every generated shader to <cache>/wgsl
@@ -147,6 +150,9 @@ static bool contains_ignore_case(std::string_view haystack, std::string_view nee
 // Snapdragon laptops alike) miscompile aurora's vertex pulling on some driver versions - Adreno 840
 // always, some 6xx/7xx too - and every Android GPU runs a vendor driver that games rarely exercise
 // this way, so phones get the safe path whatever their GPU. Its cost is a bounds check per load.
+// Intel's D3D11 driver does the same (HD 4600, driver 20.19.15.5126: flat logos, smeared or missing
+// tiles, washed-out models, all from vertex attributes read wrong, while an NVIDIA GPU given the same
+// D3D11 shaders draws them correctly), and there the safe path is no slower.
 static void choose_gpu_compat() {
   const auto text = [](const wgpu::StringView& value) {
     return value.IsUndefined() ? std::string_view{} : std::string_view{value};
@@ -162,6 +168,8 @@ static void choose_gpu_compat() {
                     contains_ignore_case(text(g_adapterInfo.description), "mali") ||
                     contains_ignore_case(text(g_adapterInfo.vendor), "arm") ||
                     g_adapterInfo.vendorID == 0x13B5;
+  const bool intelD3D11 = g_backendType == wgpu::BackendType::D3D11 &&
+                          (g_adapterInfo.vendorID == 0x8086 || contains_ignore_case(text(g_adapterInfo.vendor), "intel"));
 #if defined(__ANDROID__)
   constexpr bool mobile = true;
 #else
@@ -181,11 +189,15 @@ static void choose_gpu_compat() {
     g_safeVertexFetch = false;
     reason = "off (setting)";
   } else {
-    g_safeVertexFetch = qualcomm || (mobile && !mali);
+    g_safeVertexFetch = qualcomm || intelD3D11 || (mobile && !mali);
     reason = qualcomm ? "on (auto: Qualcomm Adreno)" :
+             intelD3D11 ? "on (auto: Intel on D3D11)" :
              mali ? "off (auto: ARM Mali; enable compatibility if broken)" :
              mobile ? "on (auto: unknown mobile GPU)" : "off (auto)";
   }
+  g_fastTev = gfx_flag("fasttev") || (intelD3D11 && !gfx_flag("nofasttev"));
+  g_watchLightTextureReuse = intelD3D11;
+  Log.info("Fast TEV shaders {}", g_fastTev ? "on" : "off");
   g_shaderDebug = (gfx_flag("notex") ? ShaderDebugNoTextures : 0u) |
                   (gfx_flag("uvvis") ? ShaderDebugTexCoords : 0u) |
                   (gfx_flag("dumpwgsl") ? ShaderDebugDumpSource : 0u);
