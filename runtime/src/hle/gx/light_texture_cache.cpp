@@ -214,6 +214,7 @@ struct State {
     bool valid = false;
     uint64_t key = 0;
     uint32_t calls = 0, repeats = 0, skips = 0, outputMismatches = 0, writeMismatches = 0;
+    uint32_t stable = 0;  // repeats in a row since the key last changed
 };
 
 // Per manager: m3d keeps one per scene layer.
@@ -281,10 +282,16 @@ extern "C" void LightTextureDrawAndCapture_802cd4b0(CpuContext* ctx) {
     const bool keyed = ComputeKey(call, key);
     const bool repeat = keyed && s.valid && key == s.key;
     s.repeats += repeat ? 1 : 0;
+    s.stable = repeat ? s.stable + 1 : 0;
+    // Intel's D3D11 driver again: the first real draw after skipped ones can come out black while draws
+    // in a row are right (the opening's castle and hall went black, and redrawing every 8th call blacked
+    // out nearly everything). So there, skip only once the lights have held still for a second: lights
+    // that keep changing stay drawn every frame, and steady scenes still get the saving.
+    static const uint32_t kSettleCalls = AuroraLightTextureReuseWatched() != 0 ? 60 : 0;
     const bool backfiring = ReuseIsBackfiring();
     if (mode == Mode::Verify) {
         RunVerified(ctx, call, s, keyed, key, repeat);
-    } else if (repeat && !backfiring && MarkDrawn(call.manager)) {
+    } else if (repeat && !backfiring && s.stable >= kSettleCalls && MarkDrawn(call.manager)) {
         ++s.skips;
     } else {
         func_802CD4B0(ctx);
