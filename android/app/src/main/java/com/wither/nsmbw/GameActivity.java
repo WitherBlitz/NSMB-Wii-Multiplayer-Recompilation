@@ -277,24 +277,7 @@ public class GameActivity extends SDLActivity
         public void run() {
             final long now = android.os.SystemClock.uptimeMillis();
             if (nativeReady) {
-                // The game's settings window: keep its choices, the config is rewritten at each start.
-                final float[] changed = nativeTakeSettings();
-                if (changed != null) {
-                    settings.setResolutionScale(changed[0]);
-                    if (changed.length > 2) settings.setAspectMode(Math.round(changed[2]));
-                    if (changed.length > 3) settings.setSpinningCoins(changed[3] > 0.5f);
-                    if (changed.length > 4) settings.setPerformanceMonitor(changed[4] > 0.5f);
-                    if (changed.length > 5) settings.setVSync(changed[5] > 0.5f);
-                    if (changed.length > 6) settings.setFrameGraphSize(Math.round(changed[6]));
-                    if (changed.length > 7 && changed[7] >= 0f) {
-                        settings.setTouchControls(changed[7] > 0.5f);  // the Keybinds tab's checkbox
-                        applyControlSettings();
-                    }
-                    final int renderer = changed.length > 8 ? Math.round(changed[8]) : -1;
-                    if (renderer >= 0 && renderer < AppSettings.RENDERERS.length) {
-                        settings.setGraphicsApi(AppSettings.RENDERERS[renderer]);  // the Video tab's Renderer
-                    }
-                }
+                keepGameSettings();
                 // The game's Gameplay tab's Cheat Button, when it changes (the start menu's: onResume).
                 final boolean cheat = nativeCheatButton();
                 if (cheat != lastCheatButton) {
@@ -311,6 +294,28 @@ public class GameActivity extends SDLActivity
             menuPoll.postDelayed(this, 100);
         }
     };
+
+    /** The game's settings window: keep its choices (the config is rewritten from them at each start). */
+    private void keepGameSettings() {
+        final float[] changed = nativeTakeSettings();
+        if (changed == null) return;
+        settings.setResolutionScale(changed[0]);
+        if (changed.length > 2) settings.setAspectMode(Math.round(changed[2]));
+        if (changed.length > 3) settings.setSpinningCoins(changed[3] > 0.5f);
+        if (changed.length > 4) settings.setPerformanceMonitor(changed[4] > 0.5f);
+        if (changed.length > 5) settings.setVSync(changed[5] > 0.5f);
+        if (changed.length > 6) settings.setFrameGraphSize(Math.round(changed[6]));
+        if (changed.length > 7 && changed[7] >= 0f) {
+            settings.setTouchControls(changed[7] > 0.5f);  // the Keybinds tab's checkbox
+            applyControlSettings();
+        }
+        final int renderer = changed.length > 8 ? Math.round(changed[8]) : -1;
+        if (renderer >= 0 && renderer < AppSettings.RENDERERS.length) {
+            settings.setGraphicsApi(AppSettings.RENDERERS[renderer]);  // the Video tab's Renderer
+        }
+        if (changed.length > 9) settings.setDepthBlur(changed[9] > 0.5f);  // the Video tab's Depth Blur
+        if (changed.length > 10) settings.setBatterySaver(changed[10] > 0.5f);  // ... and its Battery Saver
+    }
 
     @Override
     public void onTap(float x, float y) {
@@ -365,6 +370,7 @@ public class GameActivity extends SDLActivity
             }
         }
         menuPoll.removeCallbacks(pollMenu);
+        if (nativeReady) keepGameSettings();  // a change since the last poll, before the app may be ended
         if (motion != null) motion.stop();
         if (touch != null) touch.release();
         super.onPause();

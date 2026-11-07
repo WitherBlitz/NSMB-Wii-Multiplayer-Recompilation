@@ -90,6 +90,10 @@ public final class LauncherActivity extends Activity {
 
     private TextView status;
     private Button play;
+    /** Under Play, only for the original game (AppFiles.retailDisc); its page is up while modsShown. */
+    private Button mods;
+    private View home;
+    private boolean modsShown;
     private View steps;
     /** The Newer Super Mario Bros. Wii tab is picked; with its module installed, Play starts Newer. */
     private boolean newerTab, newer;
@@ -182,6 +186,10 @@ public final class LauncherActivity extends Activity {
         play = button(Lang.t("Play"), true);
         play.setOnClickListener(v -> startActivity(GameActivity.intent(this)));
         intro.addView(play, matchWidth(dp(14)));
+        mods = button(Lang.t("Mods"), false);
+        mods.setOnClickListener(v -> showMods());
+        mods.setVisibility(View.GONE);  // refresh() shows it once the game is known to be the original
+        intro.addView(mods, matchWidth(dp(10)));
         // The Newer tab before its module is here: the download in Play's place, no game data yet.
         final boolean needModule = newerTab && !newer;
         if (needModule) {
@@ -339,6 +347,7 @@ public final class LauncherActivity extends Activity {
         final ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.addView(page);
+        home = scroll;
         setContentView(scroll);
         restartGameIfAsked(getIntent());
         if (opened && settings.autoUpdate()) {
@@ -522,6 +531,57 @@ public final class LauncherActivity extends Activity {
         }
         play.setEnabled(present && problem == null);
         steps.setVisibility(present && problem == null ? View.GONE : View.VISIBLE);
+        showModsIfRetail(present && !newer);
+    }
+
+    /** Mods only for the original game: its disc ID and main.dol, checked off the UI thread. */
+    private void showModsIfRetail(boolean baseGame) {
+        if (!baseGame) {
+            mods.setVisibility(View.GONE);
+            return;
+        }
+        final File root = AppFiles.gameDir(this, false);
+        new Thread(() -> {
+            final boolean retail = AppFiles.retailDisc(root);
+            main.post(() -> mods.setVisibility(retail ? View.VISIBLE : View.GONE));
+        }, "retail-check").start();
+    }
+
+    /** The Mods page: nothing to manage yet. Back (or the phone's Back) returns to the start menu. */
+    private void showMods() {
+        final LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setGravity(Gravity.CENTER);
+        page.setPadding(dp(20), dp(16), dp(20), dp(20));
+        final TextView title = text(Lang.t("Mods"), 34);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        page.addView(title, matchWidth(0));
+        final TextView soon = text(Lang.t("Coming Soon!"), 18);
+        soon.setTextColor(MUTED);
+        page.addView(soon, matchWidth(dp(20)));
+        final Button back = button(Lang.t("Back"), false);
+        back.setOnClickListener(v -> closeMods());
+        final LinearLayout.LayoutParams backParams = new LinearLayout.LayoutParams(
+                Math.min(dp(340), getResources().getDisplayMetrics().widthPixels - dp(40)),
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        backParams.topMargin = dp(32);
+        page.addView(back, backParams);
+        setContentView(page);
+        modsShown = true;
+    }
+
+    private void closeMods() {
+        modsShown = false;
+        setContentView(home);
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (modsShown) {
+            closeMods();
+            return;
+        }
+        super.onBackPressed();
     }
 
     /** Getting Started, laid out like KartPad's. */

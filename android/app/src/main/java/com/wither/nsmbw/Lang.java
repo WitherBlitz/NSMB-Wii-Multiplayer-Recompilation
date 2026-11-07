@@ -88,6 +88,8 @@ final class Lang {
                 "New Super Mario Bros. Wii, recompilado para ejecutarse de forma nativa",
                 "New Super Mario Bros. Wii, recompilé pour fonctionner en natif");
         put("Play", "Jugar", "Jouer");
+        put("Mods", "Mods", "Mods");
+        put("Coming Soon!", "¡Próximamente!", "Bientôt disponible !");
         put("Updates", "Actualizaciones", "Mises à jour");
         put("Check for Updates", "Buscar actualizaciones", "Rechercher des mises à jour");
         put("Auto Update", "Actualización automática", "Mise à jour automatique");
@@ -475,6 +477,14 @@ final class Lang {
         newer("The background music.", "La música de fondo.", "La musique de fond.", "La musica di sottofondo.");
         newer("Jumps, coins, enemies and the rest.", "Saltos, monedas, enemigos y lo demás.",
                 "Sauts, pièces, ennemis et le reste.", "Salti, monete, nemici e il resto.");
+        newer("Menu Sounds", "Sonidos de menú", "Sons des menus", "Suoni dei menu");
+        newer("The menus' cursor, select and back sounds.", "El cursor, elegir y volver de los menús.",
+                "Le curseur, la sélection et le retour des menus.", "Cursore, scelta e indietro dei menu.");
+        newer("Depth Blur", "Desenfoque", "Flou de profondeur", "Sfocatura");
+        newer("The blur and heat haze of desert, beach, water and lava areas.",
+                "El desenfoque y la calima del desierto, la playa, el agua y la lava.",
+                "Le flou et les ondulations du désert, de la plage, de l'eau et de la lave.",
+                "Sfocatura e foschia di deserto, spiaggia, acqua e lava.");
         newer("The on-screen Wii Remote. A controller hides it while you use it.",
                 "El Wii Remote en pantalla. Un mando lo oculta mientras lo usas.",
                 "La Wiimote à l'écran. Une manette la masque pendant que vous l'utilisez.",
@@ -671,6 +681,8 @@ final class Lang {
         it("New Super Mario Bros. Wii, recompiled to run natively",
                 "New Super Mario Bros. Wii, ricompilato per funzionare in modo nativo");
         it("Play", "Gioca");
+        it("Mods", "Mod");
+        it("Coming Soon!", "Prossimamente!");
         it("Updates", "Aggiornamenti");
         it("Check for Updates", "Cerca aggiornamenti");
         it("Auto Update", "Aggiornamento automatico");

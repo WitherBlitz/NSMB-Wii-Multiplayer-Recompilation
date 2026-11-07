@@ -36,13 +36,18 @@ public final class SettingsActivity extends Activity {
     private static final String[] TABS = {"Video", "Audio", "Controls", "Gameplay", "Language"};
     private static final String EXTRA_TAB = "tab";
 
-    // The game's window: cream with faint stripes, green buttons outlined in brown, yellow arrows.
-    private static final int CREAM = Color.rgb(255, 250, 222), STRIPE = Color.rgb(250, 240, 200);
-    private static final int FRAME = Color.rgb(196, 178, 96), INK = Color.rgb(64, 44, 14);
-    private static final int GREEN_TOP = Color.rgb(240, 255, 190), GREEN_MID = Color.rgb(170, 226, 80),
-            GREEN_BOTTOM = Color.rgb(120, 196, 40);
+    // Greys for the tabs not picked, and the brown edge of the arrows and checkboxes.
+    private static final int INK = Color.rgb(64, 44, 14);
     private static final int GREY_TOP = Color.rgb(226, 230, 214), GREY_BOTTOM = Color.rgb(170, 180, 160);
-    private static final int YELLOW = Color.rgb(255, 214, 40);
+    // The pause window's look (the in-game Settings window has it too): a half-dark panel in a red
+    // rounded frame, its green buttons (lighter at rest, deeper when picked), white letters edged in dark
+    // green, the world numbers' yellow-to-green arrows.
+    private static final int PAUSE_FILL = Color.argb(128, 0, 0, 0), PAUSE_FRAME = Color.rgb(230, 100, 100),
+            PAUSE_FRAME_DARK = Color.rgb(50, 0, 0);
+    private static final int BUTTON_TOP = Color.rgb(140, 220, 90), BUTTON_BOTTOM = Color.rgb(255, 250, 128),
+            BUTTON_ON_TOP = Color.rgb(0, 150, 70), BUTTON_ON_BOTTOM = Color.rgb(240, 255, 50),
+            BUTTON_EDGE = Color.rgb(17, 45, 17);
+    private static final int ARROW_TOP = Color.rgb(255, 240, 0), ARROW_BOTTOM = Color.rgb(90, 200, 50);
 
     private AppSettings settings;
     private int tab;
@@ -106,7 +111,7 @@ public final class SettingsActivity extends Activity {
                 tabRows.addView(tabRow, rowParams(i == 0 ? 0 : dp(8)));
             }
             final int index = i;
-            final TextView button = greenButton(Lang.t(TABS[i]), i == tab, 17, dp(portrait ? 46 : 40));
+            final TextView button = greenButton(Lang.t(TABS[i]), i == tab, 17, dp(portrait ? 46 : 40), i == tab);
             button.setOnClickListener(v -> {
                 tab = index;
                 pendingHint = null;
@@ -166,7 +171,7 @@ public final class SettingsActivity extends Activity {
 
     private void videoTab() {
         // The game's Video tab, row for row (Resolution, Renderer, V-Sync, Performance Monitor with its
-        // size, Spinning Coins), then the two the start menu adds.
+        // size, Spinning Coins, Depth Blur), then the two the start menu adds.
         final float[] scales = AppSettings.RESOLUTION_SCALES;
         int scaleIndex = 3;
         for (int i = 0; i < scales.length; ++i) {
@@ -210,6 +215,9 @@ public final class SettingsActivity extends Activity {
         value(Lang.t("Spinning Coins"), Lang.t(settings.spinningCoins() ? "On" : "Off"),
                 Lang.t("Animated coins and blocks. Off saves a little GPU work."),
                 () -> settings.setSpinningCoins(!settings.spinningCoins()));
+        value(Lang.t("Depth Blur"), Lang.t(settings.depthBlur() ? "On" : "Off"),
+                Lang.t("The blur and heat haze of desert, beach, water and lava areas."),
+                () -> settings.setDepthBlur(!settings.depthBlur()));
         final String[] aspects = {Lang.t("Original 4:3"), "16:9", Lang.t("Fill Screen"), "16:10"};
         choice(Lang.t("Aspect Ratio"), aspects[Math.max(0, Math.min(3, settings.aspectMode()))],
                 Lang.t("Fill Screen: a wider view filling the whole screen. 16:9 and 4:3 add black bars."),
@@ -232,6 +240,7 @@ public final class SettingsActivity extends Activity {
             {"Master", "volume", "The volume of everything."},
             {"Music", "music_volume", "The background music."},
             {"Sound Effects", "sound_effects_volume", "Jumps, coins, enemies and the rest."},
+            {"Menu Sounds", "ui_volume", "The menus' cursor, select and back sounds."},
         };
         for (String[] v : volumes) {
             slider(Lang.t(v[0]), Math.round(AppFiles.audioVolume(this, v[1]) * 100), 0, 100, 5, Lang.t(v[2]), value -> {
@@ -414,9 +423,9 @@ public final class SettingsActivity extends Activity {
         final SeekBar bar = new SeekBar(this);
         bar.setMax((max - min) / stepSize);
         bar.setProgress((Math.max(min, Math.min(max, value)) - min) / stepSize);
-        bar.setProgressTintList(android.content.res.ColorStateList.valueOf(GREEN_BOTTOM));
+        bar.setProgressTintList(android.content.res.ColorStateList.valueOf(BUTTON_ON_TOP));
         bar.setProgressBackgroundTintList(android.content.res.ColorStateList.valueOf(INK));
-        bar.setThumbTintList(android.content.res.ColorStateList.valueOf(YELLOW));
+        bar.setThumbTintList(android.content.res.ColorStateList.valueOf(BUTTON_BOTTOM));
         final TextView shown = outlined(value + "%", portrait ? 17 : 18);
         shown.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -490,16 +499,23 @@ public final class SettingsActivity extends Activity {
         return view;
     }
 
-    /** The game's green button (grey when not picked, for tabs), its label in its lettering. */
+    /** The pause window's green button (grey when not picked, for tabs), its label in its lettering. */
     private TextView greenButton(String label, boolean lit, int sp, int height) {
+        return greenButton(label, lit, sp, height, false);
+    }
+
+    /** on: the deeper colours of a picked button (the open tab). */
+    private TextView greenButton(String label, boolean lit, int sp, int height, boolean on) {
         final TextView view = outlined(label, sp);
+        view.setShadowLayer(dp(2.5f), dp(1), dp(1), BUTTON_EDGE);
         view.setGravity(Gravity.CENTER);
         view.setMaxLines(2);
         view.setMinHeight(height);
-        final GradientDrawable fill = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, lit
-                ? new int[] {GREEN_TOP, GREEN_MID, GREEN_BOTTOM} : new int[] {GREY_TOP, GREY_BOTTOM});
+        final GradientDrawable fill = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, !lit
+                ? new int[] {GREY_TOP, GREY_BOTTOM} : on ? new int[] {BUTTON_ON_TOP, BUTTON_ON_BOTTOM}
+                : new int[] {BUTTON_TOP, BUTTON_BOTTOM});
         fill.setCornerRadius(dp(10));
-        fill.setStroke(dp(2), lit ? INK : Color.rgb(140, 140, 120));
+        fill.setStroke(dp(2), lit ? Color.BLACK : Color.rgb(140, 140, 120));
         view.setBackground(fill);
         if (!lit) view.setAlpha(0.8f);
         view.setClickable(true);
@@ -508,25 +524,21 @@ public final class SettingsActivity extends Activity {
 
     private int dp(float v) { return Math.round(v * density); }
 
-    /** The window: cream with faint horizontal stripes, a gold frame. */
+    /** The window: the pause window's half-dark panel in its red rounded frame. */
     private final class WindowDrawable extends Drawable {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         @Override public void draw(Canvas canvas) {
             final android.graphics.Rect b = getBounds();
             final float r = dp(18);
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(CREAM);
+            paint.setColor(PAUSE_FILL);
             canvas.drawRoundRect(b.left, b.top, b.right, b.bottom, r, r, paint);
-            paint.setColor(STRIPE);
-            canvas.save();
-            final Path clip = new Path();
-            clip.addRoundRect(b.left, b.top, b.right, b.bottom, r, r, Path.Direction.CW);
-            canvas.clipPath(clip);
-            for (float y = b.top; y < b.bottom; y += dp(8)) canvas.drawRect(b.left, y, b.right, y + dp(4), paint);
-            canvas.restore();
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(dp(6));
-            paint.setColor(FRAME);
+            paint.setColor(PAUSE_FRAME_DARK);
+            canvas.drawRoundRect(b.left + dp(3), b.top + dp(3), b.right - dp(3), b.bottom - dp(3), r, r, paint);
+            paint.setStrokeWidth(dp(3));
+            paint.setColor(PAUSE_FRAME);
             canvas.drawRoundRect(b.left + dp(3), b.top + dp(3), b.right - dp(3), b.bottom - dp(3), r, r, paint);
         }
         @Override public void setAlpha(int alpha) {}
@@ -534,7 +546,7 @@ public final class SettingsActivity extends Activity {
         @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
     }
 
-    /** The game's yellow arrow, outlined in brown. */
+    /** The world numbers' yellow-to-green arrow, outlined in dark brown. */
     private static final class ArrowView extends View {
         private final boolean right;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -558,8 +570,10 @@ public final class SettingsActivity extends Activity {
             }
             path.close();
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(YELLOW);
+            paint.setShader(new android.graphics.LinearGradient(0, 0, 0, h, ARROW_TOP, ARROW_BOTTOM,
+                    android.graphics.Shader.TileMode.CLAMP));
             canvas.drawPath(path, paint);
+            paint.setShader(null);
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeJoin(Paint.Join.ROUND);
             paint.setStrokeWidth(Math.min(w, h) * 0.07f);
