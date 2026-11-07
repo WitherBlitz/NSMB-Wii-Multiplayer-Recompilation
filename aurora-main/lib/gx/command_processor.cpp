@@ -509,6 +509,8 @@ bool g_commandDigestOn = false;
 uint64_t g_commandDigest = 0;
 uint32_t g_digestTexObjId = 0;
 std::atomic<uint64_t> g_statProcessTotalNanos{0};  // never reset: slow-frame breakdowns take deltas
+// NSMBW: GX_LOAD_AURORA_DRAW_DROP (AuroraSetDrawDrop). Only the decoding side reads it, in stream order.
+static bool s_dropDraws = false;
 thread_local int t_statDepth = 0;  // only the outermost of nested process()/raw draws counts
 // Timed on Windows always (the slow-frame log splits a frame into GX and the rest), elsewhere only
 // while the runtime logs frame times (NSMBW_LOG_FPS): two clock reads per outermost call add up on a
@@ -2246,6 +2248,10 @@ static bool admit_draw(GXPrimitive prim, GXVtxFmt fmt, u16 count, uint32_t verte
   return gfx::staging_has_space(demand);
 }
 
+// The primitive type of the last draw recorded on its own (handle_draw_unmerged), for
+// webgpu::g_mergeSamePrimitiveOnly.
+static GXPrimitive s_lastRecordedPrim = GX_POINTS;
+
 // The last draw a new primitive can be appended to, or nullptr. FIFO and raw draws share these rules.
 static DrawData* merge_target(GXPrimitive prim, u16 vtxCount) {
   // NSMBW debugging: NSMBW_NO_MERGE turns draw merging off.
@@ -2258,7 +2264,7 @@ static DrawData* merge_target(GXPrimitive prim, u16 vtxCount) {
   const bool scratch =
       noMergeMode >= 2 && g_gxState.xfViewport[4] - 340.0f + g_gxState.xfViewport[1] > 455.0f;
   const bool noMerge = noMergeMode == 1 || (noMergeMode == 2 && scratch) || (noMergeMode == 3 && !scratch);
-  if (g_gxState.stateDirty || noMerge) {
+  if (g_gxState.stateDirty || noMerge || (webgpu::g_mergeSamePrimitiveOnly && prim != s_lastRecordedPrim)) {
     return nullptr;
   }
   auto* lastDraw = gfx::get_last_draw_command<DrawData>();
@@ -2365,7 +2371,7 @@ static bool raw_draw_locked(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* verti
     return false;
   }
 
-  if (!has_complete_primitive(prim, vtxCount)) return true;
+  if (!has_complete_primitive(prim, vtxCount) || s_dropDraws) return true;
 
   // NSMBW: joins the last draw like a FIFO draw would (a run of tiles, glyphs or layout quads with
   // nothing changed between them is one draw). Not in the EFB scratch area below line 456, where the
@@ -2430,7 +2436,7 @@ static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
   }
 
 
-  if (!has_complete_primitive(prim, vtxCount)) {
+  if (!has_complete_primitive(prim, vtxCount) || s_dropDraws) {
     pos += totalVtxBytes;
     return true;
   }
@@ -2485,6 +2491,7 @@ static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount,
     // Leave stateDirty alone: the next draw re-resolving its pipeline is the safe direction, and nothing about this draw reached the GPU.
     return;
   }
+  s_lastRecordedPrim = prim;
   // Callers hold the renderer GPU mutex for the whole drain (process() and submit_raw_draw); taking it again per draw only cost a recursive re-entry.
   const auto& indexTemplate = cached_index_template(prim, vtxCount);
   const u32 numIndices = indexTemplate.indexCount;
@@ -2730,6 +2737,10 @@ bool handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     g_gxState.scissorOffsetX = static_cast<s32>(read_u32(data + pos, bigEndian));
     g_gxState.scissorOffsetY = static_cast<s32>(read_u32(data + pos + 4, bigEndian));
     pos += 8;
+  } else if (subCmd == GX_LOAD_AURORA_DRAW_DROP) {
+    CHECK(pos + 1 <= size, "GX_LOAD_AURORA_DRAW_DROP read overrun");
+    s_dropDraws = data[pos] != 0;
+    pos += 1;
   } else if (subCmd == GX_LOAD_AURORA_DEBUG_GROUP_PUSH) {
     auto label = read_string(data, pos, size, bigEndian);
     gfx::push_debug_group(std::move(label));

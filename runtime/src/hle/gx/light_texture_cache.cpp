@@ -95,6 +95,13 @@ bool ReuseIsBackfiring() {
     static uint32_t frames = 0;
     static Clock::duration stretch{};
     static bool backfiring = false;
+    // World 8's map ran at 3-6 fps with frames of ~600 ms while skipping (since cured in aurora:
+    // webgpu::g_mergeSamePrimitiveOnly), mixed with fast stretches (dialogs, the view moving), which
+    // kept the average under the bar for ~20 s. A few such frames close together are no load: count
+    // them on their own.
+    constexpr auto kVerySlowFrame = std::chrono::milliseconds(200);
+    constexpr uint32_t kVerySlowFrames = 3, kVerySlowForget = 60;
+    static uint32_t verySlow = 0, sinceVerySlow = 0;
     const auto now = Clock::now();
     const auto elapsed = now - last;
     uint16_t scene = 0;
@@ -104,6 +111,8 @@ bool ReuseIsBackfiring() {
         frames = 0;
         stretch = {};
         backfiring = false;
+        verySlow = 0;
+        sinceVerySlow = 0;
         last = now;
         return false;
     }
@@ -112,6 +121,16 @@ bool ReuseIsBackfiring() {
     }
     last = now;
     stretch += std::min<Clock::duration>(elapsed, kFrameCap);
+    if (elapsed >= kVerySlowFrame) {
+        sinceVerySlow = 0;
+        if (++verySlow >= kVerySlowFrames && !backfiring) {
+            backfiring = true;
+            RT_LOGF(RT_TAG_RUNTIME, "light textures: redrawing them for this scene (scene 0x%03X had %u frames over %d ms reusing them)\n",
+                    scene, verySlow, static_cast<int>(kVerySlowFrame.count()));
+        }
+    } else if (++sinceVerySlow >= kVerySlowForget) {
+        verySlow = 0;
+    }
     if (++frames == kStretchFrames) {
         if (!backfiring && stretch > kSlowStretch) {
             backfiring = true;

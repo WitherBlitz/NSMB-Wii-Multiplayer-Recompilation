@@ -46,17 +46,22 @@ public sealed record RuntimeNativeIndex(
 
 public static class RuntimeNativeIndexBuilder
 {
-    public static RuntimeNativeIndex Build(string nativeSourceDirectory)
+    /// <summary>
+    /// Scans the runtime sources. With <paramref name="addressMap"/> (the project's
+    /// runtime.address_map) every address read from them is moved to the translated game version's,
+    /// and one the map does not cover throws; without it they are used as written.
+    /// </summary>
+    public static RuntimeNativeIndex Build(string nativeSourceDirectory, RuntimeAddressMap? addressMap = null)
     {
         var sourceRoot = Path.GetFullPath(nativeSourceDirectory);
         if (!Directory.Exists(sourceRoot))
             return new RuntimeNativeIndex([], [], []);
 
         var sources = NativeSourceParsing.ReadDirectory(sourceRoot);
-        var effects = RuntimeNativeGuestEffectAnalyzer.AnalyzeSources(sources);
-        var abis = RuntimeNativeFunctionAbiProvider.AnalyzeVoidStubAbis(sources);
+        var effects = RuntimeNativeGuestEffectAnalyzer.AnalyzeSources(sources, addressMap);
+        var abis = RuntimeNativeFunctionAbiProvider.AnalyzeVoidStubAbis(sources, addressMap);
         return new RuntimeNativeIndex(
-            ScanRegistrations(sources).ToArray(),
+            ScanRegistrations(sources, addressMap).ToArray(),
             abis.OrderBy(static item => item.Key)
                 .Select(static item => new RuntimeNativeAbiEntry(
                     item.Key,
@@ -70,7 +75,7 @@ public static class RuntimeNativeIndexBuilder
     }
 
     private static IEnumerable<RuntimeNativeRegistration> ScanRegistrations(
-        IReadOnlyList<NativeSourceFile> sources)
+        IReadOnlyList<NativeSourceFile> sources, RuntimeAddressMap? addressMap)
     {
         var registrations = new List<RuntimeNativeRegistration>();
         foreach (var sourceFile in sources)
@@ -87,8 +92,8 @@ public static class RuntimeNativeIndexBuilder
 
             void Add(Match match, string symbol, bool translated, bool excludesBase) =>
                 registrations.Add(new RuntimeNativeRegistration(
-                    ParseAddress(match.Groups["address"].Value), symbol, sourceFile.RelativePath,
-                    translated, excludesBase));
+                    ParseAddress(match.Groups["address"].Value, addressMap, sourceFile.RelativePath),
+                    symbol, sourceFile.RelativePath, translated, excludesBase));
         }
 
         return registrations
@@ -98,5 +103,10 @@ public static class RuntimeNativeIndexBuilder
             .ThenBy(static registration => registration.SourceFile, StringComparer.Ordinal);
     }
 
-    private static uint ParseAddress(string value) => GuestTargetParser.ParseHexAddress(value);
+    /// <summary>A hex address read from runtime C++, through the address map when there is one.</summary>
+    internal static uint ParseAddress(string value, RuntimeAddressMap? addressMap, string sourceFile)
+    {
+        var address = GuestTargetParser.ParseHexAddress(value);
+        return addressMap is null ? address : addressMap.Map(address, sourceFile);
+    }
 }

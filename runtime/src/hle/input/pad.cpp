@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <aurora/sdl_gamepad.h>
 #include <SDL3/SDL_gamepad.h>
 #include <dolphin/pad.h>
 
@@ -23,7 +24,7 @@ bool NativeButtonHeld(SDL_Gamepad* gamepad, uint32_t nativeButton) {
         nativeButton >= SDL_GAMEPAD_BUTTON_COUNT) {
         return false;
     }
-    return SDL_GetGamepadButton(gamepad, static_cast<SDL_GamepadButton>(nativeButton));
+    return aurora::sdl::GetGamepadButton(gamepad, static_cast<SDL_GamepadButton>(nativeButton));
 }
 
 // A digital button bound to L or R has no analog travel of its own. On real

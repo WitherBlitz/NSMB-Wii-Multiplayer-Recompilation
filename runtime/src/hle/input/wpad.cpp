@@ -7,6 +7,7 @@
 #include "wii_remote_input.h"
 #include "wpad_speaker.h"
 
+#include <aurora/sdl_gamepad.h>
 #include <SDL3/SDL_gamepad.h>
 
 #include <algorithm>
@@ -212,8 +213,8 @@ extern "C" void WPADControlMotor_HLE(uint32_t chan, uint32_t command)
         return;
     }
     s_on[chan] = on;
-    if (SDL_Gamepad* pad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan))) {
-        SDL_RumbleGamepad(pad, on ? kControllerLow : 0, on ? kControllerHigh : 0, on ? 2000 : 0);
+    if (SDL_Gamepad* pad = aurora::sdl::GetGamepadFromPlayerIndex(static_cast<int>(chan))) {
+        aurora::sdl::RumbleGamepad(pad, on ? kControllerLow : 0, on ? kControllerHigh : 0, on ? 2000 : 0);
         return;
     }
 #if defined(__ANDROID__)

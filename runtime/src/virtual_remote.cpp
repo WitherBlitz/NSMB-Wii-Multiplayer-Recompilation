@@ -4,11 +4,14 @@
 #include "keybinds.h"
 #include "netplay/game_menus.h"
 #include "netplay_session.h"
+#include "pad_combos.h"
+#include "prompt_style.h"
 #include "runtime_log.h"
 #include "settings_overlay.h"
 #include "wii_remote_input.h"
 
 #include <dolphin/pad.h>
+#include <aurora/sdl_gamepad.h>
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_mouse.h>
@@ -86,6 +89,7 @@ void RefreshPadsLocked() {
     }
     g_padsReadNs = now;
     PADRead(g_pads.data());
+    PadCombos::Apply(g_pads.data());  // combinations first: they take their members' own buttons
     InputBindings::Apply(g_pads.data());
     g_keyboardOnAPort = false;
     for (uint32_t port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
@@ -213,17 +217,38 @@ private:
     uint64_t m_waitUntilNs = 0, m_twoUntilNs = 0;
 };
 
+// Actions held through combination bindings (1 << Keybinds::Action), as the remote.
+void AddComboActions(uint32_t actions, Intent& intent) {
+    using namespace Keybinds;
+    const auto has = [actions](int action) { return (actions & (1u << action)) != 0; };
+    if (has(kLeft)) intent.buttons |= kScreenLeft;
+    if (has(kRight)) intent.buttons |= kScreenRight;
+    if (has(kUp)) intent.buttons |= kScreenUp;
+    if (has(kDown)) intent.buttons |= kScreenDown;
+    if (has(kJump)) intent.buttons |= kWpadTwo;
+    if (has(kRun)) intent.buttons |= kWpadOne;
+    if (has(Keybinds::kA)) intent.buttons |= kWpadA;
+    if (has(kPlus)) intent.buttons |= kWpadPlus;
+    if (has(kMinus)) intent.buttons |= kWpadMinus;
+    intent.shake = intent.shake || has(kShake);
+    if (has(kTiltLeft) != has(kTiltRight)) intent.tilt = has(kTiltRight) ? 1.0f : -1.0f;
+}
+
 // The built-in layout for port 1, used while no port has aurora's keyboard switched on.
 Intent KeyboardIntent() {
     Intent intent;
-    if (SDL_GetKeyboardFocus() == nullptr) {
+    if (SDL_GetKeyboardFocus() == nullptr && !Keybinds::Scripted()) {
+        Keybinds::StepCombos(false);
         return intent;
     }
     // The keys come from the game's Keybinds tab (Config.toml [keyboard]); none count while one
     // is being picked there, or until the key picked is let go.
     if (Keybinds::Suppressed()) {
+        Keybinds::StepCombos(false);
         return intent;
     }
+    // Combinations first: Held leaves out the keys they take or keep waiting.
+    Keybinds::StepCombos(true);
     using namespace Keybinds;
     if (Held(kLeft)) intent.buttons |= kScreenLeft;
     if (Held(kRight)) intent.buttons |= kScreenRight;
@@ -232,7 +257,9 @@ Intent KeyboardIntent() {
     static SmartSpinButton space;
     int keyCount = 0;
     const bool* keys = SDL_GetKeyboardState(&keyCount);
-    const bool spaceDown = keys != nullptr && SDL_SCANCODE_SPACE < keyCount && keys[SDL_SCANCODE_SPACE];
+    const bool spaceDown = (keys != nullptr && SDL_SCANCODE_SPACE < keyCount && keys[SDL_SCANCODE_SPACE] &&
+                            !Silenced(SDL_SCANCODE_SPACE)) ||
+                           Tapped(SDL_SCANCODE_SPACE);
     space.Update(spaceDown, Bound(kJump, SDL_SCANCODE_SPACE), intent);
     const bool two = space.IsTwo() ? Held(kJump) || space.TwoPulse() : HeldIgnoring(kJump, SDL_SCANCODE_SPACE);
     if (two) intent.buttons |= kWpadTwo;
@@ -243,6 +270,16 @@ Intent KeyboardIntent() {
     intent.shake = intent.shake || Held(kShake);
     intent.tilt = (Held(kTiltRight) ? 1.0f : 0.0f) - (Held(kTiltLeft) ? 1.0f : 0.0f);
     ApplyMouseGyro(intent);
+    // NSMBW_LOG_KEY_INTENT: the keyboard's remote whenever it changes (combination tests).
+    static const bool log = std::getenv("NSMBW_LOG_KEY_INTENT") != nullptr;
+    static uint32_t last = 0xFFFFFFFFu;
+    const uint32_t now = intent.buttons | (intent.shake ? 0x10000u : 0u) |
+                         (intent.tilt > 0.0f ? 0x20000u : intent.tilt < 0.0f ? 0x40000u : 0u);
+    if (log && now != last) {
+        last = now;
+        RT_LOGF(RT_TAG_RUNTIME, "keyboard remote: buttons 0x%04X%s%s\n", intent.buttons, intent.shake ? " shake" : "",
+                intent.tilt != 0.0f ? (intent.tilt > 0.0f ? " tilt right" : " tilt left") : "");
+    }
     return intent;
 }
 
@@ -321,20 +358,20 @@ bool ApplyControllerMotion(uint32_t chan, Intent& intent) {
     PadMotion& motion = g_padMotion[chan];
     const s32 index = PADGetIndexForPort(chan);
     SDL_Gamepad* gamepad = index >= 0 ? PADGetSDLGamepadForIndex(static_cast<u32>(index)) : nullptr;
-    if (gamepad == nullptr || !SDL_GamepadHasSensor(gamepad, SDL_SENSOR_ACCEL)) {
+    if (gamepad == nullptr || !aurora::sdl::GamepadHasSensor(gamepad, SDL_SENSOR_ACCEL)) {
         motion = {};
         return false;
     }
-    const SDL_JoystickID id = SDL_GetGamepadID(gamepad);
+    const SDL_JoystickID id = aurora::sdl::GetGamepadID(gamepad);
     if (motion.sensorsFor != id) {
-        if (!SDL_SetGamepadSensorEnabled(gamepad, SDL_SENSOR_ACCEL, true)) {
+        if (!aurora::sdl::SetGamepadSensorEnabled(gamepad, SDL_SENSOR_ACCEL, true)) {
             return false;
         }
         motion = {};
         motion.sensorsFor = id;
     }
     float a[3] = {};
-    if (!SDL_GetGamepadSensorData(gamepad, SDL_SENSOR_ACCEL, a, 3) || (a[0] == 0.0f && a[1] == 0.0f && a[2] == 0.0f)) {
+    if (!aurora::sdl::GetGamepadSensorData(gamepad, SDL_SENSOR_ACCEL, a, 3) || (a[0] == 0.0f && a[1] == 0.0f && a[2] == 0.0f)) {
         return true;  // nothing yet, but the controller has the sensors
     }
     if (!motion.haveGravity) {
@@ -389,7 +426,7 @@ void AnnounceLocked(uint32_t chan, bool pad) {
     if (pad) {
         const s32 index = PADGetIndexForPort(chan);
         SDL_Gamepad* gamepad = index >= 0 ? PADGetSDLGamepadForIndex(static_cast<u32>(index)) : nullptr;
-        const char* name = gamepad != nullptr ? SDL_GetGamepadName(gamepad) : nullptr;
+        const char* name = gamepad != nullptr ? aurora::sdl::GetGamepadName(gamepad) : nullptr;
         source = name != nullptr ? name : g_keyboardOnAPort ? "keyboard (settings bindings)" : "controller";
     }
     RT_LOGF(RT_TAG_RUNTIME, "player %u: %s as a sideways Wii Remote\n", chan + 1, source);
@@ -435,6 +472,8 @@ bool Sample(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
     bool padMotion = false;
     if (pad) {
         intent = PadIntent(g_pads[chan]);
+        AddComboActions(PadCombos::Actions(chan), intent);
+        PromptStyle::NoteController(chan, intent.buttons);  // the prompts show this controller's buttons
         padMotion = ApplyControllerMotion(chan, intent);
     }
     if (chan == 0) {
@@ -448,10 +487,13 @@ bool Sample(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
         }
     };
     if (chan == 0 && !g_keyboardOnAPort) {
-        merge(KeyboardIntent());
+        const Intent keyboard = KeyboardIntent();
+        PromptStyle::NoteKeyboard(keyboard.buttons);  // the prompts show the keys
+        merge(keyboard);
     }
     if (chan == 0) {
         Intent touch = TouchIntent();
+        PromptStyle::NoteWiiRemote(PromptStyle::kTouchSource, touch.buttons);  // the on-screen remote is a Wii Remote
         if (padMotion) {
             touch.tilt = 0.0f;  // the controller's own sensors, over the phone's (ControllerMotion)
         }

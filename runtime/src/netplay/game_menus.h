@@ -38,6 +38,9 @@ uint32_t ProfileObject(uint16_t profile);
 
 // Every object profile in the tree, sorted (for finding which screen is up).
 std::vector<uint16_t> Profiles();
+// Every object in the tree (each fBase_c), for finding the layouts a screen is drawn from. Walks the
+// whole tree: call it on a tap, not every frame.
+std::vector<uint32_t> Objects();
 
 // dScene_c::m_nowScene (0x003 world map, 0x005 stage/title, 0x00A game setup, ...).
 uint16_t CurrentScene();

@@ -67,6 +67,12 @@ extern bool g_fastTev;
 // This driver can choke on light texture copies kept from an earlier frame, so the runtime watches for
 // that (runtime/src/hle/gx/light_texture_cache.cpp).
 extern bool g_watchLightTextureReuse;
+// This driver compiles every shader handed to it on its own threads and holds the next present until
+// the whole backlog is done, so the boot prewarm waits for the embedder's loading screen to release it
+// a batch at a time (gfx/pipeline_cache.cpp, aurora_prewarm_release).
+extern bool g_holdPrewarmUntilShown;
+// Join a draw onto the last one only when both are the same primitive type (gx/command_processor.cpp).
+extern bool g_mergeSamePrimitiveOnly;
 // Shader diagnostics from AURORA_GFX_FLAGS (gx/shader.cpp apply_shader_debug).
 enum ShaderDebug : uint32_t {
   ShaderDebugNoTextures = 1u << 0,

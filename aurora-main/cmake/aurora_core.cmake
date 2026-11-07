@@ -1,6 +1,7 @@
 add_library(aurora_core STATIC
         lib/aurora.cpp
         lib/input.cpp
+        lib/sdl_gamepad.cpp
         lib/window.cpp
         lib/logging.cpp
         lib/system_info.cpp

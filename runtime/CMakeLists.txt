@@ -215,6 +215,12 @@ set_source_files_properties(${MKW_PPC_SEMANTIC_RUNTIME_SOURCES} PROPERTIES
     COMPILE_OPTIONS "${MKW_TRANSLATED_PPC_FP_OPTIONS}")
 # The NSMBW sampling profiler includes <windows.h>; keep it out of the unity batches.
 set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/guest_profiler.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+# The game picker includes <windows.h> and the shell's headers (Windows), or Dear ImGui's SDL backends
+# (Linux); keep each out of the unity batches too.
+set_source_files_properties(
+    "${CMAKE_CURRENT_LIST_DIR}/src/game_picker_win32.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/game_picker_sdl.cpp"
+    PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 # Match the optimization policy of the translated callers as well as their FP policy.
 set_property(SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/ppc_quantized.cpp" APPEND PROPERTY
     COMPILE_OPTIONS -O2 -fno-slp-vectorize)
@@ -414,6 +420,11 @@ target_include_directories(mkw_runtime_config_tests PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/third_party/toml11")
 target_compile_features(mkw_runtime_config_tests PRIVATE cxx_std_20)
 add_test(NAME mkw_runtime_config_tests COMMAND mkw_runtime_config_tests)
+
+add_executable(nsmbw_combo_engine_tests "${CMAKE_CURRENT_LIST_DIR}/tests/combo_engine_tests.cpp")
+target_include_directories(nsmbw_combo_engine_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
+target_compile_features(nsmbw_combo_engine_tests PRIVATE cxx_std_17)
+add_test(NAME nsmbw_combo_engine_tests COMMAND nsmbw_combo_engine_tests)
 
 add_executable(mkw_nand_save_tests "${CMAKE_CURRENT_LIST_DIR}/tests/nand_save_tests.cpp")
 target_include_directories(mkw_nand_save_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")

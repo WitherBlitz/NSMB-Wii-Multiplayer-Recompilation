@@ -60,8 +60,12 @@ public sealed class RuntimeNativeFunctionAbiProvider : IGuestFunctionAbiProvider
     public static IReadOnlyDictionary<uint, GuestFunctionAbi> AnalyzeVoidStubAbisFromDirectory(string directory)
         => AnalyzeVoidStubAbis(NativeSourceParsing.ReadDirectory(directory));
 
+    /// <summary>
+    /// Keyed by guest address; with <paramref name="addressMap"/> each address read from the sources
+    /// is first moved to the translated game version's address (see <see cref="RuntimeAddressMap"/>).
+    /// </summary>
     internal static IReadOnlyDictionary<uint, GuestFunctionAbi> AnalyzeVoidStubAbis(
-        IReadOnlyList<NativeSourceFile> sources)
+        IReadOnlyList<NativeSourceFile> sources, RuntimeAddressMap? addressMap = null)
     {
         var abis = new Dictionary<uint, GuestFunctionAbi>();
 
@@ -80,6 +84,10 @@ public sealed class RuntimeNativeFunctionAbiProvider : IGuestFunctionAbiProvider
                 if (!GuestTargetParser.TryParseHexAddress(match.Groups["addr"].Value, out var address))
                 {
                     continue;
+                }
+                if (addressMap is not null)
+                {
+                    address = addressMap.Map(address, sourceFile.RelativePath);
                 }
 
                 var argumentRegisters = InferArgumentRegisters(args);

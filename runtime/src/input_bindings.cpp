@@ -12,6 +12,7 @@
 #include <mutex>
 #include <unordered_map>
 
+#include <aurora/sdl_gamepad.h>
 #include <SDL3/SDL_gamepad.h>
 
 namespace InputBindings {
@@ -85,10 +86,10 @@ double ReadInput(SDL_Gamepad* gamepad, const std::string& name) {
         return 0.0;
     }
     if (const auto it = ButtonNames().find(name); it != ButtonNames().end()) {
-        return SDL_GetGamepadButton(gamepad, it->second) ? 1.0 : 0.0;
+        return aurora::sdl::GetGamepadButton(gamepad, it->second) ? 1.0 : 0.0;
     }
     if (const auto it = AxisNames().find(name); it != AxisNames().end()) {
-        const double raw = SDL_GetGamepadAxis(gamepad, it->second.axis) / 32767.0;
+        const double raw = aurora::sdl::GetGamepadAxis(gamepad, it->second.axis) / 32767.0;
         return std::clamp(raw * it->second.sign, 0.0, 1.0);
     }
     // Fall back to this project's own positional names, so a binding written
@@ -97,10 +98,10 @@ double ReadInput(SDL_Gamepad* gamepad, const std::string& name) {
         if (PADIsAxisButton(native->nativeButton)) {
             const auto axis = static_cast<SDL_GamepadAxis>(PADAxisButtonAxis(native->nativeButton));
             const double sign = PADAxisButtonNegative(native->nativeButton) ? -1.0 : 1.0;
-            return std::clamp(SDL_GetGamepadAxis(gamepad, axis) / 32767.0 * sign, 0.0, 1.0);
+            return std::clamp(aurora::sdl::GetGamepadAxis(gamepad, axis) / 32767.0 * sign, 0.0, 1.0);
         }
         if (native->nativeButton < SDL_GAMEPAD_BUTTON_COUNT) {
-            return SDL_GetGamepadButton(gamepad, static_cast<SDL_GamepadButton>(native->nativeButton)) ? 1.0
+            return aurora::sdl::GetGamepadButton(gamepad, static_cast<SDL_GamepadButton>(native->nativeButton)) ? 1.0
                                                                                                       : 0.0;
         }
     }

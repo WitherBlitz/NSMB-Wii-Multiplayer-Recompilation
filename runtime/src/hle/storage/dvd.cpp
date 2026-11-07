@@ -9,6 +9,7 @@
 // layer's caches must be notified explicitly that these bytes changed.
 extern "C" void GxNotifyGuestRamDmaWrite(uint32_t addr, uint32_t size);
 #include "hle/storage/riivolution.h"
+#include "hle/storage/layout_patch.h"
 #include "ppc_runtime.h"
 #include "recomp_mod_loader.h"
 #include "runtime_config.h"
@@ -1061,6 +1062,21 @@ extern "C" void DVDInit_8015EA1C()
     RT_LOG(RT_TAG_DVD) << "disc index: " << vanillaEntryCount << " disc file(s), "
               << (g_fileEntries.size() - vanillaEntryCount) << " overlay registration(s) from "
               << overlays.size() << " root(s)" << std::endl;
+
+    // NSMBW: the pause window's Settings button (layout_patch.h), patched into whichever archive the
+    // game would read now that the overlays are in.
+    for (const char* path : {"/Layout/pauseMenu/pauseMenu.arc", "/Layout/corseSelectMenu/corseSelectMenu.arc"}) {
+        const auto entry = g_pathToEntry.find(NormalizePath(DvdFstContract::CanonicalizePath(path)));
+        if (entry == g_pathToEntry.end()) {
+            continue;
+        }
+        const fs::path patched = LayoutPatch::Patch(path, g_fileEntries[static_cast<size_t>(entry->second)].hostPath);
+        std::error_code ec;
+        const auto size = patched.empty() ? 0 : fs::file_size(patched, ec);
+        if (!patched.empty() && !ec && size > 0) {
+            RegisterFileEntry(path, patched, static_cast<uint32_t>(size));
+        }
+    }
 
     StartReadCachePreload();
 

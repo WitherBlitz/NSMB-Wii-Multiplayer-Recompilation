@@ -264,7 +264,7 @@ JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeTap(JNIEnv*, jcl
 
 // GameActivity.nativeTakeSettings: {render scale, show FPS 1/0, aspect, spinning coins 1/0, frame graph 1/0,
 // V-Sync 1/0, frametime graph size %, touch controls 1/0 or -1 unchanged, renderer 0 automatic / 1 Vulkan /
-// 2 OpenGL ES or -1 unchanged} when the game's settings window changed them since the last call, else null;
+// 2 OpenGL ES or -1 unchanged, Depth Blur 1/0} when the game's settings window changed them since the last call, else null;
 // the app saves them for the next start.
 JNIEXPORT jfloatArray JNICALL Java_com_wither_nsmbw_GameActivity_nativeTakeSettings(JNIEnv* env, jclass)
 {
@@ -277,15 +277,17 @@ JNIEXPORT jfloatArray JNICALL Java_com_wither_nsmbw_GameActivity_nativeTakeSetti
     int frameGraphSize = 50;
     int touchControls = -1;
     int renderer = -1;
+    bool depthBlur = true;
     if (!NetplayUi::TakeSettingsChange(scale, showFps, aspect, spinningCoins, frameGraph, vsync, frameGraphSize,
-                                       touchControls, renderer)) {
+                                       touchControls, renderer, depthBlur)) {
         return nullptr;
     }
-    constexpr jsize kCount = 9;
+    constexpr jsize kCount = 10;
     jfloatArray result = env->NewFloatArray(kCount);
     const jfloat values[kCount] = {scale, showFps ? 1.0f : 0.0f, static_cast<jfloat>(aspect), spinningCoins ? 1.0f : 0.0f,
                                    frameGraph ? 1.0f : 0.0f, vsync ? 1.0f : 0.0f, static_cast<jfloat>(frameGraphSize),
-                                   static_cast<jfloat>(touchControls), static_cast<jfloat>(renderer)};
+                                   static_cast<jfloat>(touchControls), static_cast<jfloat>(renderer),
+                                   depthBlur ? 1.0f : 0.0f};
     env->SetFloatArrayRegion(result, 0, kCount, values);
     return result;
 }

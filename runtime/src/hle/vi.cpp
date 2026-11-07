@@ -1067,6 +1067,18 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         static std::once_flag firstVisibleFrame;
         if (!g_vi.black) {
             std::call_once(firstVisibleFrame, [] {
+#if defined(_WIN32)
+                // How long the window showed the cover: a slow start (shader backlog) shows here.
+                FILETIME created{}, exited{}, kernel{}, user{}, now{};
+                if (::GetProcessTimes(::GetCurrentProcess(), &created, &exited, &kernel, &user)) {
+                    ::GetSystemTimePreciseAsFileTime(&now);
+                    const auto ticks = [](const FILETIME& t) {
+                        return (static_cast<uint64_t>(t.dwHighDateTime) << 32) | t.dwLowDateTime;
+                    };
+                    RT_LOGF(RT_TAG_VI, "first visible guest frame presented %.0f ms after the process started\n",
+                            (ticks(now) - ticks(created)) / 10000.0);
+                }
+#endif
                 RT_LOGF(RT_TAG_VI, "first visible guest frame presented; lifting the startup cover\n");
                 settings_overlay::NotifyStrapInputAccepted();
             });

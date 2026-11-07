@@ -1679,6 +1679,7 @@ int RuntimeMain(int argc, char** argv) {
                   << " native=" << auroraInfo.windowSize.native_fb_width << "x"
                   << auroraInfo.windowSize.native_fb_height << std::endl;
         g_auroraInitialized.store(true, std::memory_order_release);
+        settings_overlay::RunShaderLoadingScreen();
 
         auto entry = ResolveEntry();
         InitializePersistentCpuContext();

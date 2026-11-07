@@ -116,6 +116,11 @@ struct RuntimeUserConfig {
     std::map<std::string, std::string> controllerExpressions;
     // NSMBW: [keyboard] action = "comma-separated SDL scancode names" (keybinds.h).
     std::map<std::string, std::string> keyboardBindings;
+    // Combination bindings ([keyboard] and [controller] "<action>_combos"): lists of member lists,
+    // TOML arrays so no member name needs a separator ("jump_combos = [["Left Ctrl", "X"]]"). Older
+    // builds read only strings from those tables, and pass over these.
+    std::map<std::string, std::vector<std::vector<std::string>>> keyboardCombos;
+    std::map<std::string, std::vector<std::vector<std::string>>> controllerCombos;
 };
 
 namespace RuntimeConfigFile {
@@ -540,6 +545,32 @@ inline void AppendOverlayRoots(RuntimeUserConfig& config, const std::string& roo
     }
 }
 
+// "<action>_combos": a combination binding key.
+inline bool IsComboKey(std::string_view key) {
+    constexpr std::string_view kSuffix = "_combos";
+    return key.size() > kSuffix.size() && key.substr(key.size() - kSuffix.size()) == kSuffix;
+}
+
+// [["Left Ctrl", "X"], ...]: the member lists, leaving out anything that isn't a list of strings.
+inline std::vector<std::vector<std::string>> ReadCombos(const toml::value& value) {
+    std::vector<std::vector<std::string>> combos;
+    for (const auto& entry : value.as_array()) {
+        if (!entry.is_array()) {
+            continue;
+        }
+        std::vector<std::string> members;
+        for (const auto& member : entry.as_array()) {
+            if (member.is_string()) {
+                members.push_back(member.as_string());
+            }
+        }
+        if (!members.empty()) {
+            combos.push_back(std::move(members));
+        }
+    }
+    return combos;
+}
+
 // Reads every supported setting out of a parsed Config.toml document.
 inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     RuntimeUserConfig config;
@@ -562,6 +593,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         for (const auto& [key, value] : section->as_table()) {
             if (key.rfind("expr_", 0) == 0 && value.is_string()) {
                 config.controllerExpressions[key] = value.as_string();
+            } else if (IsComboKey(key) && value.is_array()) {
+                config.controllerCombos[key] = ReadCombos(value);
             }
         }
     }
@@ -571,6 +604,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         for (const auto& [key, value] : section->as_table()) {
             if (value.is_string()) {
                 config.keyboardBindings[key] = value.as_string();
+            } else if (IsComboKey(key) && value.is_array()) {
+                config.keyboardCombos[key] = ReadCombos(value);
             }
         }
     }
@@ -1051,6 +1086,40 @@ inline std::string KeyboardBinding(const std::string& key) {
 inline bool SetKeyboardBinding(const std::string& key, const std::string& value) {
     Mutable().keyboardBindings[key] = value;
     return WriteSetting("keyboard", key, FormatString(value));
+}
+
+// [["Left Ctrl", "X"], ["Z", "Mouse L"]] (or [] for none), on one line as WriteSetting needs.
+inline std::string FormatCombos(const std::vector<std::vector<std::string>>& combos) {
+    std::string text = "[";
+    for (size_t i = 0; i < combos.size(); ++i) {
+        text += i == 0 ? "[" : ", [";
+        for (size_t j = 0; j < combos[i].size(); ++j) {
+            text += (j == 0 ? "" : ", ") + FormatString(combos[i][j]);
+        }
+        text += "]";
+    }
+    return text + "]";
+}
+
+// The combinations of an action ("jump"), [keyboard] or [controller] "<action>_combos".
+inline std::vector<std::vector<std::string>> KeyboardCombos(const std::string& action) {
+    const auto it = Get().keyboardCombos.find(action + "_combos");
+    return it == Get().keyboardCombos.end() ? std::vector<std::vector<std::string>>() : it->second;
+}
+
+inline bool SetKeyboardCombos(const std::string& action, const std::vector<std::vector<std::string>>& combos) {
+    Mutable().keyboardCombos[action + "_combos"] = combos;
+    return WriteSetting("keyboard", action + "_combos", FormatCombos(combos));
+}
+
+inline std::vector<std::vector<std::string>> ControllerCombos(const std::string& action) {
+    const auto it = Get().controllerCombos.find(action + "_combos");
+    return it == Get().controllerCombos.end() ? std::vector<std::vector<std::string>>() : it->second;
+}
+
+inline bool SetControllerCombos(const std::string& action, const std::vector<std::vector<std::string>>& combos) {
+    Mutable().controllerCombos[action + "_combos"] = combos;
+    return WriteSetting("controller", action + "_combos", FormatCombos(combos));
 }
 
 inline bool RumbleEnabled(bool fallback = true) {

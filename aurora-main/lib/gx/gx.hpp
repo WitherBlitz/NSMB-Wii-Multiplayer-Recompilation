@@ -476,6 +476,9 @@ struct PatchTarget {
   u32 x = 0, y = 0;
 };
 std::vector<PatchTarget> find_patch_targets(const void* dest);
+// NSMBW: AuroraSetTextureOverride (GXAurora.h). Any thread; the decode thread applies it.
+void set_texture_override(u32 slot, const void* source, u32 sourceSize, u32 width, u32 height, u32 format,
+                          const void* rgba, u32 rgbaWidth, u32 rgbaHeight);
 // Drops retired GX copy targets so they cannot outlive the destination they were recycled for.
 void prune_copy_texture_pool(const void* dest) noexcept;
 void evict_texture_object(u32 texObjId) noexcept;

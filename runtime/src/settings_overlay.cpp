@@ -9,6 +9,8 @@
 #include "controller_mapping_wizard.h"
 #include "input_bindings.h"
 #include "keybinds.h"
+#include "pad_combos.h"
+#include "prompt_style.h"
 #include "game_graphics_options.h"
 #include "music_attenuation.h"
 #include "runtime_config.h"
@@ -23,6 +25,7 @@
 
 #include <imgui.h>
 #include <SDL3/SDL_events.h>
+#include <aurora/sdl_gamepad.h>
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_mouse.h>
@@ -42,7 +45,9 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
+#include <vector>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -331,6 +336,7 @@ void ApplyConfiguredMappings() {
             }
             PADSetAltButtonMapping(port, PADButtonMapping{altNative, kControllerButtons[i].padButton});
         }
+        Keybinds::NoteBindingsChanged();  // a controller connected with [controller]'s buttons
     }
 }
 
@@ -435,14 +441,14 @@ void DrawWiiRemoteSettings(uint32_t selectedGamePort) {
         }
     }
     if (kind == WiiRemoteInput::Kind::WiiUPro) {
-        if (SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(selectedGamePort))) {
+        if (SDL_Gamepad* gamepad = aurora::sdl::GetGamepadFromPlayerIndex(static_cast<int>(selectedGamePort))) {
             // SDL's Wii driver posts the D-pad as joystick buttons 11-14 (the
             // SDL_GAMEPAD_BUTTON_DPAD_* values) while its default HIDAPI mapping
             // expects a hat, so SDL_GetGamepadButton never sees them; read the
             // joystick directly, like the fallback in aurora's PADRead does.
-            SDL_Joystick* joystick = SDL_GetGamepadJoystick(gamepad);
+            SDL_Joystick* joystick = aurora::sdl::GetGamepadJoystick(gamepad);
             const auto rawButton = [&](int index) {
-                return joystick != nullptr && SDL_GetJoystickButton(joystick, index);
+                return joystick != nullptr && aurora::sdl::GetJoystickButton(joystick, index);
             };
             ImGui::Text("Raw D-pad: %s %s %s %s", rawButton(SDL_GAMEPAD_BUTTON_DPAD_UP) ? "UP" : "up",
                         rawButton(SDL_GAMEPAD_BUTTON_DPAD_DOWN) ? "DOWN" : "down",
@@ -452,8 +458,8 @@ void DrawWiiRemoteSettings(uint32_t selectedGamePort) {
                         rawButton(SDL_GAMEPAD_BUTTON_SOUTH) ? "B" : "b", rawButton(SDL_GAMEPAD_BUTTON_NORTH) ? "X" : "x",
                         rawButton(SDL_GAMEPAD_BUTTON_WEST) ? "Y" : "y");
             ImGui::Text("Raw ZL/ZR: %d / %d (pressed above 0)",
-                        SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER),
-                        SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER));
+                        aurora::sdl::GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER),
+                        aurora::sdl::GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER));
             ImGui::TextDisabled("Capitals = held. If a button never turns to capitals while physically held,");
             ImGui::TextDisabled("that press is not reaching SDL at all (a driver-level issue, not a mapping one).");
             ImGui::TextDisabled("This pad uses Nintendo's own layout (a/b/x/y as labelled); the shared");
@@ -517,11 +523,11 @@ void BeginRebind(RebindKind kind, uint16_t target, const char* label, bool secon
     const int index = PADGetIndexForPort(g_rebind.port);
     if (kind == RebindKind::Controller && index >= 0) {
         if (auto* pad = PADGetSDLGamepadForIndex(index)) {
-            g_rebind.instance = SDL_GetGamepadID(pad);
+            g_rebind.instance = aurora::sdl::GetGamepadID(pad);
             for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT; ++i)
-                g_rebind.buttons[i] = SDL_GetGamepadButton(pad, static_cast<SDL_GamepadButton>(i));
+                g_rebind.buttons[i] = aurora::sdl::GetGamepadButton(pad, static_cast<SDL_GamepadButton>(i));
             for (int i = 0; i < SDL_GAMEPAD_AXIS_COUNT; ++i)
-                g_rebind.axesReady[i] = std::abs(static_cast<int>(SDL_GetGamepadAxis(pad, static_cast<SDL_GamepadAxis>(i)))) < 8000;
+                g_rebind.axesReady[i] = std::abs(static_cast<int>(aurora::sdl::GetGamepadAxis(pad, static_cast<SDL_GamepadAxis>(i)))) < 8000;
         }
     }
 }
@@ -531,7 +537,7 @@ void CompleteRebind(uint32_t value) {
     if (capture.kind == RebindKind::Controller) {
         const int index = PADGetIndexForPort(capture.port);
         auto* pad = index >= 0 ? PADGetSDLGamepadForIndex(index) : nullptr;
-        if (pad == nullptr || SDL_GetGamepadID(pad) != capture.instance) {
+        if (pad == nullptr || aurora::sdl::GetGamepadID(pad) != capture.instance) {
             g_rebind.active = false;
             return;
         }
@@ -560,6 +566,7 @@ void CompleteRebind(uint32_t value) {
         PADSetKeyAxisBinding(capture.port, {static_cast<int32_t>(value), capture.target, 1});
     }
     PADSerializeMappings();
+    Keybinds::NoteBindingsChanged();  // the prompts show the new buttons
     g_rebind.active = false;
 }
 
@@ -607,15 +614,15 @@ void DrawRebindPrompt() {
                     (mouse & ~g_rebind.mouse & (1u << (i - 1))) != 0) CompleteRebind(static_cast<uint32_t>(-i - 1));
             g_rebind.mouse = mouse;
         } else if (g_rebind.active && SDL_GetKeyboardFocus() != nullptr && g_rebind.kind == RebindKind::Controller) {
-            auto* pad = SDL_GetGamepadFromID(g_rebind.instance);
+            auto* pad = aurora::sdl::GetGamepadFromID(g_rebind.instance);
             if (pad != nullptr) {
                 for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT && g_rebind.active; ++i) {
-                    const bool pressed = SDL_GetGamepadButton(pad, static_cast<SDL_GamepadButton>(i));
+                    const bool pressed = aurora::sdl::GetGamepadButton(pad, static_cast<SDL_GamepadButton>(i));
                     if (pressed && !g_rebind.buttons[i]) CompleteRebind(i);
                     g_rebind.buttons[i] = pressed;
                 }
                 for (int i = 0; i < SDL_GAMEPAD_AXIS_COUNT && g_rebind.active; ++i) {
-                    const int value = SDL_GetGamepadAxis(pad, static_cast<SDL_GamepadAxis>(i));
+                    const int value = aurora::sdl::GetGamepadAxis(pad, static_cast<SDL_GamepadAxis>(i));
                     if (std::abs(value) < 8000) g_rebind.axesReady[i] = true;
                     if (g_rebind.axesReady[i] && std::abs(value) >= 16384)
                         CompleteRebind(PADEncodeAxisButton(i, value < 0));
@@ -644,6 +651,7 @@ bool DrawKeyboardSettings(uint32_t port) {
     if (ImGui::Checkbox("Keyboard and mouse", &enabled)) {
         PADSetKeyboardActive(port, enabled);
         PADSerializeMappings();
+        Keybinds::NoteBindingsChanged();  // the prompts show the new buttons
         buttons = PADGetKeyButtonBindings(port, &count);
         usePreset = enabled && std::all_of(buttons, buttons + count, [](const auto& binding) {
             return binding.scancode == PAD_KEY_INVALID;
@@ -669,6 +677,7 @@ bool DrawKeyboardSettings(uint32_t port) {
         for (uint32_t i = 0; i < axisCount; ++i)
             PADSetKeyAxisBinding(port, {axes[i], mappings[i].padAxis, 1});
         PADSerializeMappings();
+        Keybinds::NoteBindingsChanged();  // the prompts show the new buttons
     }
     ImGui::SeparatorText("Button mapping");
     for (uint32_t i = 0; i < count; ++i) {
@@ -789,6 +798,53 @@ void DrawRumbleSettings() {
     }
 }
 
+// Combination bindings, for the keyboard's remote and the controllers (combo_engine.h), one row an
+// action: what it has, and buttons that capture new ones the way the game's Keybinds tab does.
+void DrawCombinationSettings() {
+    ImGui::SeparatorText("Combinations");
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 440.0f);
+    ImGui::TextDisabled(
+        "Hold 2 or 3 keys or buttons together for one control. One key or button alone replaces the "
+        "control's own. A key that has a control of its own and is part of a combination waits 50 ms "
+        "for the rest; directions and tilt never wait.");
+    ImGui::PopTextWrapPos();
+    const int keyCapture = Keybinds::Capturing();
+    const int padCapture = ControllerCapturing();
+    if (keyCapture >= 0) {
+        Keybinds::PollCapture();
+    } else if (padCapture >= 0) {
+        PollControllerCapture();
+    }
+    if (keyCapture >= 0 || padCapture >= 0) {
+        const std::string held = keyCapture >= 0 ? Keybinds::CaptureLabel() : PadCombos::CaptureLabel();
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "%s: hold them together, then let go. %s",
+                           Keybinds::ActionName(keyCapture >= 0 ? keyCapture : padCapture),
+                           held.empty() ? "(Esc cancels, Delete clears)" : held.c_str());
+    }
+    const bool pad = ControllerConnected();
+    for (int action = 0; action < Keybinds::kActionCount; ++action) {
+        ImGui::PushID(3000 + action);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(Keybinds::ActionName(action));
+        ImGui::SameLine(130.0f);
+        if (ImGui::SmallButton("Keys...")) Keybinds::BeginCapture(action);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!pad || !ControllerActionRebindable(action));
+        if (ImGui::SmallButton("Buttons...")) BeginControllerCapture(action);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear")) {
+            Keybinds::ClearCombos(action);
+            PadCombos::Clear(action);
+        }
+        const std::string keys = Keybinds::ComboLabel(action), buttons = PadCombos::Label(action);
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s%s%s", keys.c_str(), !keys.empty() && !buttons.empty() ? "  |  " : "",
+                            buttons.c_str());
+        ImGui::PopID();
+    }
+}
+
 void DrawControllerSettings() {
     for (int port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
         const std::string label = "Port " + std::to_string(port + 1);
@@ -809,6 +865,7 @@ void DrawControllerSettings() {
     if (ImGui::MenuItem("Unassign controller")) {
         PADClearPort(selectedGamePort);
         g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
+        Keybinds::NoteBindingsChanged();
     }
     ImGui::Separator();
     controller_mapping_wizard::DrawSetupList();
@@ -879,6 +936,7 @@ void DrawControllerSettings() {
         }
         altRowExpanded.fill(false);
         PADSerializeMappings();
+        Keybinds::NoteBindingsChanged();  // the prompts show the new buttons
         mappings = PADGetButtonMappings(port, &mappingCount);
     }
     const auto applyPreset = [&](const std::array<const char*, PAD_BUTTON_COUNT>& preset) {
@@ -893,6 +951,7 @@ void DrawControllerSettings() {
         }
         altRowExpanded.fill(false);
         PADSerializeMappings();
+        Keybinds::NoteBindingsChanged();  // the prompts show the new buttons
         mappings = PADGetButtonMappings(port, &mappingCount);
     };
 
@@ -947,6 +1006,7 @@ void DrawControllerSettings() {
                 writeBinding(i, mappingIt->nativeButton,
                              altIt != nullptr ? altIt->nativeButton : PAD_NATIVE_BUTTON_INVALID);
                 PADSerializeMappings();
+                Keybinds::NoteBindingsChanged();  // the prompts show the new buttons
             }
         };
         ImGui::BeginGroup();
@@ -989,6 +1049,7 @@ void DrawControllerSettings() {
     }
     DrawExpressionSettings();
     DrawRumbleSettings();
+    DrawCombinationSettings();
 }
 
 void DrawAudioSettings() {
@@ -1008,7 +1069,7 @@ void DrawAudioSettings() {
         MusicAttenuation::SetSoundEffectsVolume(volume);
         RuntimeConfigFile::SetSoundEffectsVolume(volume);
     }
-    if (ImGui::SliderInt("UI", &g_uiVolumePercent, 0, 100, "%d%%")) {
+    if (ImGui::SliderInt("Menu Sounds", &g_uiVolumePercent, 0, 100, "%d%%")) {
         const float volume = static_cast<float>(g_uiVolumePercent) / 100.0f;
         MusicAttenuation::SetUiVolume(volume);
         RuntimeConfigFile::SetUiVolume(volume);
@@ -1118,27 +1179,11 @@ void DrawLanPlaySettings() {
 void DrawGraphicsSettings() {
     g_displayMode = static_cast<int>(aurora_get_display_mode());
     // NSMBW: the aspect (original 4:3, 16:9, fill) lives in the Aspect menu (DisplaySettings).
-    struct EffectFlag {
-        const char* label;
-        uint32_t flag;
-    };
-    static constexpr std::array<EffectFlag, 1> kEffectFlags = {{
-        {"Disable bloom", 0x10u},
-    }};
-
-    for (const auto& effect : kEffectFlags) {
-        bool disabled = (g_disabledPostProcessingPaths & effect.flag) != 0;
-        if (ImGui::Checkbox(effect.label, &disabled)) {
-            if (disabled) {
-                g_disabledPostProcessingPaths |= effect.flag;
-            } else {
-                g_disabledPostProcessingPaths &= ~effect.flag;
-            }
-            RuntimeGameGraphicsOptions::SetDisabledPostProcessingPaths(g_disabledPostProcessingPaths);
-            RuntimeConfigFile::SetDisabledPostProcessingPaths(g_disabledPostProcessingPaths);
-        }
+    bool depthBlur = DepthBlur();
+    if (ImGui::Checkbox("Depth Blur", &depthBlur)) {
+        SetDepthBlur(depthBlur);
     }
-    ImGui::TextDisabled("Applied when the next scene renderer is created.");
+    ImGui::TextDisabled("The depth blur and heat haze of desert, beach, water, lava and Bowser areas.");
     ImGui::Separator();
     static constexpr const char* kDisplayModes[] = {
         "Windowed",
@@ -1735,7 +1780,7 @@ void HandleEvents(const AuroraEvent* events) noexcept {
             for (uint32_t port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
                 const s32 index = PADGetIndexForPort(port);
                 SDL_Gamepad* pad = index >= 0 ? PADGetSDLGamepadForIndex(static_cast<u32>(index)) : nullptr;
-                const char* name = pad != nullptr ? SDL_GetGamepadName(pad) : nullptr;
+                const char* name = pad != nullptr ? aurora::sdl::GetGamepadName(pad) : nullptr;
                 ports += " P" + std::to_string(port + 1) + "=" + (pad != nullptr ? (name != nullptr ? name : "pad") : "-");
             }
             RT_LOGF(RT_TAG_RUNTIME, "controller %s (id %d);%s\n",
@@ -1746,6 +1791,11 @@ void HandleEvents(const AuroraEvent* events) noexcept {
             continue;
         }
         controller_mapping_wizard::HandleSdlEvent(ev->sdl);
+        // The button prompts follow the input last used (prompt_style.h); the mute shortcut is a hotkey.
+        if (!(g_muteHotkey != PAD_KEY_INVALID && ev->sdl.type == SDL_EVENT_KEY_DOWN &&
+              ev->sdl.key.scancode == static_cast<SDL_Scancode>(g_muteHotkey))) {
+            PromptStyle::OnSdlEvent(ev->sdl);
+        }
         if (NetplayUi::HandleSdlEvent(ev->sdl)) {
             continue;  // typing into Join's Direct Connection box
         }
@@ -1802,6 +1852,19 @@ bool SpinningCoins() noexcept {
     return g_spinningCoins;
 }
 
+constexpr uint32_t kDepthBlurOffBit = 0x10u;  // [video] disabled_post_processing_paths
+
+void SetDepthBlur(bool enabled) noexcept {
+    g_disabledPostProcessingPaths = enabled ? (g_disabledPostProcessingPaths & ~kDepthBlurOffBit)
+                                            : (g_disabledPostProcessingPaths | kDepthBlurOffBit);
+    RuntimeGameGraphicsOptions::SetDisabledPostProcessingPaths(g_disabledPostProcessingPaths);
+    RuntimeConfigFile::SetDisabledPostProcessingPaths(g_disabledPostProcessingPaths);
+}
+
+bool DepthBlur() noexcept {
+    return (g_disabledPostProcessingPaths & kDepthBlurOffBit) == 0;
+}
+
 
 void SetVSync(bool enabled) noexcept {
     g_vsync.store(enabled);
@@ -1823,34 +1886,47 @@ int Fullscreen() noexcept {
 }
 
 namespace {
-std::atomic<uint32_t> g_pendingGameSound{0};
+// Up to 8 sounds between two reads (a cursor move and a confirm in one frame both play), each slot a
+// sound id or 0, filled from the UI thread and emptied on the game's.
+std::array<std::atomic<uint32_t>, 8> g_pendingGameSounds{};
 constexpr uint32_t kSndAudioMgrInstance = 0x8042A488u;  // SndAudioMgr::sInstance
 constexpr uint32_t kStartSystemSe = 0x80195380u;        // startSystemSe__11SndAudioMgrFUiUl
 } // namespace
 
 void PlayGameSound(uint32_t id) noexcept {
-    if (!DetClock::Enabled()) {
-        g_pendingGameSound.store(id, std::memory_order_relaxed);
+    if (DetClock::Enabled() || id == 0) {
+        return;
+    }
+    for (auto& slot : g_pendingGameSounds) {
+        if (slot.load(std::memory_order_relaxed) == id) {
+            return;  // already waiting: once is enough
+        }
+        uint32_t empty = 0;
+        if (slot.compare_exchange_strong(empty, id, std::memory_order_relaxed)) {
+            return;
+        }
     }
 }
 
 void FlushGameSound() noexcept {
-    const uint32_t id = g_pendingGameSound.exchange(0, std::memory_order_relaxed);
-    uint32_t manager = 0;
-    if (id == 0 || !Memory::TryRead32(kSndAudioMgrInstance, manager) || manager == 0) {
-        return;
-    }
-    // A call the game itself could make here: on a private copy of the reading thread's registers.
-    GuestInterruptCallbackContext call;
-    CpuContext* cpu = call.get();
-    cpu->gpr[3] = manager;
-    cpu->gpr[4] = id;
-    cpu->gpr[5] = 1;
-    InvokeIndirectCpu(kStartSystemSe, cpu);
-    static bool s_logged = false;
-    if (!s_logged) {
-        s_logged = true;
-        RT_LOGF(RT_TAG_RUNTIME, "settings: played game sound %u\n", id);
+    for (auto& slot : g_pendingGameSounds) {
+        uint32_t manager = 0;
+        const uint32_t id = slot.exchange(0, std::memory_order_relaxed);
+        if (id == 0 || !Memory::TryRead32(kSndAudioMgrInstance, manager) || manager == 0) {
+            continue;
+        }
+        // A call the game itself could make here: on a private copy of the reading thread's registers.
+        GuestInterruptCallbackContext call;
+        CpuContext* cpu = call.get();
+        cpu->gpr[3] = manager;
+        cpu->gpr[4] = id;
+        cpu->gpr[5] = 1;
+        InvokeIndirectCpu(kStartSystemSe, cpu);
+        static bool s_logged = false;
+        if (!s_logged) {
+            s_logged = true;
+            RT_LOGF(RT_TAG_RUNTIME, "settings: played game sound %u\n", id);
+        }
     }
 }
 
@@ -1912,28 +1988,59 @@ int ControllerShoulderPressed() noexcept {
     const int port = GamepadPort();
     const s32 index = port >= 0 ? PADGetIndexForPort(static_cast<u32>(port)) : -1;
     SDL_Gamepad* pad = index >= 0 ? PADGetSDLGamepadForIndex(static_cast<u32>(index)) : nullptr;
-    const bool left = pad != nullptr && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
-    const bool right = pad != nullptr && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
+    const bool left = pad != nullptr && aurora::sdl::GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
+    const bool right = pad != nullptr && aurora::sdl::GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
     const int pressed = left && !wasLeft ? -1 : right && !wasRight ? 1 : 0;
     wasLeft = left;
     wasRight = right;
     return pressed;
 }
 
-std::string ControllerBindingLabel(int action) {
+namespace {
+std::string SingleControllerLabel(int action) {
     if (action == kActionTiltLeft) return "Right stick left";
     if (action == kActionTiltRight) return "Right stick right";
     const int port = GamepadPort();
-    if (port < 0 || action < 0 || action >= static_cast<int>(kActionPadButton.size())) return "None";
+    if (port < 0 || action < 0 || action >= static_cast<int>(kActionPadButton.size())) return "";
     uint32_t count = 0;
     const PADButtonMapping* mappings = PADGetButtonMappings(static_cast<uint32_t>(port), &count);
     for (uint32_t i = 0; mappings != nullptr && i < count; ++i) {
         if (mappings[i].padButton == kActionPadButton[action]) {
-            if (mappings[i].nativeButton == PAD_NATIVE_BUTTON_DISABLED) return "None";
+            if (mappings[i].nativeButton == PAD_NATIVE_BUTTON_DISABLED) return "";
             return ShortButtonLabel(NativeButtonForValue(mappings[i].nativeButton).label);
         }
     }
-    return "None";
+    return "";
+}
+}  // namespace
+
+std::vector<uint32_t> ControllerFirstBinding(int action) {
+    std::vector<uint32_t> natives;
+    const int port = GamepadPort();
+    if (port < 0 || action < 0 || action >= static_cast<int>(kActionPadButton.size())) return natives;
+    if (kActionPadButton[action] != 0) {
+        uint32_t count = 0;
+        const PADButtonMapping* mappings = PADGetButtonMappings(static_cast<uint32_t>(port), &count);
+        // The same entry the Controller tab shows (SingleControllerLabel): the first for the action's button.
+        for (uint32_t i = 0; mappings != nullptr && i < count; ++i) {
+            if (mappings[i].padButton == kActionPadButton[action]) {
+                if (mappings[i].nativeButton != PAD_NATIVE_BUTTON_DISABLED &&
+                    mappings[i].nativeButton != PAD_NATIVE_BUTTON_INVALID) {
+                    natives.push_back(mappings[i].nativeButton);
+                }
+                break;
+            }
+        }
+    }
+    if (natives.empty()) natives = PadCombos::FirstMembers(action);
+    return natives;
+}
+
+std::string ControllerBindingLabel(int action) {
+    std::string label = SingleControllerLabel(action);
+    const std::string combos = PadCombos::Label(action);
+    if (!combos.empty()) label += (label.empty() ? "" : " / ") + combos;
+    return label.empty() ? "None" : label;
 }
 
 bool ControllerActionRebindable(int action) noexcept {
@@ -1947,6 +2054,12 @@ void BeginControllerCapture(int action) noexcept {
     BeginRebind(RebindKind::Controller, kActionPadButton[action], Keybinds::ActionName(action));
     g_rebind.openPopup = false;
     g_rebind.inGame = true;
+    // Buttons held together: one is the action's button as before, 2 or 3 a combination (PadCombos).
+    PadCombos::BeginCapture(action, static_cast<uint32_t>(port));
+}
+
+std::string ControllerCaptureLabel() {
+    return PadCombos::CaptureLabel();
 }
 
 int ControllerCapturing() noexcept {
@@ -1959,34 +2072,28 @@ int ControllerCapturing() noexcept {
 
 bool PollControllerCapture() noexcept {
     if (!g_rebind.active || !g_rebind.inGame) return true;
-    int keyCount = 0;
-    const bool* keys = SDL_GetKeyboardState(&keyCount);
-    // Escape or 10 seconds without a press leave the binding as it was.
-    if ((keys != nullptr && SDL_SCANCODE_ESCAPE < keyCount && keys[SDL_SCANCODE_ESCAPE]) || Clock::now() >= g_rebind.deadline) {
-        g_rebind.active = false;
-        return true;
+    uint32_t single = 0;
+    switch (PadCombos::PollCapture(single)) {
+    case PadCombos::CaptureResult::Running:
+        return false;
+    case PadCombos::CaptureResult::Single:
+        CompleteRebind(single);  // the action's own button, as before
+        break;
+    case PadCombos::CaptureResult::Cleared:
+        CompleteRebind(PAD_NATIVE_BUTTON_DISABLED);  // its combinations are gone already
+        break;
+    case PadCombos::CaptureResult::Combo:
+    case PadCombos::CaptureResult::Cancelled:
+        break;
     }
-    auto* pad = SDL_GetGamepadFromID(g_rebind.instance);
-    if (pad == nullptr) {
-        g_rebind.active = false;  // unplugged meanwhile
-        return true;
-    }
-    for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT && g_rebind.active; ++i) {
-        const bool pressed = SDL_GetGamepadButton(pad, static_cast<SDL_GamepadButton>(i));
-        if (pressed && !g_rebind.buttons[i]) CompleteRebind(static_cast<uint32_t>(i));
-        g_rebind.buttons[i] = pressed;
-    }
-    for (int i = 0; i < SDL_GAMEPAD_AXIS_COUNT && g_rebind.active; ++i) {
-        const int value = SDL_GetGamepadAxis(pad, static_cast<SDL_GamepadAxis>(i));
-        if (std::abs(value) < 8000) g_rebind.axesReady[i] = true;
-        if (g_rebind.axesReady[i] && std::abs(value) >= 16384) CompleteRebind(PADEncodeAxisButton(i, value < 0));
-    }
-    return !g_rebind.active;
+    g_rebind.active = false;
+    return true;
 }
 
 void ResetControllerBindings() noexcept {
     const int port = GamepadPort();
     if (port < 0) return;
+    for (int action = 0; action < Keybinds::kActionCount; ++action) PadCombos::Clear(action);
     PADRestoreDefaultMapping(static_cast<uint32_t>(port));
     uint32_t count = 0;
     if (PADButtonMapping* restored = PADGetButtonMappings(static_cast<uint32_t>(port), &count)) {
@@ -2002,6 +2109,7 @@ void ResetControllerBindings() noexcept {
         }
     }
     PADSerializeMappings();
+    Keybinds::NoteBindingsChanged();  // the prompts show the new buttons
 }
 
 void SetTouchControls(bool on) noexcept {
@@ -2066,6 +2174,11 @@ void SetVolumePercent(Volume which, int percent, bool save) noexcept {
         MusicAttenuation::SetSoundEffectsVolume(volume);
         if (save) RuntimeConfigFile::SetSoundEffectsVolume(volume);
         break;
+    case Volume::MenuSounds:
+        g_uiVolumePercent = percent;
+        MusicAttenuation::SetUiVolume(volume);
+        if (save) RuntimeConfigFile::SetUiVolume(volume);
+        break;
     }
 }
 
@@ -2077,6 +2190,8 @@ int VolumePercent(Volume which) noexcept {
         return g_musicVolumePercent;
     case Volume::SoundEffects:
         return g_soundEffectsVolumePercent;
+    case Volume::MenuSounds:
+        return g_uiVolumePercent;
     }
     return 100;
 }
@@ -2089,13 +2204,14 @@ void ReleaseControllers() noexcept {
         const s32 index = PADGetIndexForPort(port);
         if (index < 0) continue;
         if (SDL_Gamepad* pad = PADGetSDLGamepadForIndex(static_cast<u32>(index))) {
-            SDL_SetGamepadLED(pad, 0, 0, 0);
+            aurora::sdl::SetGamepadLED(pad, 0, 0, 0);
             queued = true;
         }
     }
     constexpr std::array<uint32_t, PAD_MAX_CONTROLLERS> stopAll{
         PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD};
     PADControlAllMotors(stopAll.data());
+    aurora::sdl::FlushWrites();  // the input thread may be re-scanning devices: apply them anyway
     // SDL hands LED and rumble reports to its own HIDAPI sender thread rather
     // than writing them here, so without this the process dies before the
     // controller ever receives them.
@@ -2142,4 +2258,151 @@ void NotifyStrapInputAccepted() noexcept {
 }
 
 void AdvancePresentedFrame() noexcept { ++g_presentedFrame; }
+} // namespace settings_overlay
+
+extern std::atomic_bool g_auroraFrameActive;  // hle/vi.cpp
+
+namespace settings_overlay {
+namespace {
+// The process's CPU time in seconds, all threads: a D3D11 driver's shader compiler threads run in it.
+double ProcessCpuSeconds() noexcept {
+#if defined(_WIN32)
+    FILETIME created{}, exited{}, kernel{}, user{};
+    if (!::GetProcessTimes(::GetCurrentProcess(), &created, &exited, &kernel, &user)) {
+        return 0.0;
+    }
+    const auto ticks = [](const FILETIME& t) {
+        return (static_cast<uint64_t>(t.dwHighDateTime) << 32) | t.dwLowDateTime;
+    };
+    return static_cast<double>(ticks(kernel) + ticks(user)) / 1e7;
+#else
+    return 0.0;
+#endif
+}
+
+void DrawShaderLoading(uint32_t built, uint32_t total) {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->Pos, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(viewport->Size, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(1.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 255));
+    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoFocusOnAppearing |
+                                        ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove |
+                                        ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings |
+                                        ImGuiWindowFlags_NoBringToFrontOnFocus;
+    if (ImGui::Begin("Shader Loading", nullptr, kFlags)) {
+        constexpr const char* kTitle = "Loading shaders";
+        const float ui = std::max(1.0f, viewport->Size.y / 720.0f);
+        ImGui::SetWindowFontScale(1.8f * ui);
+        const ImVec2 titleSize = ImGui::CalcTextSize(kTitle);
+        const float barWidth = std::min(640.0f * ui, viewport->Size.x * 0.6f);
+        const float barHeight = 14.0f * ui;
+        const float top = viewport->Size.y * 0.5f - titleSize.y * 1.5f;
+        ImGui::SetCursorPos(ImVec2((viewport->Size.x - titleSize.x) * 0.5f, top));
+        ImGui::TextUnformatted(kTitle);
+        ImGui::SetWindowFontScale(1.25f * ui);
+        const float fraction = total != 0 ? std::min(1.0f, static_cast<float>(built) / total) : 1.0f;
+        const ImVec2 barMin(viewport->Pos.x + (viewport->Size.x - barWidth) * 0.5f,
+                            viewport->Pos.y + top + titleSize.y * 1.6f);
+        const ImVec2 barMax(barMin.x + barWidth, barMin.y + barHeight);
+        ImDrawList* list = ImGui::GetWindowDrawList();
+        list->AddRectFilled(barMin, barMax, IM_COL32(40, 40, 40, 255), 4.0f);
+        if (fraction > 0.0f) {
+            list->AddRectFilled(barMin, ImVec2(barMin.x + barWidth * fraction, barMax.y), IM_COL32(255, 210, 74, 255),
+                                4.0f);
+        }
+        char count[48];
+        std::snprintf(count, sizeof(count), "%u / %u", built, total);
+        const ImVec2 countSize = ImGui::CalcTextSize(count);
+        ImGui::SetCursorPos(ImVec2((viewport->Size.x - countSize.x) * 0.5f,
+                                   barMax.y - viewport->Pos.y + countSize.y * 0.6f));
+        ImGui::TextUnformatted(count);
+    }
+    ImGui::End();
+    ImGui::PopStyleColor();
+}
+} // namespace
+
+// HD 4600 (D3D11, driver 20.19.15.5126): handed the whole cached-pipeline seed at once, the driver
+// compiled ~4700 shaders on four threads and held the first present ~9 s, a black window. Shown
+// instead: this screen, with the pipelines released in batches of 192 as the driver's threads start
+// to go quiet (the process's CPU use drops below ~3.2 of 4 cores), so the count follows the driver
+// and its threads stay busy. The game starts as the last batch goes in (it takes ~1 s to reach its
+// first frame, which waits for the driver as before), so its logos play as smoothly as before.
+// Measured: first game frame at ~9.7 s against ~9.3 s handing everything over at once; a busy level
+// nearer 4 cores ended this screen sooner but left the window frozen on it, or hitched the logos.
+void RunShaderLoadingScreen() noexcept {
+    if (!aurora_prewarm_held()) {
+        return;
+    }
+    using Clock = std::chrono::steady_clock;
+    const auto seconds = [](Clock::duration d) { return std::chrono::duration<double>(d).count(); };
+    const auto start = Clock::now();
+    uint32_t total = 0;
+    aurora_get_prewarm_progress(nullptr, &total);
+    const double cores = std::max(2u, std::thread::hardware_concurrency());
+    const double busyCores = std::max(1.0, cores - 0.8);
+    constexpr uint32_t batch = 192;
+    constexpr auto kFrame = std::chrono::milliseconds(33);
+    constexpr auto kWindow = std::chrono::milliseconds(100);  // CPU times tick every 15.6 ms on Windows
+    constexpr auto kLimit = std::chrono::minutes(2);
+    uint32_t released = 0, frames = 0, batches = 0;
+    auto lastRelease = start;
+    struct Sample {
+        Clock::time_point at;
+        double cpu;
+    };
+    std::vector<Sample> samples{{start, ProcessCpuSeconds()}};
+    while (total != 0 && Clock::now() - start < kLimit) {
+        const auto frameStart = Clock::now();
+        UpdateAuroraAndProcessEvents();
+        const uint32_t queued = aurora_get_queued_pipeline_count();
+        const uint32_t done = total > queued ? total - queued : 0;
+        if (BeginAuroraFrame()) {
+            aurora_wait_for_frame_worker();
+            DrawShaderLoading(done, total);
+            aurora_end_frame();
+            ++frames;
+        }
+        // The process's CPU use over the last ~100 ms, measured wholly after the last release.
+        const auto now = Clock::now();
+        samples.push_back({now, ProcessCpuSeconds()});
+        while (samples.size() > 2 && now - samples[1].at >= kWindow) {
+            samples.erase(samples.begin());
+        }
+        const Sample& from = samples.front();
+        const bool measured = now - from.at >= kWindow && from.at >= lastRelease;
+        const double load = measured ? (samples.back().cpu - from.cpu) / seconds(now - from.at) : cores;
+        const bool driverQuiet = measured && load < busyCores;
+        const uint32_t held = released >= total ? 0 : total - released;
+        if (frames >= 2 && released < total && queued <= held && driverQuiet) {
+            aurora_prewarm_release(batch);
+            released += batch;
+            ++batches;
+            lastRelease = Clock::now();
+        } else if (queued <= batch && released + batch >= total) {
+            // The last batch: handed over in full below, so the screen shows them all.
+            if (BeginAuroraFrame()) {
+                aurora_wait_for_frame_worker();
+                DrawShaderLoading(total, total);
+                aurora_end_frame();
+                ++frames;
+            }
+            break;
+        }
+        const auto elapsed = Clock::now() - frameStart;
+        if (elapsed < kFrame) {
+            SDL_Delay(static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(kFrame - elapsed).count()));
+        }
+    }
+    aurora_prewarm_release(UINT32_MAX);
+    // As after any present (VI_HLE_PresentFrame): the next frame begins now, so the game's first GX
+    // commands have a frame to go into rather than waiting on one this loop left finished.
+    UpdateAuroraAndProcessEvents();
+    if (BeginAuroraFrame()) {
+        g_auroraFrameActive.store(true, std::memory_order_release);
+    }
+    RT_LOGF(RT_TAG_RUNTIME, "shader loading screen: %u pipelines in %u batches, %.1f s, %u frames\n", total, batches,
+            seconds(Clock::now() - start), frames);
+}
 } // namespace settings_overlay

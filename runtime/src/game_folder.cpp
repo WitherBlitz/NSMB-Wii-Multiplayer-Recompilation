@@ -1,26 +1,18 @@
 #include "game_folder.h"
 
+#include "game_picker.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
 #include "runtime_product.h"
+#include "wii_disc.h"
 
-#include <cstdlib>
+#include <cctype>
+#include <chrono>
 #include <fstream>
 #include <optional>
 #include <string>
-
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#include <shobjidl.h>
-#elif defined(__linux__) && !defined(__ANDROID__)
-#include <SDL3/SDL_messagebox.h>
-
-#include <cstdio>
-#include <unistd.h>
-#endif
+#include <thread>
+#include <vector>
 
 namespace GameFolder {
 namespace {
@@ -37,112 +29,254 @@ std::string GameName() {
     return std::string(RuntimeProduct::Active().displayName);
 }
 
+// Why a disc with this ID and revision can't be used ("" when it can).
+std::string IdProblem(const std::string& id, int revision) {
+    const Disc kind = Identify(id, revision);
+    if (kind == Disc::Supported) {
+        return {};
+    }
+    if (kind == Disc::NeedsSupportModule) {
+        // The PAL support module hooks in here: once For() offers one, the chooser asks to install it.
+        if (const std::optional<SupportModule::Offer> offer = SupportModule::For(id, revision)) {
+            return offer->message;
+        }
+        RT_LOGF(RT_TAG_RUNTIME, "game folder: %s revision %d needs a support module; none is available\n", id.c_str(),
+                revision);
+    }
+    const std::string disc(RuntimeProduct::Active().discName);
+    if (id != RuntimeProduct::Active().gameId) {
+        return "That is " + id + ", not " + disc + ". This build runs only that disc: it was translated from it.";
+    }
+    return "That is " + id + " revision " + std::to_string(revision) + ". This build runs only " + disc +
+           " (Dolphin shows the revision under Properties > Info).";
+}
+
 #if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
-// What to extract, and how.
+// A disc image is extracted into "<target>.importing" first, with this marker inside, and renamed to
+// its target once complete. A folder that still has the marker was left by an import that never
+// finished (a crash, or the program killed), so it can go.
+constexpr const char* kImportingSuffix = ".importing";
+constexpr const char* kImportingMarker = ".nsmbw-importing";
+
+fs::path ProgramDirectory() {
+    return RuntimeConfigFile::ExecutableDirectory().value_or(fs::path{});  // the compat build's too
+}
+
+// What to extract, and how: the chooser's Help.
 std::string Steps(const char* openDolphin) {
     return "This port runs your own copy of " + std::string(RuntimeProduct::Active().discName) +
-           ". Extract it once with Dolphin:\n\n"
+           ", from a disc you own. Choose one of these:\n\n"
+           "Open ISO: the disc image you dumped from your disc (.iso or .wbfs). It's extracted once, next to "
+           "this program or into its data folder, and the game reads that copy from then on.\n\n"
+           "Open Extracted Disc Folder: a folder Dolphin extracted the disc to.\n"
            "1. " + openDolphin + " and find " + GameName() + " in the game list.\n"
            "2. Right-click it, choose Properties, then the Filesystem tab.\n"
            "3. Right-click the disc at the top and choose Extract Entire Disc, then pick an empty folder.\n"
-           "4. Click OK here and choose that folder. Keep it: the game reads it every time.\n\n"
+           "4. Choose that folder here. Keep it: the game reads it every time.\n\n"
+           "A compressed image (.rvz, .wia, .gcz) has to become an .iso first: in Dolphin, right-click the "
+           "game, Convert File..., Format: ISO.\n\n"
            "(Dolphin shows the revision under Properties > Info. Or put the extracted folder next to this "
            "program and name it \"game\".)";
 }
 
-std::string PickerTitle() {
-    return "Choose the folder Dolphin extracted " + GameName() + " to";
-}
-#endif
-
+GamePicker::Text PickerText() {
+    GamePicker::Text text;
+    text.title = GameName();
+    text.body = "This port runs your own copy of " + std::string(RuntimeProduct::Active().discName) +
+                ". Open your disc image, or the folder Dolphin's Extract Entire Disc made from it.";
 #if defined(_WIN32)
-std::wstring Widen(const std::string& utf8);
-
-fs::path ProgramDirectory() {
-    return RuntimeConfigFile::ExecutableDirectory().value_or(fs::path{});  // the compat build's too
+    text.help = Steps("Open Dolphin on this computer");
+#else
+    text.help = Steps("Open Dolphin");
+#endif
+    text.isoTitle = "Choose your disc image of " + GameName();
+    text.folderTitle = "Choose the folder Dolphin extracted " + GameName() + " to";
+    return text;
 }
 
-// The Windows folder picker; empty when cancelled.
-fs::path PickFolder() {
-    fs::path result;
-    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    IFileOpenDialog* dialog = nullptr;
-    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
-        DWORD options = 0;
-        dialog->GetOptions(&options);
-        dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-        dialog->SetTitle(Widen(PickerTitle()).c_str());
-        if (SUCCEEDED(dialog->Show(nullptr))) {
-            IShellItem* item = nullptr;
-            if (SUCCEEDED(dialog->GetResult(&item))) {
-                PWSTR path = nullptr;
-                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path != nullptr) {
-                    result = fs::path(path);
-                    CoTaskMemFree(path);
-                }
-                item->Release();
-            }
+// "that isn't a Wii disc image" -> "That isn't a Wii disc image."
+std::string Sentence(std::string text) {
+    if (!text.empty()) {
+        text[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(text[0])));
+        text += '.';
+    }
+    return text;
+}
+
+// Removes a folder this program made. Windows Defender may hold a file it has just been handed for a
+// moment, so a failure is retried.
+bool RemoveTree(const fs::path& path) {
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        std::error_code ec;
+        fs::remove_all(path, ec);
+        if (!fs::exists(fs::symlink_status(path, ec))) {
+            return true;
         }
-        dialog->Release();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
-    if (SUCCEEDED(init)) {
-        CoUninitialize();
+    return false;
+}
+
+bool RenameTree(const fs::path& from, const fs::path& to, std::error_code& ec) {
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        fs::rename(from, to, ec);
+        if (!ec) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
-    return result;
+    return false;
 }
 
-std::wstring Widen(const std::string& utf8) {
-    const int length = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.size()), nullptr, 0);
-    std::wstring wide(static_cast<size_t>(length), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.size()), wide.data(), length);
-    return wide;
-}
-#elif defined(__linux__) && !defined(__ANDROID__)
-fs::path ProgramDirectory() {
-    return RuntimeConfigFile::ExecutableDirectory().value_or(fs::path{});  // the compat build's too
-}
-
-// OK / Cancel; true for OK.
-bool AskOkCancel(const std::string& message) {
-    const SDL_MessageBoxButtonData buttons[] = {
-        {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Cancel"},
-        {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "OK"},
-    };
-    const std::string title = GameName();
-    const SDL_MessageBoxData data = {SDL_MESSAGEBOX_INFORMATION, nullptr, title.c_str(), message.c_str(), 2, buttons,
-                                     nullptr};
-    int pressed = 0;
-    return SDL_ShowMessageBox(&data, &pressed) && pressed == 1;
+// Where a disc image is extracted, best first: "game" next to the program (picked up there at every
+// start, so two installs keep two games), then "game" in the data folder. A portable install keeps
+// everything in its data folder.
+std::vector<fs::path> ExtractTargets() {
+    const fs::path data = RuntimeConfigFile::ApplicationDataDirectory() / "game";
+    const fs::path program = ProgramDirectory();
+    if (RuntimeConfigFile::PortableRootDirectory() || program.empty()) {
+        return {data};
+    }
+    return {program / "game", data};
 }
 
-// The desktop's folder picker (zenity on GNOME and most others, kdialog on KDE); empty when cancelled,
-// nullopt when neither is installed.
-std::optional<fs::path> PickFolder() {
-    const std::string commands[] = {
-        "zenity --file-selection --directory --title='" + PickerTitle() + "' 2>/dev/null",
-        "kdialog --getexistingdirectory \"$HOME\" --title '" + PickerTitle() + "' 2>/dev/null",
-    };
-    for (const std::string& command : commands) {
-        const std::string tool = command.substr(0, command.find(' '));
-        if (std::system(("command -v " + tool + " >/dev/null 2>&1").c_str()) != 0) {
+fs::path Staging(const fs::path& target) {
+    fs::path staging = target;
+    staging += kImportingSuffix;
+    return staging;
+}
+
+void CleanStaleImports() {
+    for (const fs::path& target : ExtractTargets()) {
+        const fs::path staging = Staging(target);
+        std::error_code ec;
+        if (fs::is_regular_file(staging / kImportingMarker, ec)) {
+            RT_LOGF(RT_TAG_RUNTIME, "disc image: removing an unfinished import at %s\n",
+                    RuntimeConfigFile::PathToUtf8(staging).c_str());
+            RemoveTree(staging);
+        }
+    }
+}
+
+std::string Megabytes(uint64_t bytes) {
+    return std::to_string((bytes + (1u << 20) - 1) >> 20);
+}
+
+// Extracts the disc image at `image` and makes it the game folder. False when it can't: `problem`
+// then says why, or is empty when the player cancelled.
+bool ImportDiscImage(const fs::path& image, std::string& problem) {
+    std::string error;
+    const std::unique_ptr<WiiDisc::Disc> disc = WiiDisc::Disc::Open(image, error);
+    if (!disc) {
+        problem = Sentence(error);
+        return false;
+    }
+    // The ID and revision first, before anything is written.
+    problem = IdProblem(disc->Id(), disc->Revision());
+    if (!problem.empty()) {
+        return false;
+    }
+
+    fs::path target, staging, taken;
+    for (const fs::path& candidate : ExtractTargets()) {
+        const fs::path folder = Staging(candidate);
+        std::error_code ec;
+        // Never write over a folder this program didn't make: a "game" next to the program may be a
+        // link to the player's own Dolphin extract.
+        if (fs::exists(fs::symlink_status(candidate, ec))) {
+            taken = candidate;
             continue;
         }
-        FILE* pipe = popen(command.c_str(), "r");
-        if (pipe == nullptr) {
+        if (fs::exists(fs::symlink_status(folder, ec))) {
+            taken = folder;
             continue;
         }
-        std::string output;
-        char buffer[512];
-        while (std::fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-            output += buffer;
+        fs::create_directories(candidate.parent_path(), ec);
+        if (!fs::create_directory(folder, ec)) {
+            continue;  // can't write here (Program Files, read-only media, /opt)
         }
-        pclose(pipe);
-        while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) {
-            output.pop_back();
+        std::ofstream marker(folder / kImportingMarker);
+        marker << "An unfinished import of a disc image; removed at the next start.\n";
+        marker.close();
+        if (!marker) {
+            RemoveTree(folder);
+            continue;
         }
-        return fs::path(output);
+        target = candidate;
+        staging = folder;
+        break;
     }
-    return std::nullopt;
+    if (target.empty()) {
+        if (!taken.empty()) {
+            problem = "There's already a folder named " + RuntimeConfigFile::PathToUtf8(taken.filename()) + " in " +
+                      RuntimeConfigFile::PathToUtf8(taken.parent_path()) + ". Move or delete it, then try again.";
+        } else {
+            problem = "Couldn't make a folder for the game next to this program or in " +
+                      RuntimeConfigFile::PathToUtf8(RuntimeConfigFile::ApplicationDataDirectory()) + ".";
+        }
+        return false;
+    }
+
+    const uint64_t size = disc->ExtractedSize();
+    std::error_code spaceError;
+    const fs::space_info space = fs::space(target.parent_path(), spaceError);
+    if (!spaceError && space.available < size + (64u << 20)) {
+        RemoveTree(staging);
+        problem = "There isn't enough free space in " + RuntimeConfigFile::PathToUtf8(target.parent_path()) +
+                  ": the game takes " + Megabytes(size) + " MB.";
+        return false;
+    }
+
+    RT_LOGF(RT_TAG_RUNTIME, "disc image: extracting %s (%s revision %d) to %s\n",
+            RuntimeConfigFile::PathToUtf8(image).c_str(), disc->Id().c_str(), disc->Revision(),
+            RuntimeConfigFile::PathToUtf8(staging).c_str());
+    const auto start = std::chrono::steady_clock::now();
+    int files = 0;
+    const std::string result = GamePicker::RunWithProgress(
+        PickerText(), "Extracting the disc image",
+        [&](const GamePicker::Progress& progress, const std::atomic<bool>& cancel) {
+            return disc->Extract(staging, progress, cancel, files);
+        });
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    if (result == "cancelled") {
+        RT_LOGF(RT_TAG_RUNTIME, "disc image: cancelled after %.1f s\n", seconds);
+        RemoveTree(staging);
+        problem.clear();
+        return false;
+    }
+    if (!result.empty()) {
+        RT_LOGF(RT_TAG_RUNTIME, "disc image: failed after %.1f s: %s\n", seconds, result.c_str());
+        RemoveTree(staging);
+        problem = "Couldn't extract the disc image: " + result + ". Nothing was changed.";
+        return false;
+    }
+    // What a folder is checked for: the code modules, and a mod's version.
+    problem = Problem(staging);
+    if (!problem.empty()) {
+        RemoveTree(staging);
+        return false;
+    }
+    std::error_code ec;
+    fs::remove(staging / kImportingMarker, ec);
+    if (!RenameTree(staging, target, ec)) {
+        RemoveTree(staging);
+        problem = "Couldn't extract the disc image: couldn't rename " + RuntimeConfigFile::PathToUtf8(staging) +
+                  " (" + ec.message() + "). Nothing was changed.";
+        return false;
+    }
+    RT_LOGF(RT_TAG_RUNTIME, "disc image: %s -> %s (%llu bytes, %d files, %.1f s)\n",
+            RuntimeConfigFile::PathToUtf8(image).c_str(), RuntimeConfigFile::PathToUtf8(target).c_str(),
+            static_cast<unsigned long long>(size), files, seconds);
+
+    if (target.parent_path() == RuntimeConfigFile::ResolveConfigPath().parent_path()) {
+        // Beside Config.toml (the data folder): saved as relative, so a portable install can move.
+        RuntimeConfigFile::SetDvdRoot(fs::path("game"));
+    } else if (RuntimeConfigFile::DvdRoot().empty()) {
+        RuntimeConfigFile::SetDvdRoot(target);
+    } else {
+        RuntimeConfigFile::UseDvdRootForThisRun(target);  // next to the program: found there every start
+    }
+    return true;
 }
 #endif
 
@@ -161,6 +295,24 @@ fs::path Find(const fs::path& path) {
     return {};
 }
 
+Disc Identify(std::string_view id, int revision) {
+    const RuntimeProduct::Descriptor& product = RuntimeProduct::Active();
+    if (id == product.gameId) {
+        return revision == 1 ? Disc::Supported : Disc::Unsupported;
+    }
+    // The PAL disc, revision 1, for the base game.
+    if (product.gameId == "SMNE01" && id == "SMNP01" && revision == 1) {
+        return Disc::NeedsSupportModule;
+    }
+    return Disc::Unsupported;
+}
+
+namespace SupportModule {
+std::optional<Offer> For(std::string_view, int) {
+    return std::nullopt;  // none exists yet
+}
+} // namespace SupportModule
+
 std::string Problem(const fs::path& root) {
     if (!IsExtractedDisc(root)) {
         return "That folder isn't an extracted game: it needs the files and sys folders Dolphin's Extract "
@@ -175,12 +327,8 @@ std::string Problem(const fs::path& root) {
     const int revision = static_cast<unsigned char>(header[7]);
     const RuntimeProduct::Descriptor& product = RuntimeProduct::Active();
     const std::string disc(product.discName);
-    if (id != product.gameId) {
-        return "That is " + id + ", not " + disc + ". This build runs only that disc: it was translated from it.";
-    }
-    if (revision != 1) {
-        return "That is " + id + " revision " + std::to_string(revision) + ". This build runs only " + disc +
-               " (Dolphin shows the revision under Properties > Info).";
+    if (std::string problem = IdProblem(id, revision); !problem.empty()) {
+        return problem;
     }
     // The game's code modules were translated with the rest: a disc whose modules were changed (a
     // repacked or modded image keeps the disc ID) would link nothing and stop at the first scene.
@@ -233,6 +381,7 @@ std::string Problem(const fs::path& root) {
 
 bool EnsureConfigured() {
 #if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
+    CleanStaleImports();
     // A "game" folder next to the program needs no questions, and wins over the saved folder: every
     // install shares Documents\MarioWiiSaveData, so this is how two installs play two games (say the
     // original and a mod), each with its own saves (nand_path.h keeps saves per game).
@@ -250,63 +399,37 @@ bool EnsureConfigured() {
     if (!configured.empty() && Problem(configured).empty()) {
         return true;
     }
-#if defined(_WIN32)
-    const std::wstring steps = Widen(Steps("Open Dolphin on this computer"));
-    const std::wstring title = Widen(GameName());
-    std::wstring message = steps;
-    if (!configured.empty()) {
-        message = Widen(Problem(configured)) + L"\n\n" + message;
+#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
+    std::string problem;
+    if (!RuntimeConfigFile::DvdRoot().empty()) {
+        const fs::path saved = RuntimeConfigFile::ResolvedDvdRoot();
+        std::error_code ec;
+        problem = fs::exists(saved, ec) ? Problem(configured.empty() ? saved : configured)
+                                        : "The game folder you chose before (" + RuntimeConfigFile::PathToUtf8(saved) +
+                                              ") isn't there any more.";
     }
+    const GamePicker::Text text = PickerText();
     for (;;) {
-        if (MessageBoxW(nullptr, message.c_str(), title.c_str(), MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) {
+        const GamePicker::Picked picked = GamePicker::Show(text, problem);
+        if (picked.choice == GamePicker::Choice::Cancel) {
+            GamePicker::Close();
             return false;
         }
-        const fs::path picked = PickFolder();
-        if (picked.empty()) {
-            continue;
+        if (picked.choice == GamePicker::Choice::Iso) {
+            if (!ImportDiscImage(picked.path, problem)) {
+                continue;
+            }
+        } else {
+            const fs::path root = Find(picked.path);
+            problem = Problem(root.empty() ? picked.path : root);
+            if (!problem.empty()) {
+                continue;
+            }
+            RuntimeConfigFile::SetDvdRoot(root);
         }
-        const fs::path root = Find(picked);
-        const std::string problem = Problem(root.empty() ? picked : root);
-        if (!problem.empty()) {
-            message = Widen(problem) + L"\n\n" + steps;
-            continue;
-        }
-        RuntimeConfigFile::SetDvdRoot(root);
-        RT_LOGF(RT_TAG_RUNTIME, "game folder: %s\n", RuntimeConfigFile::PathToUtf8(root).c_str());
-        return true;
-    }
-#elif defined(__linux__) && !defined(__ANDROID__)
-    const std::string steps = Steps("Open Dolphin");
-    std::string message = steps;
-    if (!configured.empty()) {
-        message = Problem(configured) + "\n\n" + message;
-    }
-    for (;;) {
-        if (!AskOkCancel(message)) {
-            return false;
-        }
-        const std::optional<fs::path> picked = PickFolder();
-        if (!picked) {
-            // No folder picker on this desktop: say where the folder can go instead.
-            const std::string config = RuntimeConfigFile::PathToUtf8(RuntimeConfigFile::ResolveConfigPath());
-            const std::string help =
-                "No folder picker (zenity or kdialog) is installed. Put the extracted game next to this "
-                "program in a folder named \"game\", or write its path into " + config +
-                " under [paths] as dvd_root = '/path/to/the/folder', then start the game again.";
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, GameName().c_str(), help.c_str(), nullptr);
-            return false;
-        }
-        if (picked->empty()) {
-            continue;
-        }
-        const fs::path root = Find(*picked);
-        const std::string problem = Problem(root.empty() ? *picked : root);
-        if (!problem.empty()) {
-            message = problem + "\n\n" + steps;
-            continue;
-        }
-        RuntimeConfigFile::SetDvdRoot(root);
-        RT_LOGF(RT_TAG_RUNTIME, "game folder: %s\n", RuntimeConfigFile::PathToUtf8(root).c_str());
+        GamePicker::Close();
+        RT_LOGF(RT_TAG_RUNTIME, "game folder: %s\n",
+                RuntimeConfigFile::PathToUtf8(RuntimeConfigFile::ResolvedDvdRoot()).c_str());
         return true;
     }
 #else

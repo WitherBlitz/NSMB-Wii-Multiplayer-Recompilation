@@ -17,6 +17,8 @@ void SetVoicesVolume(float volume) noexcept;
 // play, never to guest memory, so devices in a LAN game stay identical whatever their volumes.
 float MusicVolume() noexcept;
 float SoundEffectsVolume() noexcept;
+// NSMBW: the Menu Sounds volume ([audio] ui_volume), applied by the AX mix the same way.
+float UiVolume() noexcept;
 bool IsExternalMediaPlaying() noexcept;
 bool IsMediaControlAvailable() noexcept;
 bool IsMediaControlInitializationComplete() noexcept;

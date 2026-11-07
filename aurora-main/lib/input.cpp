@@ -3,6 +3,7 @@
 
 #include "magic_enum.hpp"
 
+#include <aurora/sdl_gamepad.h>
 #include <SDL3/SDL_haptic.h>
 #include <SDL3/SDL_properties.h>
 #include <SDL3/SDL.h>
@@ -256,14 +257,14 @@ IdentityMatch identity_match(const ControllerIdentity& saved, const ControllerId
 }
 
 void assign_player_index(GameController& controller, int32_t port) {
-  SDL_SetGamepadPlayerIndex(controller.m_controller, port);
+  sdl::SetGamepadPlayerIndex(controller.m_controller, port);
   controller.m_playerIndex = port;
 }
 
 // SDL forgets the index for devices mapped after connect, so player_index() falls
 // back to the cached copy; both have to move together or a port looks doubly taken.
 int32_t effective_player_index(const GameController& controller) {
-  const int32_t player = SDL_GetGamepadPlayerIndex(controller.m_controller);
+  const int32_t player = sdl::GetGamepadPlayerIndex(controller.m_controller);
   return player >= 0 ? player : controller.m_playerIndex;
 }
 
@@ -332,7 +333,7 @@ void apply_port_preferences() noexcept {
 // SDL only hands out a player index when the device already had a gamepad mapping
 // at connect time, so anything mapped later (the setup wizard) stays at -1.
 void ensure_player_index(GameController& controller) noexcept {
-  const int32_t player = SDL_GetGamepadPlayerIndex(controller.m_controller);
+  const int32_t player = sdl::GetGamepadPlayerIndex(controller.m_controller);
   if (player >= 0) {
     controller.m_playerIndex = player;
     return;
@@ -415,8 +416,11 @@ SDL_JoystickID add_controller(SDL_JoystickID which) noexcept {
   if (g_GameControllers.contains(which)) {
     return which;
   }
+  // Called with the input thread's gate held (window.cpp); usually the input thread has opened the
+  // gamepad already, so this only takes another reference.
   auto* ctrl = SDL_OpenGamepad(which);
   if (ctrl != nullptr) {
+    note_opened(which);
     GameController controller;
     controller.m_controller = ctrl;
     controller.m_index = which;
@@ -486,6 +490,7 @@ bool refresh_controller(SDL_JoystickID instance) noexcept {
 
 void remove_controller(Uint32 instance) noexcept {
   if (auto it = g_GameControllers.find(instance); it != g_GameControllers.end()) {
+    forget_gamepad(it->second.m_controller); // gate held (window.cpp)
     SDL_CloseGamepad(it->second.m_controller);
     g_GameControllers.erase(it);
     apply_port_preferences();
@@ -501,7 +506,7 @@ bool is_gamecube(Uint32 instance) noexcept {
 
 int32_t player_index(Uint32 instance) noexcept {
   if (auto it = g_GameControllers.find(instance); it != g_GameControllers.end()) {
-    const int player = SDL_GetGamepadPlayerIndex(it->second.m_controller);
+    const int player = sdl::GetGamepadPlayerIndex(it->second.m_controller);
     return player >= 0 ? player : it->second.m_playerIndex;
   }
   return -1;
@@ -509,14 +514,14 @@ int32_t player_index(Uint32 instance) noexcept {
 
 void set_player_index(Uint32 instance, Sint32 index) noexcept {
   if (auto it = g_GameControllers.find(instance); it != g_GameControllers.end()) {
-    SDL_SetGamepadPlayerIndex(it->second.m_controller, index);
+    sdl::SetGamepadPlayerIndex(it->second.m_controller, index);
     it->second.m_playerIndex = index;
   }
 }
 
 std::string controller_name(Uint32 instance) noexcept {
   if (auto it = g_GameControllers.find(instance); it != g_GameControllers.end()) {
-    const auto* name = SDL_GetGamepadName(it->second.m_controller);
+    const auto* name = sdl::GetGamepadName(it->second.m_controller);
     if (name != nullptr) {
       return {name};
     }
@@ -541,7 +546,7 @@ void controller_rumble(uint32_t instance, uint16_t low_freq_intensity, uint16_t 
     if (it->second.m_gameCubeUseOrdinaryStop && low_freq_intensity == 0 && high_freq_intensity == 0) {
       high_freq_intensity = 1;
     }
-    SDL_RumbleGamepad(it->second.m_controller, low_freq_intensity, high_freq_intensity, duration_ms);
+    sdl::RumbleGamepad(it->second.m_controller, low_freq_intensity, high_freq_intensity, duration_ms);
   }
 }
 
@@ -568,6 +573,7 @@ void initialize() noexcept {
    * as expected */
   ASSERT(SDL_Init(SDL_INIT_HAPTIC | SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD), "Failed to initialize SDL subsystems: {}",
          SDL_GetError());
+  start_update_thread();
 }
 
 struct MouseScrollStatus {
@@ -596,5 +602,6 @@ void shutdown() noexcept {
     }
     controller_rumble(controller.first, 0, 0, 0);
   }
+  stop_update_thread(); // applies a stop that had to wait for it
 }
 } // namespace aurora::input

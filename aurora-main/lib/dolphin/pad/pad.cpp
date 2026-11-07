@@ -3,6 +3,7 @@
 #include "../../internal.hpp"
 #include <dolphin/pad.h>
 #include <dolphin/si.h>
+#include <aurora/sdl_gamepad.h>
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_joystick.h>
 
@@ -324,12 +325,12 @@ bool is_native_binding_pressed(SDL_Gamepad* gamepad, u32 binding) {
     const u32 axis = PADAxisButtonAxis(binding);
     const u32 threshold = PADAxisButtonThreshold(binding);
     if (axis >= SDL_GAMEPAD_AXIS_COUNT || threshold < 1 || threshold > 100) return false;
-    int value = SDL_GetGamepadAxis(gamepad, static_cast<SDL_GamepadAxis>(axis));
+    int value = aurora::sdl::GetGamepadAxis(gamepad, static_cast<SDL_GamepadAxis>(axis));
     if (PADAxisButtonNegative(binding)) value = -value;
     return value > 0 && value * 100 >= static_cast<int>(threshold) * 32767;
   }
   return binding < SDL_GAMEPAD_BUTTON_COUNT &&
-         SDL_GetGamepadButton(gamepad, static_cast<SDL_GamepadButton>(binding));
+         aurora::sdl::GetGamepadButton(gamepad, static_cast<SDL_GamepadButton>(binding));
 }
 bool is_mouse_button_pressed(const s32 scancode) {
   const int32_t buttonNum = -(scancode + 1);
@@ -395,7 +396,7 @@ const char* PADGetNameForControllerIndex(const u32 idx) {
     return nullptr;
   }
 
-  return SDL_GetGamepadName(ctrl->m_controller);
+  return aurora::sdl::GetGamepadName(ctrl->m_controller);
 }
 
 void PADSetPortForIndex(const u32 idx, const u32 port) {
@@ -454,7 +455,7 @@ static void reset_alt_button_mapping(aurora::input::GameController* controller) 
 // and which therefore never take a GameCube mapping.
 static bool wii_default_mapping(const aurora::input::GameController* controller,
                                 std::array<PADButtonMapping, PAD_BUTTON_COUNT>& out) {
-  const char* name = SDL_GetGamepadName(controller->m_controller);
+  const char* name = aurora::sdl::GetGamepadName(controller->m_controller);
   if (name == nullptr || SDL_strstr(name, "Wii U Pro Controller") == nullptr) {
     return false;
   }
@@ -469,7 +470,7 @@ void __PADSetDefaultMapping(aurora::input::GameController* controller) /*  NOLIN
     reset_alt_button_mapping(controller);
     return;
   }
-  switch (SDL_GetGamepadType(controller->m_controller)) {
+  switch (aurora::sdl::GetGamepadType(controller->m_controller)) {
   case SDL_GAMEPAD_TYPE_XBOX360:
     controller->m_buttonMapping = g_defaultButtonsXBox360;
     break;
@@ -519,9 +520,10 @@ static bool is_valid_native_axis(const PADSignedNativeAxis axis) {
 
 static PADDeadZones default_dead_zones(const aurora::input::GameController& controller) {
   return {
-      .emulateTriggers = !(controller.m_isGameCube ||
-                           (SDL_GetGamepadType(controller.m_controller) == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO &&
-                            controller.m_pid == 0x2073)),
+      .emulateTriggers =
+          !(controller.m_isGameCube ||
+            (aurora::sdl::GetGamepadType(controller.m_controller) == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO &&
+             controller.m_pid == 0x2073)),
       .useDeadzones = true,
       .stickDeadZone = 8000,
       .substickDeadZone = 8000,
@@ -546,7 +548,7 @@ static void sanitize_dead_zones(aurora::input::GameController* controller, const
 }
 
 void __PADLoadMapping(aurora::input::GameController* controller) /*  NOLINT(*-reserved-identifier) */ {
-  int32_t playerIndex = SDL_GetGamepadPlayerIndex(controller->m_controller);
+  int32_t playerIndex = aurora::sdl::GetGamepadPlayerIndex(controller->m_controller);
   if (playerIndex == -1) {
     return;
   }
@@ -655,7 +657,7 @@ static Sint16 _get_axis_value(const aurora::input::GameController* controller, /
 
   if (iter->nativeAxis.nativeAxis != -1) {
     const auto [nativeAxis, sign] = iter->nativeAxis;
-    const auto value = SDL_GetGamepadAxis(controller->m_controller, static_cast<SDL_GamepadAxis>(nativeAxis));
+    const auto value = aurora::sdl::GetGamepadAxis(controller->m_controller, static_cast<SDL_GamepadAxis>(nativeAxis));
     if (sign == AXIS_SIGN_POSITIVE) {
       return value > 0 ? value : 0;
     }
@@ -667,7 +669,7 @@ static Sint16 _get_axis_value(const aurora::input::GameController* controller, /
   }
 
   assert(iter->nativeButton != -1);
-  if (SDL_GetGamepadButton(controller->m_controller, static_cast<SDL_GamepadButton>(iter->nativeButton))) {
+  if (aurora::sdl::GetGamepadButton(controller->m_controller, static_cast<SDL_GamepadButton>(iter->nativeButton))) {
     return SDL_JOYSTICK_AXIS_MAX;
   }
   return 0;
@@ -810,18 +812,18 @@ u32 PADRead(PADStatus* status) {
       // pads binds the D-pad to hat 0, so SDL_GetGamepadButton(DPAD_*) stays
       // false. Keep this restricted to the Wii driver's pad so raw button
       // indices don't interfere with other controller types.
-      const char* name = SDL_GetGamepadName(controller->m_controller);
+      const char* name = aurora::sdl::GetGamepadName(controller->m_controller);
       const bool isWiiUPro = name != nullptr && SDL_strstr(name, "Wii U Pro Controller") != nullptr;
 
       if (isWiiUPro) {
         SDL_Joystick* joystick =
-            SDL_GetGamepadJoystick(controller->m_controller);
+            aurora::sdl::GetGamepadJoystick(controller->m_controller);
 
         uint32_t raw = 0;
-        const int buttonCount = SDL_GetNumJoystickButtons(joystick);
+        const int buttonCount = aurora::sdl::GetNumJoystickButtons(joystick);
 
         for (int b = 0; b < buttonCount && b < 32; ++b) {
-          if (SDL_GetJoystickButton(joystick, b)) {
+          if (aurora::sdl::GetJoystickButton(joystick, b)) {
             raw |= (1u << b);
           }
         }
@@ -898,7 +900,7 @@ u32 PADRead(PADStatus* status) {
       }};
 
       for (const auto& [native, button] : kExtButtonMappings) {
-        if (SDL_GetGamepadButton(controller->m_controller, native)) {
+        if (aurora::sdl::GetGamepadButton(controller->m_controller, native)) {
           status[i].extButton |= button;
         }
       }
@@ -964,7 +966,7 @@ u32 PADRead(PADStatus* status) {
       // L2/R2 axis still activates L/R even when it was rebound to L1/R1.
       // Real GC pads retain independent analog travel and end-stop clicks.
       if (!(controller->m_isGameCube ||
-            (SDL_GetGamepadType(controller->m_controller) == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO &&
+            (aurora::sdl::GetGamepadType(controller->m_controller) == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO &&
              controller->m_pid == 0x2073))) {
         if (leftTriggerSet) tl = (status[i].button & PAD_TRIGGER_L) != 0 ? 32767 : 0;
         if (rightTriggerSet) tr = (status[i].button & PAD_TRIGGER_R) != 0 ? 32767 : 0;
@@ -991,7 +993,7 @@ u32 PADRead(PADStatus* status) {
       // Update the LED colors when they exist and the controller is read (which should happen once per frame in most
       // games)
       if (controller->m_hasRgbLed && controller->m_isColorDirty) {
-        SDL_SetGamepadLED(controller->m_controller, controller->m_ledRed, controller->m_ledGreen,
+        aurora::sdl::SetGamepadLED(controller->m_controller, controller->m_ledRed, controller->m_ledGreen,
                           controller->m_ledBlue);
         controller->m_isColorDirty = false;
       }
@@ -1181,7 +1183,7 @@ const char* PADGetName(const u32 port) {
     return nullptr;
   }
 
-  return SDL_GetGamepadName(controller->m_controller);
+  return aurora::sdl::GetGamepadName(controller->m_controller);
 }
 
 void PADSetButtonMapping(const u32 port, const PADButtonMapping mapping) {
@@ -1618,7 +1620,7 @@ int32_t PADGetNativeButtonPressed(const u32 port) {
   }
 
   for (int32_t i = 0; i < SDL_GAMEPAD_BUTTON_COUNT; ++i) {
-    if (SDL_GetGamepadButton(controller->m_controller, static_cast<SDL_GamepadButton>(i)) != 0u) {
+    if (aurora::sdl::GetGamepadButton(controller->m_controller, static_cast<SDL_GamepadButton>(i)) != 0u) {
       return i;
     }
   }
@@ -1632,7 +1634,7 @@ PADSignedNativeAxis PADGetNativeAxisPulled(const u32 port) {
   }
 
   for (int32_t i = 0; i < SDL_GAMEPAD_AXIS_COUNT; ++i) {
-    const auto axisVal = SDL_GetGamepadAxis(controller->m_controller, static_cast<SDL_GamepadAxis>(i));
+    const auto axisVal = aurora::sdl::GetGamepadAxis(controller->m_controller, static_cast<SDL_GamepadAxis>(i));
     if (axisVal >= 16384) {
       return {i, AXIS_SIGN_POSITIVE};
     }
@@ -1753,7 +1755,8 @@ BOOL PADSetSensorEnabled(const u32 port, const PADSensorType sensor, const BOOL 
     return FALSE;
   }
 
-  return SDL_SetGamepadSensorEnabled(ctrl->m_controller, static_cast<SDL_SensorType>(sensor), enabled ? true : false)
+  return aurora::sdl::SetGamepadSensorEnabled(ctrl->m_controller, static_cast<SDL_SensorType>(sensor),
+                                              enabled ? true : false)
              ? TRUE
              : FALSE;
 }
@@ -1764,7 +1767,7 @@ BOOL PADHasSensor(const u32 port, const PADSensorType sensor) {
     return FALSE;
   }
 
-  return SDL_GamepadHasSensor(ctrl->m_controller, static_cast<SDL_SensorType>(sensor)) ? TRUE : FALSE;
+  return aurora::sdl::GamepadHasSensor(ctrl->m_controller, static_cast<SDL_SensorType>(sensor)) ? TRUE : FALSE;
 }
 
 BOOL PADGetSensorData(const u32 port, const PADSensorType sensor, f32* data, const int nValues) {
@@ -1773,7 +1776,7 @@ BOOL PADGetSensorData(const u32 port, const PADSensorType sensor, f32* data, con
     return FALSE;
   }
 
-  return SDL_GetGamepadSensorData(ctrl->m_controller, static_cast<SDL_SensorType>(sensor), data, nValues);
+  return aurora::sdl::GetGamepadSensorData(ctrl->m_controller, static_cast<SDL_SensorType>(sensor), data, nValues);
 }
 
 BOOL PADSetRumbleIntensity(const u32 port, const u16 low, const u16 high) {
@@ -1824,7 +1827,7 @@ PADBatteryState PADGetBatteryState(const u32 port, f32* perc) {
   }
 
   int tmp = 0;
-  const auto ret = SDL_GetGamepadPowerInfo(ctrl->m_controller, &tmp);
+  const auto ret = aurora::sdl::GetGamepadPowerInfo(ctrl->m_controller, &tmp);
   if (tmp != -1) {
     *perc = static_cast<float>(tmp) / 100.f;
   } else {
@@ -1839,7 +1842,7 @@ PADControllerType PADGetControllerType(const u32 port) {
     return PAD_TYPE_UNKNOWN;
   }
 
-  auto type = SDL_GetGamepadType(ctrl->m_controller);
+  auto type = aurora::sdl::GetGamepadType(ctrl->m_controller);
   return static_cast<PADControllerType>(type);
 }
 
@@ -1849,7 +1852,7 @@ PADControllerType PADGetControllerTypeForIndex(const u32 index) {
     return PAD_TYPE_UNKNOWN;
   }
 
-  auto type = SDL_GetGamepadType(ctrl->m_controller);
+  auto type = aurora::sdl::GetGamepadType(ctrl->m_controller);
   if (type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO && ctrl->m_pid == 0x2073) {
     return PAD_TYPE_NSO_GAMECUBE;
   }

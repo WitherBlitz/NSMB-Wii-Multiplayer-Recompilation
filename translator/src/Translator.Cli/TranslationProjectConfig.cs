@@ -104,7 +104,8 @@ internal sealed class TranslationProjectConfig
             .ToArray();
         var runtime = new ProjectRuntime(
             abiDirectories,
-            ResolvePath(workspaceRoot, dto.Runtime?.NativeRegistrationRoot ?? "runtime/src"));
+            ResolvePath(workspaceRoot, dto.Runtime?.NativeRegistrationRoot ?? "runtime/src"),
+            ResolveOptionalPath(workspaceRoot, dto.Runtime?.AddressMap));
         var outputRoot = ResolvePath(workspaceRoot, dto.Output?.Root ?? "generated");
         var output = new ProjectOutput(
             outputRoot,
@@ -416,6 +417,8 @@ internal sealed class TranslationProjectConfig
     {
         public List<string>? NativeAbiDirectories { get; init; }
         public string? NativeRegistrationRoot { get; init; }
+        // Optional: the runtime's canonical guest addresses -> this project's (RuntimeAddressMap).
+        public string? AddressMap { get; init; }
     }
 
     private sealed class OutputDto
@@ -475,7 +478,13 @@ internal sealed record ProjectTranslation(
     bool AllowUnsupportedInstructions);
 internal sealed record ProjectRuntime(
     IReadOnlyList<string> NativeAbiDirectories,
-    string NativeRegistrationRoot);
+    string NativeRegistrationRoot,
+    string? AddressMapPath = null)
+{
+    /// <summary>The loaded runtime.address_map, or null when the project has none.</summary>
+    public Translator.Core.RuntimeAddressMap? LoadAddressMap() =>
+        AddressMapPath is null ? null : Translator.Core.RuntimeAddressMap.Load(AddressMapPath);
+}
 internal sealed record ProjectOutput(
     string Root,
     string Functions,

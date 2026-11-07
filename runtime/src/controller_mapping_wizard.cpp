@@ -3,6 +3,7 @@
 #include "runtime_log.h"
 
 #include <imgui.h>
+#include <aurora/sdl_gamepad.h>
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_joystick.h>
 #include <SDL3/SDL_platform.h>
@@ -93,9 +94,9 @@ bool BindingUsed(const std::string& value) {
 
 void SnapshotAxes() {
     g_wizard.axisBaseline.clear();
-    const int axes = SDL_GetNumJoystickAxes(g_wizard.joystick);
+    const int axes = aurora::sdl::GetNumJoystickAxes(g_wizard.joystick);
     for (int i = 0; i < axes; ++i) {
-        g_wizard.axisBaseline.push_back(SDL_GetJoystickAxis(g_wizard.joystick, i));
+        g_wizard.axisBaseline.push_back(aurora::sdl::GetJoystickAxis(g_wizard.joystick, i));
     }
 }
 
@@ -117,8 +118,8 @@ void StartWizard(SDL_JoystickID instance) {
     StopWizard();
     SDL_Joystick* joystick = nullptr;
     bool owns = false;
-    if (SDL_Gamepad* gamepad = SDL_GetGamepadFromID(instance)) {
-        joystick = SDL_GetGamepadJoystick(gamepad);
+    if (SDL_Gamepad* gamepad = aurora::sdl::GetGamepadFromID(instance)) {
+        joystick = aurora::sdl::GetGamepadJoystick(gamepad);
     } else {
         joystick = SDL_OpenJoystick(instance);
         owns = true;
@@ -220,7 +221,7 @@ std::vector<SetupCandidate> CollectCandidates() {
             candidates.push_back({id, name, false});
             continue;
         }
-        SDL_Gamepad* gamepad = SDL_GetGamepadFromID(id);
+        SDL_Gamepad* gamepad = aurora::sdl::GetGamepadFromID(id);
         if (gamepad == nullptr) {
             continue;
         }
@@ -232,8 +233,8 @@ std::vector<SetupCandidate> CollectCandidates() {
         SDL_free(mapping);
         const bool hasStick = mappingStr.find("leftx:") != std::string::npos &&
                               mappingStr.find("lefty:") != std::string::npos;
-        SDL_Joystick* joystick = SDL_GetGamepadJoystick(gamepad);
-        if (!hasStick && joystick != nullptr && SDL_GetNumJoystickAxes(joystick) >= 2) {
+        SDL_Joystick* joystick = aurora::sdl::GetGamepadJoystick(gamepad);
+        if (!hasStick && joystick != nullptr && aurora::sdl::GetNumJoystickAxes(joystick) >= 2) {
             candidates.push_back({id, name, true});
         }
     }

@@ -120,6 +120,15 @@ liblinkernsbypass from commit `aa3975893d83ef1bc84c321ec60c65fbf1287887`.
 Source: <https://github.com/bylaws/libadrenotools>. Full license text:
 `runtime/third_party/libadrenotools/LICENSE` and `lib/linkernsbypass/LICENSE` beside it.
 
+### NSMBW address map (NSMBW-Updated) - MIT
+
+Copyright (c) 2021 RoadrunnerWMC; originally by Ninji and CLF78.
+The address map between New Super Mario Bros. Wii's versions, which the build tools use to support
+discs other than the USA one. Vendored as `projects/nsmbw/variants/address-map.txt` from
+`code/address-map.txt` at commit `9973178607c652ad880959ceee29fa8e32a80a48`.
+Source: <https://github.com/NSMBW-Community/NSMBW-Updated>. Full license text:
+`projects/nsmbw/variants/LICENSE-address-map.txt`.
+
 ---
 
 ## Fetched at build time and redistributed in release builds

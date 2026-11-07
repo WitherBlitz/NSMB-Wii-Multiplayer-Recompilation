@@ -35,7 +35,7 @@ using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
 
 constexpr uint32_t kMagic = 0x4C50574Eu;  // "NWPL"
-constexpr uint8_t kVersion = 1;
+constexpr uint8_t kVersion = 2;  // 2: Exit Course in uncleared courses (hle/pause_exit.cpp)
 constexpr size_t kChunk = 1024;
 constexpr size_t kMaxChunks = 128;  // 128 KiB of save data at most
 constexpr auto kTimeout = 6s;

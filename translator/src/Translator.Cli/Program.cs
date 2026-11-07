@@ -70,8 +70,11 @@ var canonicalIrStore = new CanonicalIrStore();
 // recursive ABI cache in one stable pass, exactly like translate-mod does.
 var inferredGuestAbi = new Lazy<InferredGuestFunctionAbiProvider>(() =>
     new InferredGuestFunctionAbiProvider(image.Value, canonicalIrStore));
+// runtime.address_map (optional) moves every address read from the runtime sources to this
+// project's game version; without one they are used as written.
 var runtimeNativeIndex = new Lazy<RuntimeNativeIndex>(() =>
-    RuntimeNativeIndexBuilder.Build(RequireProject().Runtime.NativeRegistrationRoot));
+    RuntimeNativeIndexBuilder.Build(
+        RequireProject().Runtime.NativeRegistrationRoot, RequireProject().Runtime.LoadAddressMap()));
 // Void-stub signatures are only trusted as declared guest ABIs when the stub
 // lives under runtime.native_abi_directories (the vetted set); everywhere else
 // the C++ signature is documentation and the inferred ABI stays authoritative.
@@ -230,7 +233,7 @@ int RunEmitBuildShards(string[] argsTail)
     try
     {
         var nativeSourcePath = Path.GetFullPath(nativeSources);
-        var nativeIndex = RuntimeNativeIndexBuilder.Build(nativeSourcePath);
+        var nativeIndex = RuntimeNativeIndexBuilder.Build(nativeSourcePath, project?.Runtime.LoadAddressMap());
         var result = TranslatedBuildShardEmitter.Emit(new TranslatedBuildShardOptions(
             Path.GetFullPath(baseMetadata),
             Path.GetFullPath(baseFunctions),

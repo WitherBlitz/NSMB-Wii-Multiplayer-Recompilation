@@ -17,6 +17,13 @@ compare chains, and the 2.0f volume is built on the stack. That volume stub also
 code's `beq cr7` reads whatever cr7 held on the way in: it follows the `cmpwi r0, 0` right before it.
 `lis/ori/mtctr/bctrl` calls become direct `bl`s.
 
+The code is written for USA rev 1 (E1), the port's canonical address space. For another version,
+apply() takes va (E1 address -> that version's, from gen_variant's table) and moves every address in
+it: the patch sites, branch targets, and the absolute addresses built with lis/addis + a 16-bit
+half (in C2 bodies, the hand-written stubs and the one split 04 pair, SPLIT_ADDRESS_WRITES).
+check_sites() is the precondition: every word the code patches must hold the same instruction on
+that version as on E1 before patching, or the port is refused.
+
 The Gecko code is under this license:
 
 MIT License
@@ -86,7 +93,11 @@ C277359C 0000000C 2C040007 41820024 2C040008 40820048 54A0103A 7CA30214 80A50254
 """
 
 NOP = 0x60000000
-CARD_PORTRAIT = 0x80B8E340  # where the stubs start: the end of the linked RELs, aligned
+CARD_PORTRAIT = 0x80B8E340  # where the stubs start on E1: the end of the linked RELs, aligned
+
+# 04 writes that together build one absolute address (lis at the first, its 16-bit half at the
+# second): the d_basesNP slot table 0x8093CDF0.
+SPLIT_ADDRESS_WRITES = ((0x808EB7D8, 0x808EB7E4),)
 
 
 def _li(rd, value):
@@ -139,49 +150,209 @@ def _direct_calls(words):
     return out
 
 
-def apply(read32, write32, stub_base):
-    """Applies the code through read32(addr) / write32(addr, value); returns the stubs' bytes, to be
-    placed at stub_base as a code section."""
+def _ha(addr):
+    return ((addr >> 16) + (1 if addr & 0x8000 else 0)) & 0xFFFF
+
+
+def _is_address_high(word):
+    """lis / addis rD, rA, hi where hi is the top half of a MEM1 address."""
+    return word >> 26 == 15 and 0x8000 <= (word & 0xFFFF) < 0x8180
+
+
+def _relocate(code, va):
+    """Moves the absolute addresses in a stub body: lis/addis rX, hi followed by the instruction that
+    adds its 16-bit half (addi, ori, or a load/store based on rX). ("bl", a) calls are moved when
+    they are encoded."""
+    out = list(code)
+    pending = {}  # register -> index of its lis/addis
+    for i, w in enumerate(out):
+        if not isinstance(w, int):
+            continue
+        op, rt, ra = w >> 26, (w >> 21) & 31, (w >> 16) & 31
+        if _is_address_high(w):
+            pending[rt] = i
+            continue
+        if not (op in (14, 24) or 32 <= op <= 55):
+            continue
+        src = rt if op == 24 else ra  # ori rA, rS, imm reads rS
+        if src not in pending:
+            continue
+        j = pending.pop(src)
+        hi, lo = out[j] & 0xFFFF, w & 0xFFFF
+        old = (hi << 16 | lo) if op == 24 else ((hi << 16) + (lo - 0x10000 if lo & 0x8000 else lo)) & 0xFFFFFFFF
+        new = _map(va, old)
+        out[j] = out[j] & 0xFFFF0000 | (new >> 16 if op == 24 else _ha(new))
+        out[i] = w & 0xFFFF0000 | new & 0xFFFF
+    if pending:
+        raise SystemExit(f"p1_character: lis without its 16-bit half in {[hex(x) if isinstance(x, int) else x for x in code]}")
+    return out
+
+
+def _map(va, addr):
+    if va is None:
+        return addr
+    target = va(addr)
+    if target is None:
+        raise SystemExit(f"p1_character: 0x{addr:08X} has no address on this game version")
+    return target
+
+
+def _decode():
+    """The Gecko code as (kind, addr, value or body)."""
     words = [int(w, 16) for w in CODE.split()]
-    stubs = bytearray()
-
-    def insert(addr, code):
-        at = stub_base + len(stubs)
-        write32(addr, _encode_b(addr, at))
-        for k, word in enumerate(code + [("b", addr + 4)]):
-            if isinstance(word, tuple):
-                word = _encode_b(at + 4 * k, word[1], link=word[0] == "bl")
-            stubs.extend(struct.pack(">I", word))
-
-    # The stubs' first word: a function of its own that the runtime overrides (CardPortrait in
-    # gameplay_options.cpp, at this fixed address). Each card calls it before showing its character
-    # (r3 the card, r4 what it shows, r6 which of its two sides): the layout has no portrait of Mario,
-    # who could never be picked here before.
-    assert stub_base == CARD_PORTRAIT, hex(stub_base)
-    stubs.extend(struct.pack(">I", 0x4E800020))  # blr
-    insert(0x80773574, [0x7FE6FB78, ("bl", CARD_PORTRAIT), 0x2C040002])  # mr r6, r31; cmpwi r4, 2
-
-    for addr, code in HAND_STUBS.items():
-        insert(addr, code)
-    i = 0
+    out, i = [], 0
     while i < len(words):
         head, value = words[i], words[i + 1]
         i += 2
         kind, addr = head >> 24, 0x80000000 | head & 0x01FFFFFF
-        if kind == 0x04:
-            write32(addr, value)
-        elif kind == 0x02:
-            shift = 16 if addr & 2 == 0 else 0
-            word = addr & ~3
-            write32(word, read32(word) & ~(0xFFFF << shift) | (value & 0xFFFF) << shift)
-        elif kind == 0xC6:
-            write32(addr, _encode_b(addr, value))
-        elif kind == 0xC2:
-            body = words[i:i + value * 2]
+        if kind == 0xC2:
+            out.append((kind, addr, words[i:i + value * 2]))
             i += value * 2
-            insert(addr, _direct_calls(body[:-1]))
+        elif kind in (0x04, 0x02, 0xC6):
+            out.append((kind, addr, value))
         else:
             raise SystemExit(f"unhandled Gecko code type {kind:02X}")
+    return out
+
+
+def _split_writes(entries, va):
+    """The 04 values of SPLIT_ADDRESS_WRITES, moved to va's addresses: {site: value}."""
+    values = {addr: value for kind, addr, value in entries if kind == 0x04}
+    moved = {}
+    for hi_site, lo_site in SPLIT_ADDRESS_WRITES:
+        hi_word, lo_word = values[hi_site], values[lo_site]
+        lo = lo_word & 0xFFFF
+        old = ((hi_word & 0xFFFF) << 16) + (lo - 0x10000 if lo & 0x8000 else lo) & 0xFFFFFFFF
+        new = _map(va, old)
+        moved[hi_site] = hi_word & 0xFFFF0000 | _ha(new)
+        moved[lo_site] = lo_word & 0xFFFF0000 | new & 0xFFFF
+    for kind, addr, value in entries:
+        if kind == 0x04 and _is_address_high(value) and addr not in moved:
+            raise SystemExit(f"p1_character: 04 write at 0x{addr:08X} builds an address; add it to SPLIT_ADDRESS_WRITES")
+    return moved
+
+
+def patch_sites():
+    """Every E1 word the code rewrites (32-bit aligned), for check_sites()."""
+    sites = {0x80773574} | set(HAND_STUBS)
+    for kind, addr, _value in _decode():
+        sites.add(addr & ~3)
+    return sorted(sites)
+
+
+def _half_address(hi_word, lo_word):
+    lo = lo_word & 0xFFFF
+    if lo_word >> 26 == 24:  # ori
+        return (hi_word & 0xFFFF) << 16 | lo
+    return ((hi_word & 0xFFFF) << 16) + (lo - 0x10000 if lo & 0x8000 else lo) & 0xFFFFFFFF
+
+
+def _same_address_pair(rd_e, rd_t, site, target, va, reach=16):
+    """A lis or the instruction adding its 16-bit half, where the address the pair builds maps:
+    the same instruction on both versions, with the address moved."""
+    e, t = rd_e(site), rd_t(target)
+    if e >> 16 != t >> 16:
+        return False
+    op = e >> 26
+
+    def is_use(w, reg):
+        o = w >> 26
+        return (o in (14, 24) or 32 <= o <= 55) and ((w >> 21) & 31 if o == 24 else (w >> 16) & 31) == reg
+
+    if op == 15 and (e >> 16) & 31 == 0:
+        reg, step, find = (e >> 21) & 31, 4, lambda w: is_use(w, (e >> 21) & 31)
+    elif op in (14, 24) or 32 <= op <= 55:
+        reg, step = ((e >> 21) & 31 if op == 24 else (e >> 16) & 31), -4
+        find = lambda w: w >> 26 == 15 and (w >> 16) & 31 == 0 and (w >> 21) & 31 == reg  # noqa: E731
+    else:
+        return False
+    for k in range(1, reach):
+        we, wt = rd_e(site + step * k), rd_t(target + step * k)
+        if we >> 16 != wt >> 16:
+            return False
+        if find(we):
+            pair_e, pair_t = ((e, we), (t, wt)) if step > 0 else ((we, e), (wt, t))
+            return va(_half_address(*pair_e)) == _half_address(*pair_t)
+        if we != wt:
+            return False
+    return False
+
+
+def check_sites(canonical_read32, target_read32, va):
+    """The precondition for porting the code to another version: each patched word holds the same
+    instruction there as on E1 (a b/bl counts as the same when its target maps, a lis or its 16-bit
+    half when the address the pair builds maps). Returns problems."""
+    problems = []
+    for site in patch_sites():
+        target = va(site)
+        if target is None:
+            problems.append(f"0x{site:08X}: no address on this version")
+            continue
+        e, t = canonical_read32(site), target_read32(target)
+        if e == t:
+            continue
+        if e >> 26 == 18 and t >> 26 == 18 and e & 3 == t & 3:
+            de, dt = e & 0x03FFFFFC, t & 0x03FFFFFC
+            de, dt = de - (de & 0x02000000) * 2, dt - (dt & 0x02000000) * 2
+            te = (de if e & 2 else site + de) & 0xFFFFFFFF
+            tt = (dt if t & 2 else target + dt) & 0xFFFFFFFF
+            if va(te) == tt:
+                continue
+        if _same_address_pair(canonical_read32, target_read32, site, target, va):
+            continue
+        problems.append(f"0x{site:08X} -> 0x{target:08X}: E1 holds 0x{e:08X}, this version 0x{t:08X}")
+    return problems
+
+
+def stub_size():
+    """Bytes apply() puts at stub_base (the same on every version)."""
+    return len(apply(lambda a: 0, lambda a, v: None, CARD_PORTRAIT))
+
+
+def apply(read32, write32, stub_base, va=None):
+    """Applies the code through read32(addr) / write32(addr, value); returns the stubs' bytes, to be
+    placed at stub_base as a code section. va maps E1 addresses to the version being patched
+    (None: E1 itself, whose stubs start at CARD_PORTRAIT)."""
+    entries = _decode()
+    stubs = bytearray()
+    m = (lambda a: a) if va is None else (lambda a: _map(va, a))
+
+    def insert(addr, code):
+        site = m(addr)
+        at = stub_base + len(stubs)
+        write32(site, _encode_b(site, at))
+        if va is not None:
+            code = _relocate(code, va)
+        for k, word in enumerate(code + [("b", site + 4)]):
+            if isinstance(word, tuple):
+                dst = stub_base if word[1] == "CardPortrait" else word[1] if k == len(code) else m(word[1])
+                word = _encode_b(at + 4 * k, dst, link=word[0] == "bl")
+            stubs.extend(struct.pack(">I", word))
+
+    # The stubs' first word: a function of its own that the runtime overrides (CardPortrait in
+    # gameplay_options.cpp, at CARD_PORTRAIT on E1; gen_variant.py maps that address to stub_base on
+    # other versions). Each card calls it before showing its character (r3 the card, r4 what it
+    # shows, r6 which of its two sides): the layout has no portrait of Mario, who could never be
+    # picked here before.
+    if va is None:
+        assert stub_base == CARD_PORTRAIT, hex(stub_base)
+    stubs.extend(struct.pack(">I", 0x4E800020))  # blr
+    insert(0x80773574, [0x7FE6FB78, ("bl", "CardPortrait"), 0x2C040002])  # mr r6, r31; cmpwi r4, 2
+
+    for addr, code in HAND_STUBS.items():
+        insert(addr, code)
+    moved = {} if va is None else _split_writes(entries, va)
+    for kind, addr, value in entries:
+        if kind == 0x04:
+            write32(m(addr), moved.get(addr, value))
+        elif kind == 0x02:
+            shift = 16 if addr & 2 == 0 else 0
+            word = m(addr & ~3)
+            write32(word, read32(word) & ~(0xFFFF << shift) | (value & 0xFFFF) << shift)
+        elif kind == 0xC6:
+            write32(m(addr), _encode_b(m(addr), m(value)))
+        else:
+            insert(addr, _direct_calls(value[:-1]))
     return bytes(stubs)
 
 

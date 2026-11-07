@@ -1,0 +1,9 @@
+# Hand-written exceptions for P1 (SMNP01 rev 1), read by gen_variant.py and verify_variant.py.
+# Columns, tab-separated: E1 address (or E1 first-last range)   P1 address | none   reason
+# An entry replaces the address map's mapping there, and lets verify_variant.py accept a hook or a
+# code address in code that is not identical or equivalent on P1. `none` removes the mapping: a
+# runtime use of that address then fails to build (NSMBW_VA), on purpose.
+0x81700000	0x81700000	the runtime's initial guest stack pointer (main.cpp SeedCpuContext), not a game address
+0x81800000	0x81800000	the end of MEM1, a bound in range checks: the same on every version
+0x801AF5D0	0x801AF710	OSFatal: the runtime replaces the whole function; E1's copy starts with blr where P1's has its body
+0x802BB820	none	EGG::AsyncDisplay::endRender differs on P1 (50/60 Hz); its only use is the dead helper EGG__AsyncDisplay__endRender_HLE_8020ff9c in gx_egg.cpp, which phase 1 deletes

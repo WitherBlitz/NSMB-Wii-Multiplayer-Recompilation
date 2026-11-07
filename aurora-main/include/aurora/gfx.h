@@ -80,6 +80,13 @@ uint32_t aurora_get_frame_interpolation_fps();
 void aurora_set_skip_unready_pipelines(bool enabled);
 bool aurora_get_skip_unready_pipelines();
 uint32_t aurora_get_queued_pipeline_count();
+// Cached pipelines held back at startup on drivers that stall the next present until every shader
+// handed to them is compiled: true until aurora_prewarm_release(UINT32_MAX). The embedder shows its
+// own loading screen meanwhile and releases them a batch at a time.
+bool aurora_prewarm_held();
+void aurora_prewarm_release(uint32_t count);
+// Cached pipelines built so far, and how many there are to build.
+void aurora_get_prewarm_progress(uint32_t* built, uint32_t* total);
 
 // Controls whether display copies bypass the Wii's vertical copy filter.
 void aurora_set_disable_copy_filter(bool disabled);

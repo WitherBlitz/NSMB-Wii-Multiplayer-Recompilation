@@ -28,6 +28,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <psapi.h>
+#include <tlhelp32.h>
 #elif defined(__linux__)
 #include <atomic>
 #include <dlfcn.h>
@@ -201,10 +202,91 @@ void Report(const std::unordered_map<uintptr_t, uint32_t>& samples, const std::v
         RT_LOGF(RT_TAG_RUNTIME, "profile rva: %llX %u\n", static_cast<unsigned long long>(rvas[i].first),
                 rvas[i].second);
     }
+    // Every sample's call stack, for naming all of it offline (the tables above stop at their top
+    // entries): one sample a line, innermost first, exe frames as RVAs, other modules by name.
+    const std::filesystem::path stacksPath = ::RuntimeRunLogDirectory() / "profile-stacks-win.txt";
+    if (FILE* file = std::fopen(stacksPath.string().c_str(), "w")) {
+        std::fprintf(file, "# exe base %llX; one sample a line, frames innermost first: RVA in the exe, else [module]\n",
+                     static_cast<unsigned long long>(exeBase));
+        std::unordered_map<uintptr_t, std::string> modules;
+        for (const auto& stack : stacks) {
+            bool first = true;
+            for (const uintptr_t rip : stack) {
+                std::fputs(first ? "" : " ", file);
+                first = false;
+                if (rip >= exeBase && rip < exeEnd) {
+                    std::fprintf(file, "%llX", static_cast<unsigned long long>(rip - exeBase));
+                    continue;
+                }
+                auto [it, inserted] = modules.try_emplace(rip);
+                if (inserted) {
+                    HMODULE module = nullptr;
+                    char path[MAX_PATH] = "?";
+                    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                           reinterpret_cast<LPCSTR>(rip), &module)) {
+                        GetModuleFileNameA(module, path, MAX_PATH);
+                    }
+                    const char* slash = std::strrchr(path, '\\');
+                    it->second = std::string("[") + (slash ? slash + 1 : path) + "]";
+                }
+                std::fputs(it->second.c_str(), file);
+            }
+            std::fputc('\n', file);
+        }
+        std::fclose(file);
+        RT_LOGF(RT_TAG_RUNTIME, "profile: %zu stacks written to %s\n", stacks.size(), stacksPath.string().c_str());
+    }
+}
+
+// NSMBW_PROFILE_THREAD=<name>: the thread of this process with that description (SetThreadDescription;
+// aurora's GX thread is "GXThread"), or nullptr.
+HANDLE ThreadNamedWin(const char* name) {
+    using GetDescription = HRESULT(WINAPI*)(HANDLE, PWSTR*);
+    const auto get = reinterpret_cast<GetDescription>(
+        reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription")));
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (get == nullptr || snapshot == INVALID_HANDLE_VALUE) {
+        return nullptr;
+    }
+    std::wstring wanted(name, name + std::strlen(name));
+    HANDLE found = nullptr;
+    THREADENTRY32 entry{};
+    entry.dwSize = sizeof(entry);
+    for (BOOL ok = Thread32First(snapshot, &entry); ok && found == nullptr; ok = Thread32Next(snapshot, &entry)) {
+        if (entry.th32OwnerProcessID != GetCurrentProcessId()) {
+            continue;
+        }
+        HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION |
+                                       THREAD_QUERY_LIMITED_INFORMATION,
+                                   FALSE, entry.th32ThreadID);
+        if (thread == nullptr) {
+            continue;
+        }
+        PWSTR description = nullptr;
+        if (SUCCEEDED(get(thread, &description)) && description != nullptr) {
+            if (wanted == description) {
+                found = thread;
+            }
+            LocalFree(description);
+        }
+        if (found == nullptr) {
+            CloseHandle(thread);
+        }
+    }
+    CloseHandle(snapshot);
+    return found;
 }
 
 void Run(HANDLE thread, double startSeconds, double lengthSeconds) {
     std::this_thread::sleep_for(std::chrono::duration<double>(startSeconds));
+    if (const char* name = std::getenv("NSMBW_PROFILE_THREAD"); name != nullptr && *name != 0) {
+        thread = ThreadNamedWin(name);
+        RT_LOGF(RT_TAG_RUNTIME, "profile: sampling thread %s (%s)\n", name, thread != nullptr ? "found" : "not found");
+        if (thread == nullptr) {
+            return;
+        }
+    }
     // NSMBW_PROFILE_HITCH=<ms>: keep only the samples taken while no frame has been presented for that
     // long, so the report shows what the game thread does during a hitch rather than on average.
     const int64_t hitchNanos = HitchNanos();
@@ -215,11 +297,27 @@ void Run(HANDLE thread, double startSeconds, double lengthSeconds) {
     // process was off the CPU (another process, paging), not just the game thread.
     uint32_t lateTicks = 0;
     double lateMs = 0, worstLateMs = 0;
+    // About 1000 samples a second. Sleep() is too coarse for that; a high-resolution waitable timer
+    // (Windows 10 1803 and later) is not, and unlike waiting by yielding it leaves the CPU to the
+    // game, which matters on a two-core machine. Without one, wait by yielding.
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */,
+                                          TIMER_ALL_ACCESS);
+    RT_LOGF(RT_TAG_RUNTIME, "profile: sampling the game thread for %.0f s (%s)\n", lengthSeconds,
+            timer != nullptr ? "high-resolution timer" : "yield loop");
     auto next = std::chrono::steady_clock::now();
     const auto end = next + std::chrono::duration<double>(lengthSeconds);
     while (std::chrono::steady_clock::now() < end) {
-        // About 1000 samples a second; Sleep() is too coarse for that, so wait by yielding.
         next += std::chrono::microseconds(1000);
+        if (timer != nullptr) {
+            const auto wait = std::chrono::duration_cast<std::chrono::nanoseconds>(next - std::chrono::steady_clock::now());
+            if (wait.count() > 0) {
+                LARGE_INTEGER due;
+                due.QuadPart = -static_cast<LONGLONG>(wait.count() / 100);  // relative, in 100 ns units
+                if (due.QuadPart < 0 && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
+                    WaitForSingleObject(timer, INFINITE);
+                }
+            }
+        }
         while (std::chrono::steady_clock::now() < next) {
             std::this_thread::yield();
         }
@@ -260,6 +358,9 @@ void Run(HANDLE thread, double startSeconds, double lengthSeconds) {
             }
             ResumeThread(thread);
         }
+    }
+    if (timer != nullptr) {
+        CloseHandle(timer);
     }
     RT_LOGF(RT_TAG_RUNTIME, "profile: sampler woke over 5 ms late %u times (%.0f ms in all, worst %.1f ms)%s\n",
             lateTicks, lateMs, worstLateMs, hitchNanos > 0 ? "; only samples during hitches kept" : "");

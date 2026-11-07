@@ -1140,6 +1140,18 @@ bool Layout::StretchSlices(DrawParams& params, const std::string& left, const st
     return true;
 }
 
+bool Layout::PaneTransform(const std::string& paneName, float& tx, float& ty, float& sx, float& sy) const {
+    const auto it = m_byName.find(paneName);
+    if (it == m_byName.end()) {
+        return false;
+    }
+    tx = it->second->tx;
+    ty = it->second->ty;
+    sx = it->second->sx;
+    sy = it->second->sy;
+    return true;
+}
+
 std::vector<std::string> Layout::PaneNames() const {
     std::vector<std::string> names;
     for (const auto& pane : m_panes) {
@@ -1179,6 +1191,10 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
         sx = sy = s->second;
     }
     float tx = pane.tx, ty = pane.ty;
+    if (const auto t = params.paneTranslate.find(pane.name); t != params.paneTranslate.end()) {
+        tx = t->second.first;
+        ty = t->second.second;
+    }
     if (root) {
         tx += params.offsetX;
         ty += params.offsetY;
@@ -1208,6 +1224,10 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
     const Rgba tintColor = FromRgba8(tint);
     const auto matrixIt = params.colorMatrix.find(pane.name);
     const std::array<float, 9>* matrix = matrixIt != params.colorMatrix.end() ? &matrixIt->second : nullptr;
+    const uint32_t* paneVtx = pane.vtx;
+    if (const auto v = params.vertexColors.find(pane.name); v != params.vertexColors.end()) {
+        paneVtx = v->second.data();
+    }
 
     const auto quad = [&](const Material* mat, const uint32_t vtx[4], float ax0, float ay0, float ax1, float ay1,
                           const float uvIn[4][2], uint8_t flip) {
@@ -1324,13 +1344,13 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
     };
 
     if (pane.kind == Pane::kPicture && alpha > 0.001f) {
-        quad(material(pane.material), pane.vtx, x0, y0, x0 + paneW, y0 - paneH, pane.uv, 0);
+        quad(material(pane.material), paneVtx, x0, y0, x0 + paneW, y0 - paneH, pane.uv, 0);
     } else if (pane.kind == Pane::kWindow && alpha > 0.001f) {
         // Content, grown by its overflow, then nw4r's frame: four strips laid round the border like a
         // pinwheel (top from the left corner, right from the top, bottom from the right, left from the
         // bottom), each showing its frame texture anchored at its own corner at a texel per unit and
         // clamped past the texture's edge, which carries the border on along the side.
-        quad(material(pane.material), pane.vtx, x0 - pane.overflow[0], y0 + pane.overflow[2],
+        quad(material(pane.material), paneVtx, x0 - pane.overflow[0], y0 + pane.overflow[2],
              x0 + paneW + pane.overflow[1], y0 - paneH - pane.overflow[3], pane.uv, 0);
         if (!pane.frames.empty()) {
             const uint32_t white[4] = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
@@ -1386,9 +1406,13 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
         }
         top.a *= alpha;
         bottom.a *= alpha;
+        float textScale = 1.0f;
+        if (const auto s = params.textScale.find(pane.name); s != params.textScale.end()) {
+            textScale = s->second;
+        }
         DrawTextLines(list, view, m, *m_fonts[pane.font], *text, x0, y0, paneW, paneH, pane.textPosition,
-                      pane.textAlignment, pane.fontW, pane.fontH, pane.charSpace, pane.lineSpace, top, bottom,
-                      false);
+                      pane.textAlignment, pane.fontW * textScale, pane.fontH * textScale, pane.charSpace,
+                      pane.lineSpace, top, bottom, params.plainText);
     }
 
     const float mtx[6] = {m.a, m.b, m.c, m.d, m.tx, m.ty};
@@ -1452,6 +1476,330 @@ std::u16string Utf16(const std::string& utf8) {
         out.push_back(cp < 0x10000 ? static_cast<char16_t>(cp) : u'?');
     }
     return out;
+}
+
+// ---------------------------------------------------------------- animations
+namespace {
+struct AnimKey {
+    float frame = 0, value = 0, slope = 0;
+};
+struct AnimTrack {
+    uint8_t target = 0;
+    bool step = false;
+    std::vector<AnimKey> keys;
+};
+
+// nw4r's curve: Hermite between the keys either side of `frame` (each key's slope both ways; two keys
+// on one frame make a corner), held flat before the first and after the last.
+float Sample(const AnimTrack& track, float frame) {
+    const auto& keys = track.keys;
+    if (keys.empty()) {
+        return 0;
+    }
+    if (keys.size() == 1 || frame <= keys.front().frame) {
+        return keys.front().value;
+    }
+    if (frame >= keys.back().frame) {
+        return keys.back().value;
+    }
+    size_t i = 0;
+    while (i + 2 < keys.size() && keys[i + 1].frame <= frame) {
+        ++i;
+    }
+    const AnimKey& k0 = keys[i];
+    const AnimKey& k1 = keys[i + 1];
+    if (track.step || k1.frame <= k0.frame) {
+        return frame >= k1.frame ? k1.value : k0.value;
+    }
+    const float t1 = frame - k0.frame;
+    const float t2 = 1.0f / (k1.frame - k0.frame);
+    const float a = t1 * t1 * t2;        // t1^2 / d
+    const float b = a * t2;              // t1^2 / d^2
+    const float c = t1 * b;              // t1^3 / d^2
+    const float d = c * t2;              // t1^3 / d^3
+    return k0.value * (2 * d - 3 * b + 1) + k1.value * (-2 * d + 3 * b) + k0.slope * (c - 2 * a + t1) +
+           k1.slope * (c - a);
+}
+} // namespace
+
+struct Animation::PaneAnim {
+    std::string name;
+    std::vector<AnimTrack> srt;  // RLPA: 0-2 translate, 3-5 rotate, 6-7 scale, 8-9 size
+    std::vector<AnimTrack> vtx;  // RLVC: 0-15 the corners' RGBA, 16 the pane's alpha
+    std::vector<AnimTrack> vis;  // RLVI: 0 visible
+};
+
+Animation::Animation() = default;
+Animation::~Animation() = default;
+
+bool Animation::Load(const std::string& arcPath, const std::string& brlanName) {
+    std::vector<uint8_t> arc;
+    std::vector<uint8_t> lan;
+    if (!ReadDiscFile(arcPath, arc)) {
+        return false;
+    }
+    for (const auto& [path, where] : ListU8(arc)) {
+        if (path.find(brlanName) != std::string::npos && where.first + where.second <= arc.size()) {
+            lan.assign(arc.begin() + where.first, arc.begin() + where.first + where.second);
+            break;
+        }
+    }
+    if (lan.size() < 16 || BE32(lan.data()) != 0x524C414Eu) {  // RLAN
+        return false;
+    }
+    const uint8_t* d = lan.data();
+    const size_t size = lan.size();
+    size_t pos = BE16(d + 12);
+    const uint16_t sections = BE16(d + 14);
+    for (uint16_t s = 0; s < sections && pos + 8 <= size; ++s) {
+        const uint32_t kind = BE32(d + pos), secSize = BE32(d + pos + 4);
+        if (secSize < 8 || pos + secSize > size) {
+            break;
+        }
+        if (kind == 0x70616931u && pos + 20 <= size) {  // pai1
+            const uint8_t* b = d + pos + 8;
+            m_frames = BE16(b);
+            const uint16_t entries = BE16(b + 6);
+            const uint32_t table = BE32(b + 8);
+            for (uint16_t e = 0; e < entries && pos + table + e * 4 + 4 <= size; ++e) {
+                const size_t eo = pos + BE32(d + pos + table + e * 4);
+                if (eo + 28 > size) {
+                    break;
+                }
+                auto pane = std::make_unique<PaneAnim>();
+                pane->name.assign(reinterpret_cast<const char*>(d + eo), strnlen(reinterpret_cast<const char*>(d + eo), 20));
+                const uint8_t tags = d[eo + 20];
+                const bool material = d[eo + 21] != 0;
+                for (uint8_t t = 0; t < tags && eo + 24 + t * 4 + 4 <= size; ++t) {
+                    const size_t to = eo + BE32(d + eo + 24 + t * 4);
+                    if (to + 8 > size) {
+                        break;
+                    }
+                    const uint32_t tag = BE32(d + to);
+                    const uint8_t count = d[to + 4];
+                    std::vector<AnimTrack>* into = tag == 0x524C5041u   ? &pane->srt  // RLPA
+                                                   : tag == 0x524C5643u ? &pane->vtx  // RLVC
+                                                   : tag == 0x524C5649u ? &pane->vis  // RLVI
+                                                                        : nullptr;
+                    if (into == nullptr || material) {
+                        continue;
+                    }
+                    for (uint8_t k = 0; k < count && to + 8 + k * 4 + 4 <= size; ++k) {
+                        const size_t io = to + BE32(d + to + 8 + k * 4);
+                        if (io + 12 > size) {
+                            break;
+                        }
+                        AnimTrack track;
+                        track.target = d[io + 1];
+                        const uint8_t curve = d[io + 2];
+                        const uint16_t keyCount = BE16(d + io + 4);
+                        const size_t ko = io + BE32(d + io + 8);
+                        track.step = curve != 2;
+                        const size_t stride = curve == 2 ? 12 : 8;
+                        for (uint16_t n = 0; n < keyCount && ko + (n + 1) * stride <= size; ++n) {
+                            const uint8_t* key = d + ko + n * stride;
+                            if (curve == 2) {
+                                track.keys.push_back({BEF(key), BEF(key + 4), BEF(key + 8)});
+                            } else {
+                                track.keys.push_back({BEF(key), static_cast<float>(BE16(key + 4)), 0});
+                            }
+                        }
+                        into->push_back(std::move(track));
+                    }
+                }
+                m_panes.push_back(std::move(pane));
+            }
+        }
+        pos += secSize;
+    }
+    m_loaded = !m_panes.empty();
+    return m_loaded;
+}
+
+bool Animation::Animates(const std::string& paneName) const {
+    return std::any_of(m_panes.begin(), m_panes.end(), [&](const auto& pane) { return pane->name == paneName; });
+}
+
+void Animation::Apply(float frame, const Layout& layout, DrawParams& params,
+                      const std::vector<std::pair<std::string, std::string>>& only) const {
+    for (const auto& pane : m_panes) {
+        std::string target = pane->name;
+        if (!only.empty()) {
+            const auto it = std::find_if(only.begin(), only.end(), [&](const auto& m) { return m.first == pane->name; });
+            if (it == only.end()) {
+                continue;
+            }
+            target = it->second;
+        }
+        float tx = 0, ty = 0, sx = 1, sy = 1;
+        if (!layout.PaneTransform(target, tx, ty, sx, sy)) {
+            continue;
+        }
+        bool moved = false, scaled = false;
+        for (const AnimTrack& track : pane->srt) {
+            const float v = Sample(track, frame);
+            switch (track.target) {
+            case 0: tx = v; moved = true; break;
+            case 1: ty = v; moved = true; break;
+            case 6: sx = v; scaled = true; break;
+            case 7: sy = v; scaled = true; break;
+            default: break;
+            }
+        }
+        if (moved) {
+            params.paneTranslate[target] = {tx, ty};
+        }
+        if (scaled) {
+            params.paneScale[target] = (sx + sy) / 2;
+        }
+        bool colored = false;
+        std::array<uint32_t, 4> colors{0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
+        if (const auto v = params.vertexColors.find(target); v != params.vertexColors.end()) {
+            colors = v->second;
+        }
+        for (const AnimTrack& track : pane->vtx) {
+            const float v = Sample(track, frame);
+            if (track.target == 16) {
+                params.paneAlpha[target] = std::clamp(v, 0.0f, 255.0f) / 255.0f;
+            } else if (track.target < 16) {
+                const int corner = track.target / 4, channel = track.target % 4;
+                const uint32_t byte = static_cast<uint32_t>(std::lround(std::clamp(v, 0.0f, 255.0f)));
+                const int shift = 24 - 8 * channel;
+                colors[corner] = (colors[corner] & ~(0xFFu << shift)) | (byte << shift);
+                colored = true;
+            }
+        }
+        if (colored) {
+            params.vertexColors[target] = colors;
+        }
+        for (const AnimTrack& track : pane->vis) {
+            if (track.target == 0) {
+                params.visible[target] = Sample(track, frame) != 0.0f;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- CPU pixels
+bool ReadGameFile(const std::string& dvdPath, std::vector<uint8_t>& out) {
+    return ReadDiscFile(dvdPath, out);
+}
+
+bool ArchiveFile(const std::vector<uint8_t>& arc, const std::string& name, std::vector<uint8_t>& out) {
+    for (const auto& [path, where] : ListU8(arc)) {
+        if (path.size() >= name.size() && path.compare(path.size() - name.size(), name.size(), name) == 0 &&
+            where.first + where.second <= arc.size()) {
+            out.assign(arc.begin() + where.first, arc.begin() + where.first + where.second);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool DecodeTpl(const std::vector<uint8_t>& tpl, Pixels& out) {
+    Image image;
+    if (!ParseTpl(tpl.data(), tpl.size(), image)) {
+        return false;
+    }
+    out.width = image.width;
+    out.height = image.height;
+    out.rgba = std::move(image.rgba);
+    return true;
+}
+
+bool FontPixels::Cell(char16_t code, uint32_t& sheet, uint32_t& x, uint32_t& y, Width* width) const {
+    const auto it = map.find(static_cast<uint16_t>(code));
+    const uint32_t perSheet = perRow * perColumn;
+    if (it == map.end() || perSheet == 0) {
+        return false;
+    }
+    const uint32_t index = it->second;
+    sheet = index / perSheet;
+    const uint32_t cell = index % perSheet;
+    x = (cell % perRow) * (cellWidth + 1);
+    y = (cell / perRow) * (cellHeight + 1);
+    if (width != nullptr) {
+        *width = index < widths.size() ? widths[index] : Width{0, static_cast<int>(cellWidth), static_cast<int>(cellWidth)};
+    }
+    return sheet < sheets.size();
+}
+
+bool DecodeFont(const std::vector<uint8_t>& data, FontPixels& out) {
+    if (data.size() < 0x30 || BE32(data.data()) != 0x52464E54u) {  // RFNT
+        return false;
+    }
+    const uint16_t headerSize = BE16(&data[12]);
+    if (headerSize + 0x20 > data.size() || BE32(&data[headerSize]) != 0x46494E46u) {  // FINF
+        return false;
+    }
+    const uint8_t* f = &data[headerSize + 8];
+    const uint32_t tglp = BE32(f + 8);
+    uint32_t cwdh = BE32(f + 12);
+    uint32_t cmap = BE32(f + 16);
+    out.height = f[20];
+    out.width = f[21];
+    out.ascent = f[22];
+    if (tglp + 0x18 > data.size()) {
+        return false;
+    }
+    const uint8_t* t = &data[tglp];
+    out.cellWidth = t[0];
+    out.cellHeight = t[1];
+    out.sheetSize = BE32(t + 4);
+    const uint16_t sheetCount = BE16(t + 8);
+    out.sheetFormat = BE16(t + 10);
+    out.perRow = BE16(t + 12);
+    out.perColumn = BE16(t + 14);
+    out.sheetWidth = BE16(t + 16);
+    out.sheetHeight = BE16(t + 18);
+    out.sheetData = BE32(t + 20);
+    for (uint16_t i = 0; i < sheetCount; ++i) {
+        const size_t at = out.sheetData + static_cast<size_t>(i) * out.sheetSize;
+        Pixels sheet;
+        sheet.width = out.sheetWidth;
+        sheet.height = out.sheetHeight;
+        if (at + out.sheetSize > data.size() ||
+            !DecodeTexture(&data[at], out.sheetSize, out.sheetFormat, out.sheetWidth, out.sheetHeight, sheet.rgba)) {
+            break;
+        }
+        out.sheets.push_back(std::move(sheet));
+    }
+    while (cwdh != 0 && cwdh + 8 <= data.size()) {
+        const uint8_t* w = &data[cwdh];
+        const uint16_t first = BE16(w), last = BE16(w + 2);
+        for (uint32_t index = first; index <= last && cwdh + 8 + (index - first) * 3 + 3 <= data.size(); ++index) {
+            if (index >= out.widths.size()) {
+                out.widths.resize(index + 1);
+            }
+            const uint8_t* e = w + 8 + (index - first) * 3;
+            out.widths[index] = {static_cast<int8_t>(e[0]), e[1], static_cast<int8_t>(e[2])};
+        }
+        cwdh = BE32(w + 4);
+    }
+    while (cmap != 0 && cmap + 12 <= data.size()) {
+        const uint8_t* m = &data[cmap];
+        const uint16_t begin = BE16(m), end = BE16(m + 2), method = BE16(m + 4);
+        const uint8_t* body = m + 12;
+        if (method == 0) {
+            for (uint32_t code = begin; code <= end; ++code) {
+                out.map[static_cast<uint16_t>(code)] = static_cast<uint16_t>(code - begin + BE16(body));
+            }
+        } else if (method == 1) {
+            for (uint32_t code = begin; code <= end; ++code) {
+                const uint16_t index = BE16(body + (code - begin) * 2);
+                if (index != 0xFFFF) {
+                    out.map[static_cast<uint16_t>(code)] = index;
+                }
+            }
+        } else if (method == 2) {
+            const uint16_t count = BE16(body);
+            for (uint16_t i = 0; i < count; ++i) {
+                out.map[BE16(body + 2 + i * 4)] = BE16(body + 4 + i * 4);
+            }
+        }
+        cmap = BE32(m + 8);
+    }
+    return !out.sheets.empty();
 }
 
 } // namespace GameLayout
