@@ -115,6 +115,11 @@ PPC_NATIVE_OVERRIDE_VOID(801c6130, GX__SetDispCopyGamma_8016fc24, (uint32_t g), 
 // ============================================================================
 
 extern "C" void GX__CopyDisp_8016fc38(uint32_t da, uint32_t c) {
+    // Battery Saver: the frame before drew nothing (display_settings.cpp), so there is no picture to
+    // copy. No copy and no present: the VI keeps showing the last one (this XFB never reads as ready).
+    if (settings_overlay::TakeUndrawnFrame()) {
+        return;
+    }
     EnsureAuroraFrameActive();
     // GX copies are FIFO-ordered on hardware. Drain submitted draws before
     // resolving the EFB so high-level copies see the same contents.

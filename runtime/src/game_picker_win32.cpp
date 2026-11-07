@@ -32,6 +32,7 @@ enum : int {
     kIso,
     kOr,
     kFolder,
+    kMods,
     kLine,
     kHelp,
 };
@@ -241,6 +242,8 @@ void Layout(HWND dialog, State& state) {
     place(kOr, bigLeft, top, bigWidth, height);
     top += height + y(3);
     place(kFolder, bigLeft, top, bigWidth, bigHeight);
+    top += bigHeight + y(6);
+    place(kMods, bigLeft, top, bigWidth, bigHeight);
     top += bigHeight + y(11);
     place(kLine, x(kMargin), top, width - 2 * x(kMargin), 2);
     top += y(7);
@@ -314,6 +317,9 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lPa
             MessageBoxW(dialog, Widen(state->text->help).c_str(), Widen(state->text->title).c_str(),
                         MB_OK | MB_ICONINFORMATION);
             return TRUE;
+        case kMods:  // nothing to manage yet; OK goes back to the choices
+            MessageBoxW(dialog, L"Coming Soon!", L"Mods", MB_OK | MB_ICONINFORMATION);
+            return TRUE;
         case IDCANCEL:  // also Esc and the title bar's X
             state->picked = {};
             EndDialog(dialog, IDCANCEL);
@@ -343,7 +349,7 @@ Picked Show(const Text& text, const std::string& problem) {
     t.Dword(0);      // help ID
     t.Dword(WS_EX_APPWINDOW);  // a taskbar button, though nothing owns it
     t.Dword(DS_SHELLFONT | DS_MODALFRAME | DS_SETFOREGROUND | WS_POPUP | WS_CAPTION | WS_SYSMENU);
-    t.Word(10);      // items
+    t.Word(11);      // items
     t.Word(0);       // x, y, cx, cy: Layout() sizes and centres it
     t.Word(0);
     t.Word(kWidth);
@@ -362,6 +368,7 @@ Picked Show(const Text& text, const std::string& problem) {
     t.Item(kIso, kButtonClass, BS_DEFPUSHBUTTON | WS_TABSTOP | WS_GROUP, L"&Open ISO");
     t.Item(kOr, kStaticClass, SS_CENTER | SS_NOPREFIX, L"or");
     t.Item(kFolder, kButtonClass, BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, L"Open &Extracted Disc Folder");
+    t.Item(kMods, kButtonClass, BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, L"&Mods");
     t.Item(kLine, kStaticClass, SS_ETCHEDHORZ, L"");
     t.Item(kHelp, kButtonClass, BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, L"&Help");
     t.Item(IDCANCEL, kButtonClass, BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, L"Cancel");

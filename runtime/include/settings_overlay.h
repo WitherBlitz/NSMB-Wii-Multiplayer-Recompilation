@@ -58,6 +58,18 @@ const char* RunningGraphicsApi() noexcept;
 // Off by default. Saved to Config.toml.
 void SetVSync(bool enabled) noexcept;
 bool VSync() noexcept;
+// Battery Saver: the game keeps its 60 steps a second but draws and presents every other one, so the
+// screen shows 30 FPS (DisplaySettings' dSys_c::execute port). Frame interpolation is off while it is
+// on. Off by default. Saved to Config.toml.
+void SetBatterySaver(bool enabled) noexcept;
+bool BatterySaver() noexcept;
+// Battery Saver on and not paused: lockstep (LAN) play draws every frame, as every peer must run the
+// same guest code.
+bool BatterySaverActive() noexcept;
+// A frame went undrawn (its draw lists left out): the next display copy (GXCopyDisp) would show an empty
+// picture, so it is dropped and the screen keeps the last one.
+void MarkUndrawnFrame() noexcept;
+bool TakeUndrawnFrame() noexcept;
 // Fullscreen: 0 off (a window), 1 borderless, 2 exclusive (the display's own mode). Applied at once;
 // saved to Config.toml. Desktop only: Android is always fullscreen.
 void SetFullscreen(int mode) noexcept;

@@ -4,6 +4,7 @@
 #include "hle_stubs.h"
 #include "memory.h"
 #include "runtime_log.h"
+#include "settings_overlay.h"
 
 #include <dolphin/gx/GXAurora.h>
 #include <dolphin/vi.h>
@@ -367,3 +368,132 @@ extern "C" void CrapUpPositions_800b32e0(uint32_t out, uint32_t in) {
     Memory::WriteFloat32(out, centreX + offset);
 }
 PPC_NATIVE_OVERRIDE_VOID(800B32E0, CrapUpPositions_800b32e0, (uint32_t out, uint32_t in), (out, in));
+
+// 0x800E4E40 dSys_c::execute: the game's frame, ported call for call from the translated function,
+// so Battery Saver can leave the drawing out of every other frame. The game keeps its 60 steps a
+// second: everything from m2d::reset on (and m3d::calcMaterial, dPad::beginPad_BR, m3d::reset before
+// it) runs every frame, and only the draw lists (painter, the fader's draw) are left out. What that
+// leaves out only draws: painter is the m2d list (d2d::draw), the 2D and 3D the frame's fManager_c draw
+// pass entered, and it is reset after endRender either way; particles (dLastActor_c::execute), layout
+// animations (m2d::Simple_c::calc), the depth blur's shimmer (dCaptureMng_c::execute) and the faders
+// and wipes (dFader_c::calc; their draw only enters a layout) all advance in the logic half.
+// beginRender and endRender still run: EGG::AsyncDisplay's next beginFrame copies and swaps the XFB
+// as after any frame (left out, it turned the VI black on the XFB it never filled). That copy would show
+// an empty picture, so hle/gx/gx_copy.cpp drops it (TakeUndrawnFrame) and the VI keeps the last one.
+namespace {
+
+// The game's globals, below r13 (SMNE01 rev 1).
+constexpr uint32_t kSdaGraph = 22312;       // dGraph_c::ms_Instance
+constexpr uint32_t kSdaGameKey = 22320;     // dGameKey_c::m_instance
+constexpr uint32_t kSdaDvdErr = 21480;      // dDvdErr_c::m_pInstance
+constexpr uint32_t kSdaHbm = 21452;         // dHbm::Manage_c's instance
+constexpr uint32_t kSdaReset = 21460;       // dReset::Manage_c's instance
+constexpr uint32_t kSdaDylinkPhase = 21984; // dSys_c's myDylinkInitPhase (sPhase_c)
+constexpr uint32_t kSdaExeFrame = 21268;    // cCounter_c::m_exeFrame
+constexpr uint32_t kSdaGameFrame = 21272;   // cCounter_c::m_gameFrame
+constexpr uint32_t kDvdErrOccurred = 0x04u; // dDvdErr_c: isErrorOccured's byte
+// dHbm::Manage_c's state: 0 before Load, 1 the game running, 3 opening (this frame's Calculate runs
+// MenuInit, which captures this frame's picture as the menu's background), 2 open.
+constexpr uint32_t kHbmState = 0x1D0u;
+constexpr uint32_t kHbmOpen = 2u;
+constexpr uint32_t kResetModeProc = 0x08u;  // dReset::Manage_c::mModeProc, 0 = NORMAL
+constexpr uint32_t kPhaseDone = 2u;         // sPhase_c::DONE
+
+// A bl from dSys_c::execute: the callee returns to `returnAddress` (its saved LR).
+template <uint32_t Target>
+void Call(CpuContext* ctx, uint32_t returnAddress) {
+    ctx->lr = returnAddress;
+    InvokeDirectCpu<Target>(ctx);
+}
+
+// Battery Saver: whether this frame goes undrawn. Every other frame while the game simply runs: never
+// with the HOME Menu opening or open, a disc error showing or a reset under way, nor in LAN play.
+bool UndrawnFrame(uint32_t r13, bool dvdErr) {
+    static bool s_drewLast = true;
+    const bool undrawn = s_drewLast && settings_overlay::BatterySaverActive() && !dvdErr &&
+                         Memory::Read32(Memory::Read32(r13 - kSdaHbm) + kHbmState) < kHbmOpen &&
+                         Memory::Read32(Memory::Read32(r13 - kSdaReset) + kResetModeProc) == 0;
+    s_drewLast = !undrawn;
+    return undrawn;
+}
+
+void SysExecute_800e4e40(CpuContext* ctx) {
+    const uint32_t r13 = ctx->gpr[13];
+    const auto instance = [r13](uint32_t sda) { return Memory::Read32(r13 - sda); };
+    const auto counterAdd = [r13](uint32_t sda) { Memory::Write32(r13 - sda, Memory::Read32(r13 - sda) + 1); };
+    // Its 16-byte frame, the caller's LR where the game saves it.
+    const uint32_t sp = ctx->gpr[1];
+    const uint32_t lr = ctx->lr;
+    Memory::Write32(sp - 16, sp);
+    Memory::Write32(sp + 4, lr);
+    ctx->gpr[1] = sp - 16;
+
+    const bool dvdErr = Memory::Read8(instance(kSdaDvdErr) + kDvdErrOccurred) != 0;
+    bool inHbm = Memory::Read32(instance(kSdaHbm) + kHbmState) == kHbmOpen;
+    Call<0x800E46E0u>(ctx, 0x800E4E78u);  // dSys_c::beginFrame
+    Call<0x80164D50u>(ctx, 0x800E4E7Cu);  // m3d::calcMaterial
+    Call<0x800D0610u>(ctx, 0x800E4E80u);  // dPad::beginPad_BR
+    Call<0x80164EC0u>(ctx, 0x800E4E84u);  // m3d::reset
+    const bool undrawn = UndrawnFrame(r13, dvdErr);
+    Call<0x800E4660u>(ctx, 0x800E4E88u);  // dSys_c::beginRender
+    if (!inHbm && !dvdErr && !undrawn) {
+        ctx->gpr[3] = instance(kSdaGraph);
+        Call<0x800B64E0u>(ctx, 0x800E4EA0u);  // dGraph_c::painter
+        Call<0x800B0B20u>(ctx, 0x800E4EA4u);  // dFader_c::draw
+    }
+    ctx->gpr[3] = instance(kSdaHbm);
+    Call<0x80109730u>(ctx, 0x800E4EACu);  // dHbm::Manage_c::DrawMenu
+    ctx->gpr[3] = instance(kSdaReset);
+    Call<0x80108130u>(ctx, 0x800E4EB4u);  // dReset::Manage_c::Draw
+    ctx->gpr[3] = instance(kSdaDvdErr);
+    Call<0x80107460u>(ctx, 0x800E4EBCu);  // dDvdErr_c::draw
+    ctx->gpr[3] = instance(kSdaHbm);
+    Call<0x801097F0u>(ctx, 0x800E4EC4u);  // dHbm::Manage_c::DrawIcon
+    Call<0x800E4680u>(ctx, 0x800E4EC8u);  // dSys_c::endRender
+    if (undrawn) {
+        settings_overlay::MarkUndrawnFrame();
+    }
+    if (!inHbm) {
+        Call<0x80163170u>(ctx, 0x800E4ED4u);  // m2d::reset
+        Call<0x80164E70u>(ctx, 0x800E4ED8u);  // m3d::clear
+    }
+    ctx->gpr[3] = instance(kSdaDvdErr);
+    Call<0x801076B0u>(ctx, 0x800E4EE0u);  // dDvdErr_c::execute
+    const bool dvdErrNew = Memory::Read8(instance(kSdaDvdErr) + kDvdErrOccurred) != 0;
+    if (dvdErrNew && !dvdErr) {
+        ctx->gpr[3] = 1;
+        Call<0x801BE2F0u>(ctx, 0x800E4F04u);  // VIEnableDimming(TRUE)
+    }
+    ctx->gpr[3] = instance(kSdaHbm);
+    Call<0x80109660u>(ctx, 0x800E4F0Cu);  // dHbm::Manage_c::Calculate
+    ctx->gpr[3] = instance(kSdaReset);
+    Call<0x801080F0u>(ctx, 0x800E4F14u);  // dReset::Manage_c::Calculate
+    inHbm = Memory::Read32(instance(kSdaHbm) + kHbmState) == kHbmOpen;
+    Call<0x800DC480u>(ctx, 0x800E4F2Cu);  // dRemoconMng_c::execute
+    Call<0x80102140u>(ctx, 0x800E4F30u);  // dScStage_c::play
+    ctx->gpr[3] = instance(kSdaGameKey);
+    Call<0x800B5AB0u>(ctx, 0x800E4F38u);  // dGameKey_c::read
+    Call<0x8006A130u>(ctx, 0x800E4F3Cu);  // dAudio::updateBgmInfo
+    if (!inHbm && !dvdErrNew) {
+        ctx->gpr[3] = r13 - kSdaDylinkPhase;
+        ctx->gpr[4] = 0;
+        Call<0x8015F620u>(ctx, 0x800E4F58u);  // sPhase_c::callMethod(nullptr)
+        if (ctx->gpr[3] == kPhaseDone) {
+            Call<0x800E1DE0u>(ctx, 0x800E4F64u);  // dScene_c::createNextScene
+            Call<0x80162E10u>(ctx, 0x800E4F68u);  // fManager_c::mainLoop
+            counterAdd(kSdaExeFrame);
+        }
+        Call<0x800B0B00u>(ctx, 0x800E4F78u);  // dFader_c::calc
+    }
+    Call<0x800E4820u>(ctx, 0x800E4F7Cu);  // dSys_c::calcAudio
+    Call<0x800D08A0u>(ctx, 0x800E4F80u);  // dPad::endPad_BR
+    Call<0x800E4740u>(ctx, 0x800E4F84u);  // dSys_c::endFrame
+    counterAdd(kSdaGameFrame);
+
+    ctx->gpr[1] = sp;
+    ctx->lr = lr;
+}
+
+} // namespace
+
+PPC_NATIVE_OVERRIDE_VOID(800E4E40, SysExecute_800e4e40, (CpuContext* ctx), (ctx));

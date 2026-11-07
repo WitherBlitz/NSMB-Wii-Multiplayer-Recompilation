@@ -13,6 +13,7 @@
 #include "aurora_events.h"
 #include "hle_stubs.h"
 #include "display_settings.h"
+#include "game_folder.h"
 #include "key_caps.h"
 #include "prompt_style.h"
 #include "test_pad.h"
@@ -104,6 +105,7 @@ struct Ui {
     // Opened by the pause window's own Settings button (hle/nsmbw_menu_settings.cpp): shown once the
     // pause window has closed, and that window opens again when it closes.
     bool settingsFromGameButton = false;
+    bool settingsFromMapButton = false;  // ... by the world map's menu's: the menu opens again after
     bool settingsWaitGame = false;
 };
 
@@ -113,7 +115,6 @@ Ui g_ui;
 double g_settingsOpenedAt = -10.0;
 bool g_settingsClosing = false;
 double g_settingsClosingAt = -10.0;
-double g_settingsClosedAt = -10.0;  // when it last finished closing (the map menu's reopen guard)
 float g_settingsFit = 1.0f;  // the Settings window's scale to fit across a narrow screen (DrawSettings)
 // The settings window closed: the pause window's Settings button gets the cursor back (below).
 void NotifySettingsClosed();
@@ -670,6 +671,14 @@ void PauseButton(const Canvas& c, int key, const std::string& label, float x, fl
     }
     p.textScale["T_tuzukeru_00"] = size / 32.0f;
     p.textScale["T_tuzukeru_01"] = size / 32.0f;
+    // A short button (the Video tab's packed rows) keeps the art's white lower edge at its full
+    // height, so letters centred on the button sit on it and read as cut off: they move up by a share
+    // of the height the button lost.
+    if (h < 34.0f) {
+        const float lift = (baseH - h) * 0.12f;
+        p.paneOffset["T_tuzukeru_00"] = {0.0f, lift};
+        p.paneOffset["T_tuzukeru_01"] = {0.0f, lift};
+    }
     if (!enabled) {
         p.alpha *= 0.6f;
         p.vertexTint["P_SBBase_00"] = 0x9A9A9AFFu;
@@ -1529,13 +1538,18 @@ void DrawFileBack(const Canvas& c) {
 constexpr float kScales[] = {0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f};
 std::atomic<bool> g_settingsChanged{false};
 std::atomic<bool> g_touchControlsToggled{false};  // the Keybinds tab's Touch Controls, since the last take  // the Android app copies them into its own settings
-enum SettingsTab { kTabVideo, kTabAudio, kTabKeybinds, kTabGameplay, kTabLanguage };
+// Mods, the last tab, only on the original game (GameFolder::RetailDisc): a modded disc has none.
+enum SettingsTab { kTabVideo, kTabAudio, kTabKeybinds, kTabGameplay, kTabLanguage, kTabMods };
 int g_settingsTab = kTabVideo;
-constexpr int kSettingsTabs = 5;
+constexpr int kMaxSettingsTabs = 6;
+
+int SettingsTabs() {
+    return GameFolder::RetailDisc() ? kMaxSettingsTabs : kMaxSettingsTabs - 1;
+}
 
 // Cursor rows. Video: 0 tabs, 1 resolution (Native the last choice), 2 fullscreen, then renderer,
-// V-Sync, Performance Monitor (FPS counter and frametime graph), spinning coins, depth blur and OK,
-// one a row.
+// V-Sync, Performance Monitor (FPS counter and frametime graph), spinning coins, depth blur and
+// Battery Saver, one a row.
 // Keybinds: 0 tabs, 1-12
 // the controls (two columns of six), 13 Reset Defaults, 14 OK.
 // V-Sync is a Windows and Android row (both can lock the game's clock to the display; on Android the
@@ -1557,7 +1571,8 @@ constexpr int kVideoVSync = kVSyncRow ? kVideoRenderer + 1 : -1;
 constexpr int kVideoGraph = (kVSyncRow ? kVideoVSync : kVideoRenderer) + 1;
 constexpr int kVideoCoins = kVideoGraph + 1;
 constexpr int kVideoDepthBlur = kVideoCoins + 1;
-constexpr int kVideoLast = kVideoDepthBlur;  // the window closes from its prompt line, not an OK button
+constexpr int kVideoBatterySaver = kVideoDepthBlur + 1;
+constexpr int kVideoLast = kVideoBatterySaver;  // the window closes from its prompt line, not an OK button
 constexpr const char* kFullscreenNames[] = {"Off", "Borderless", "Exclusive"};
 // The renderers to pick from ([video] graphics_api, the names main.cpp maps to aurora's backends);
 // Automatic tries them best first and falls back down the list.
@@ -1825,22 +1840,38 @@ const char* TabHelp() {
                : settings_overlay::ControllerConnected() ? "Which controller buttons play the Wii Remote's buttons."
                                                           : "Which keys play the Wii Remote's buttons.";
     case kTabGameplay: return "Optional helpers; LAN play always keeps the game's own rules.";
+    case kTabMods: return "Mods that change the game.";
     default: return "The language of the game's text and these menus.";
     }
 }
 
 void DrawSettingsTabs(const Canvas& c) {
     const float y = kSettingsTabsY;
-    const char* names[kSettingsTabs] = {"Video", "Audio",
-                                        settings_overlay::ControllerConnected() ? "Controller"
-                                        : kTouchToggle                          ? "Controls"
-                                                                                : "Keybinds",
-                                        "Gameplay", "Language"};
-    for (int tab = 0; tab < kSettingsTabs; ++tab) {
-        const float x = (tab - 2.0f) * 138.0f;
-        PauseButton(c, kTabKey + tab, names[tab], x, y, 128, 40, SettingsRow() == 0 && g_settingsTab == tab, true, 23.0f,
-                    g_settingsTab == tab, 0.0f);
-        AddHitEvent(x, y, 136, 52, 0, kEvTab0 << tab);
+    const char* names[kMaxSettingsTabs] = {"Video", "Audio",
+                                           settings_overlay::ControllerConnected() ? "Controller"
+                                           : kTouchToggle                          ? "Controls"
+                                                                                   : "Keybinds",
+                                           "Gameplay", "Language", "Mods"};
+    // Five tabs 128 wide, 138 apart; six (with Mods) 104 wide, 114 apart, so they fit the same span.
+    const int tabs = SettingsTabs();
+    const float step = tabs == kMaxSettingsTabs ? 114.0f : 138.0f;
+    // Every tab's name at one size, the largest the longest fits (PauseButton's own fit, for all).
+    float size = 23.0f;
+    if (Assets& a = GetAssets(); GameLayout::FontReady(a.message.get())) {
+        for (int tab = 0; tab < tabs; ++tab) {
+            const std::u16string text = Utf16(UiText::Tr(names[tab]));
+            const float room = step - 10.0f - 24.0f, width = GameLayout::MeasureText(*a.message, text, size);
+            const float spacing = 2.0f * static_cast<float>(text.size() - 1);
+            if (width + spacing > room && width > 0.0f) {
+                size *= std::max(0.3f, (room - spacing) / width);
+            }
+        }
+    }
+    for (int tab = 0; tab < tabs; ++tab) {
+        const float x = (tab - (tabs - 1) / 2.0f) * step;
+        PauseButton(c, kTabKey + tab, names[tab], x, y, step - 10.0f, 40, SettingsRow() == 0 && g_settingsTab == tab, true,
+                    size, g_settingsTab == tab, 0.0f);
+        AddHitEvent(x, y, step - 2.0f, 52, 0, kEvTab0 << tab);
     }
     Rule(c, -kSettingsWidth / 2 + 14.0f, kSettingsWidth / 2 - 14.0f, kSettingsTabsRuleY);
 }
@@ -1975,6 +2006,13 @@ void DrawLanguageTab(const Canvas& c) {
     }
 }
 
+// The Mods tab: nothing to pick yet, only the word, centred between the tabs' rule and the help line.
+// Cursor rows: 0, the tabs.
+void DrawModsTab(const Canvas& c) {
+    Text(c, "Coming Soon!", 0, (kSettingsTabsRuleY + kSettingsNoteY) / 2);
+    HelpLine(c, TabHelp());
+}
+
 // The Gameplay tab (gameplay_options.cpp applies it): No Time Limit and Infinite Lives, and Power-Up:
 // left and right pick one, a press gives it to P1 (in a course or on the world map at once; from the
 // title screen or the file select once the game is on), and on Android the on-screen Cheat Button. LAN
@@ -2050,20 +2088,24 @@ bool HandleCheatAsk(bool left, bool right, bool confirm, bool back) {
 
 // The Gameplay tab's rows: one setting a row, between the tabs and the hint line, spaced as the Video
 // tab's were before Depth Blur (Resolution, Fullscreen on the desktop, Renderer, V-Sync on Windows and
-// Android, Performance Monitor and Spinning Coins). The Video tab has one row more (Depth Blur).
+// Android, Performance Monitor and Spinning Coins). The Video tab has two rows more (Depth Blur and
+// Battery Saver).
 constexpr int kRows = 4 + (kFullscreenRow ? 1 : 0) + (kVSyncRow ? 1 : 0);
 // A row's buttons leave room for their frames (W_SButton reaches 5 units past the button above and
-// below), so one row's never touches the next's.
-constexpr float RowStep(int rows) { return rows >= 7 ? 37.0f : rows == 6 ? 42.0f : 48.0f; }
+// below), so one row's never touches the next's. Eight rows (the Video tab on Windows) fill the room
+// between the tabs' rule and the help line.
+constexpr float RowStep(int rows) { return rows >= 8 ? 32.0f : rows == 7 ? 37.0f : rows == 6 ? 42.0f : 48.0f; }
 constexpr float RowH(int rows) { return RowStep(rows) - 11.0f; }
-constexpr float RowsTop(int rows) { return rows >= 7 ? 98.0f : rows == 6 ? 96.0f : 91.0f; }
-constexpr float RowLabelSize(int rows) { return rows >= 7 ? 24.0f : 26.0f; }
-constexpr float RowButtonSize(int rows) { return rows >= 7 ? 24.0f : rows == 6 ? 27.0f : 30.0f; }
+constexpr float RowsTop(int rows) { return rows >= 8 ? 100.0f : rows == 7 ? 98.0f : rows == 6 ? 96.0f : 91.0f; }
+constexpr float RowLabelSize(int rows) { return rows >= 8 ? 22.0f : rows == 7 ? 24.0f : 26.0f; }
+constexpr float RowButtonSize(int rows) {
+    return rows >= 8 ? 20.0f : rows == 7 ? 24.0f : rows == 6 ? 27.0f : 30.0f;
+}
 constexpr float RowsNoteY(int rows) { return rows >= 7 ? -136.0f : rows == 6 ? -133.0f : -126.0f; }
 constexpr float kRowH = RowH(kRows), kRowStep = RowStep(kRows), kRowsTop = RowsTop(kRows);
 constexpr float kRowLabelSize = RowLabelSize(kRows), kRowButtonSize = RowButtonSize(kRows);
 constexpr float kRowsNoteY = RowsNoteY(kRows);
-constexpr int kVideoRows = kRows + 1;
+constexpr int kVideoRows = kRows + 2;
 
 void DrawGameplayTab(const Canvas& c) {
     const int row = SettingsRow();
@@ -2210,6 +2252,7 @@ void DrawVideoTab(const Canvas& c) {
     }
     toggle("Spinning Coins", settings_overlay::SpinningCoins(), kVideoCoins);
     toggle("Depth Blur", settings_overlay::DepthBlur(), kVideoDepthBlur);
+    toggle("Battery Saver", settings_overlay::BatterySaver(), kVideoBatterySaver);
     const bool match = shown.scale <= 0.0f;
     const char* hint = match ? "The screen's own resolution, filling the whole screen."
                        : shown.sixteenTen ? "For a 16:10 screen: fills it, with a slightly narrower view."
@@ -2231,6 +2274,7 @@ void DrawVideoTab(const Canvas& c) {
                        : g_ui.cursor == kVideoCoins ? "Animates coins and blocks; off saves a little GPU work."
                        : g_ui.cursor == kVideoDepthBlur ? "The blur and heat haze of desert, beach, water and lava areas."
                        : g_ui.cursor == kVideoVSync ? "No tearing: frames wait for the display, the game keeps its pace."
+                       : g_ui.cursor == kVideoBatterySaver ? "Runs at 30FPS instead of 60FPS; pauses during LAN Play."
                                                     : hint;
     HelpLine(c, note);
 }
@@ -2398,11 +2442,8 @@ float SettingsWindowScale(bool& closed) {
         closed = true;
         return 0.0f;
     }
-    if (!g_settingsClosing && frame >= anim.Frames() - 1.0f) {
-        return 1.0f;  // opened: full size (sampling at or past the last frame could wrap to the tiny first one)
-    }
     GameLayout::DrawParams p;
-    anim.Apply(std::clamp(frame, 0.0f, anim.Frames() - 1.0f), a.pause, p, {{"N_pauseMenu_00", "N_pauseMenu_00"}});
+    anim.Apply(std::min(frame, anim.Frames()), a.pause, p, {{"N_pauseMenu_00", "N_pauseMenu_00"}});
     const auto it = p.paneScale.find("N_pauseMenu_00");
     return it != p.paneScale.end() ? std::clamp(it->second, 0.0f, 1.2f) : 1.0f;
 }
@@ -2463,6 +2504,8 @@ void DrawSettings(const Canvas& outer) {
         DrawKeybindsTab(c);
     } else if (g_settingsTab == kTabGameplay) {
         DrawGameplayTab(c);
+    } else if (g_settingsTab == kTabMods) {
+        DrawModsTab(c);
     } else {
         DrawLanguageTab(c);
     }
@@ -2481,7 +2524,10 @@ void NotifySettingsClosed() {
         g_ui.settingsFromGameButton = false;
         MenuSettings::ReopenPauseWindow();
     }
-    MenuSettings::ReopenMapMenu();  // only taken while the map's menu waits for the window (no-op otherwise)
+    if (g_ui.settingsFromMapButton) {
+        g_ui.settingsFromMapButton = false;
+        MenuSettings::ReopenMapMenu();
+    }
 }
 
 // Closing: the back sound, then outWindow (DrawSettings ends it with FinishCloseSettings).
@@ -2499,7 +2545,6 @@ void CloseSettings() {
 
 void FinishCloseSettings() {
     g_settingsClosing = false;
-    g_settingsClosedAt = ImGui::GetTime();
     Show(Screen::None);
     NotifySettingsClosed();
     if (g_ui.settingsFromPause) {
@@ -2570,10 +2615,10 @@ void HandleSettingsInput(bool left, bool right, bool up, bool down, bool confirm
     int& cursor = g_ui.cursor;
     if (cursor == 0) {
         if (left || right) {
-            g_settingsTab = std::clamp(g_settingsTab + (left ? -1 : 1), 0, kSettingsTabs - 1);
+            g_settingsTab = std::clamp(g_settingsTab + (left ? -1 : 1), 0, SettingsTabs() - 1);
         } else if (confirm) {
-            g_settingsTab = (g_settingsTab + 1) % kSettingsTabs;
-        } else if (down) {
+            g_settingsTab = (g_settingsTab + 1) % SettingsTabs();
+        } else if (down && g_settingsTab != kTabMods) {  // Mods has no rows
             cursor = 1;
         } else if (back) {
             CloseSettings();
@@ -2582,6 +2627,10 @@ void HandleSettingsInput(bool left, bool right, bool up, bool down, bool confirm
     }
     if (back) {
         CloseSettings();
+        return;
+    }
+    if (g_settingsTab == kTabMods) {
+        cursor = 0;
         return;
     }
     if (g_settingsTab == kTabVideo) {
@@ -2613,6 +2662,9 @@ void HandleSettingsInput(bool left, bool right, bool up, bool down, bool confirm
             g_settingsChanged = true;
         } else if ((confirm || left || right) && cursor == kVideoDepthBlur) {
             settings_overlay::SetDepthBlur(!settings_overlay::DepthBlur());
+            g_settingsChanged = true;
+        } else if ((confirm || left || right) && cursor == kVideoBatterySaver) {
+            settings_overlay::SetBatterySaver(!settings_overlay::BatterySaver());
             g_settingsChanged = true;
         }
         return;
@@ -2929,7 +2981,7 @@ void HandleEvents(const NetplayLobby::Snapshot& lobby) {
     g_ui.events = 0;
     const bool left = ev & kEvLeft, right = ev & kEvRight, up = ev & kEvUp, down = ev & kEvDown;
     const bool confirm = ev & kEvConfirm, back = ev & kEvBack;
-    for (int tab = 0; tab < kSettingsTabs; ++tab) {
+    for (int tab = 0; tab < SettingsTabs(); ++tab) {
         if ((ev & (kEvTab0 << tab)) != 0 && g_ui.screen == Screen::Settings && !g_settingsClosing) {
             if (g_settingsTab != tab) {
                 settings_overlay::PlayGameSound(settings_overlay::kGameSoundPage);
@@ -2943,7 +2995,7 @@ void HandleEvents(const NetplayLobby::Snapshot& lobby) {
     const int shoulder = settings_overlay::ControllerShoulderPressed();
     if (shoulder != 0 && g_ui.screen == Screen::Settings && Keybinds::Capturing() < 0 &&
         settings_overlay::ControllerCapturing() < 0 && g_cheatAsk == CheatAsk::None) {
-        g_settingsTab = (g_settingsTab + shoulder + kSettingsTabs) % kSettingsTabs;
+        g_settingsTab = (g_settingsTab + shoulder + SettingsTabs()) % SettingsTabs();
         g_ui.cursor = 0;
         settings_overlay::PlayGameSound(settings_overlay::kGameSoundPage);
         return;
@@ -3537,7 +3589,8 @@ void DirectAddressEntered(const std::string& address) {
 }
 
 bool TakeSettingsChange(float& renderScale, bool& showFps, int& aspect, bool& spinningCoins, bool& frameGraph,
-                        bool& vsync, int& frameGraphSize, int& touchControls, int& renderer, bool& depthBlur) {
+                        bool& vsync, int& frameGraphSize, int& touchControls, int& renderer, bool& depthBlur,
+                        bool& batterySaver) {
     if (!g_settingsChanged.exchange(false)) {
         return false;
     }
@@ -3546,6 +3599,7 @@ bool TakeSettingsChange(float& renderScale, bool& showFps, int& aspect, bool& sp
     aspect = settings_overlay::Aspect();
     spinningCoins = settings_overlay::SpinningCoins();
     depthBlur = settings_overlay::DepthBlur();
+    batterySaver = settings_overlay::BatterySaver();
     frameGraph = settings_overlay::FrameGraph();
     vsync = settings_overlay::VSync();
     frameGraphSize = settings_overlay::FrameGraphSize();
@@ -3915,20 +3969,13 @@ void Draw() {
             DumpPanesOnce(GameMenus::PauseWindowObject(), "pause");
         }
     }
-    // The world map's menu with its own Settings button (patched layout): the settings window over it.
+    // The world map's menu with its own Settings button (patched layout): the settings window once the
+    // menu has gone out, and the menu opens again when it closes.
     const bool mapButton = MenuSettings::MapButtonActive();
     if (MenuSettings::TakeMapOpenRequest()) {
-        // The game's menu stays on Settings under the window, so what's left of the tap or press that
-        // opened it can reach the menu again: it reopened the window as it closed, so it flashed small
-        // (just starting to open) over and over. One open at a time, none just after a close, and the
-        // rest of the tap is dropped so it can't press anything in the window.
-        if (g_ui.screen != Screen::Settings && ImGui::GetTime() - g_settingsClosedAt > 0.5) {
-            if (g_nav.kind != NavKind::MapWalk) {
-                g_nav.kind = NavKind::None;
-            }
-            g_ui.settingsFromPause = true;
-            Show(Screen::Settings);
-        }
+        g_ui.settingsFromPause = true;
+        g_ui.settingsFromMapButton = true;
+        Show(Screen::Settings);
     }
     if (scene == kSceneWorldMap) {
         if (!mapButton) {
@@ -4030,6 +4077,8 @@ void Draw() {
             g_pointerInUse = true;
         }
         if (tapX >= 0.0f) {
+            RT_LOGF(RT_TAG_RUNTIME, "tap: %s at %.0f,%.0f px, screen %s\n", (tap >> 63) != 0 ? "app" : "mouse", tapX,
+                    tapY, ScreenName(g_ui.screen));
             const GameLayout::View view = GameLayout::GameView();
             TapAt((tapX - view.centerX) / view.scale, (view.centerY - tapY) / view.scale,
                   (tapX - view.centerX) / view.gameScaleX, scene, title || attract);

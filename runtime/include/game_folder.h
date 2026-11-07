@@ -40,4 +40,9 @@ std::optional<Offer> For(std::string_view id, int revision);
 // Returns false when the player gave up (the program then quits).
 bool EnsureConfigured();
 
+// Whether the game being played is the original, unchanged: a retail disc ID (SMNE01, SMNP01,
+// SMNJ01) and the main.dol that disc came with. A modded disc (Newer and the like) isn't. Worked out
+// once, at the first call (main.cpp makes it at startup, once the folder is known).
+bool RetailDisc();
+
 } // namespace GameFolder

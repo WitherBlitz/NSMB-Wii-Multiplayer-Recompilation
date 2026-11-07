@@ -6,6 +6,8 @@
 #include "runtime_product.h"
 #include "wii_disc.h"
 
+#include <cryptopp/sha.h>
+
 #include <cctype>
 #include <chrono>
 #include <fstream>
@@ -377,6 +379,68 @@ std::string Problem(const fs::path& root) {
         }
     }
     return {};
+}
+
+namespace {
+// Each retail disc's main.dol, as projects/nsmbw/variants/variants.toml pins it (main_dol_sha256).
+// The Japanese disc has none pinned yet, so it never counts as retail until one is added here.
+struct RetailDol {
+    const char* id;
+    const char* sha256;
+};
+constexpr RetailDol kRetailDols[] = {
+    {"SMNE01", "6d755ec24c395fee600a856a85785e0e99c0b7ecb680d573a6cdd1aa6f7beee7"},  // USA rev 1
+    {"SMNP01", "51a2a8b0941e8fe3390404a9b2094e3c78246a999efa58fcc8a7c534c11d7b5b"},  // Europe rev 1
+};
+
+// A file's SHA-256 in lowercase hex; empty when it can't be read.
+std::string MainDolSha256(const fs::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        return {};
+    }
+    CryptoPP::SHA256 hash;
+    std::vector<char> buffer(1 << 16);
+    while (in) {
+        in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        if (in.gcount() > 0) {
+            hash.Update(reinterpret_cast<const CryptoPP::byte*>(buffer.data()), static_cast<size_t>(in.gcount()));
+        }
+    }
+    CryptoPP::byte digest[CryptoPP::SHA256::DIGESTSIZE];
+    hash.Final(digest);
+    static const char* hex = "0123456789abcdef";
+    std::string text;
+    for (const auto b : digest) {
+        text += hex[b >> 4];
+        text += hex[b & 15];
+    }
+    return text;
+}
+} // namespace
+
+bool RetailDisc() {
+    static const bool retail = [] {
+        const fs::path root = Find(RuntimeConfigFile::ResolvedDvdRoot());
+        if (root.empty()) {
+            return false;
+        }
+        std::ifstream boot(root / "sys" / "boot.bin", std::ios::binary);
+        char header[6] = {};
+        if (!boot.read(header, sizeof(header))) {
+            return false;
+        }
+        const std::string id(header, 6);
+        for (const RetailDol& dol : kRetailDols) {
+            if (id == dol.id) {
+                const bool same = MainDolSha256(root / "sys" / "main.dol") == dol.sha256;
+                RT_LOGF(RT_TAG_RUNTIME, "game folder: %s, %s main.dol\n", id.c_str(), same ? "the retail" : "a changed");
+                return same;
+            }
+        }
+        return false;
+    }();
+    return retail;
 }
 
 bool EnsureConfigured() {

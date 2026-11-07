@@ -56,6 +56,7 @@ struct RuntimeUserConfig {
     std::optional<bool> touchControls;  // NSMBW: [video] touch_controls, written by the Android app
     std::optional<uint32_t> frameGraphSize;  // NSMBW: [video] frame_graph_size, percent (5-200; 50 = the original size)
     std::optional<bool> vsync;          // NSMBW: [video] vsync, presents wait for the display (Windows)
+    std::optional<bool> batterySaver;   // NSMBW: [video] battery_saver, every other frame drawn (30 FPS)
     std::optional<std::string> language;  // NSMBW: [game] language, "en" "es" "fr" (the USA disc's) or "it"
     std::optional<bool> noTimeLimit;      // NSMBW: [game] no_time_limit, the course timer stands still
     std::optional<bool> infiniteLives;    // NSMBW: [game] infinite_lives, a miss costs no life
@@ -658,6 +659,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.frameGraphSize = FindConfigUint(document, "video", "frame_graph_size");
     config.touchControls = FindConfigValue<bool>(document, "video", "touch_controls");
     config.vsync = FindConfigValue<bool>(document, "video", "vsync");
+    config.batterySaver = FindConfigValue<bool>(document, "video", "battery_saver");
     if (auto value = FindConfigValue<std::string>(document, "game", "language");
         value && (*value == "en" || *value == "es" || *value == "fr" || *value == "it")) {
         config.language = *value;
@@ -1046,6 +1048,15 @@ inline bool VSync(bool fallback = false) {
 inline bool SetVSync(bool value) {
     Mutable().vsync = value;
     return WriteSetting("video", "vsync", value ? "true" : "false");
+}
+
+inline bool BatterySaver(bool fallback = false) {
+    return Get().batterySaver.value_or(fallback);
+}
+
+inline bool SetBatterySaver(bool value) {
+    Mutable().batterySaver = value;
+    return WriteSetting("video", "battery_saver", value ? "true" : "false");
 }
 
 inline bool SetShowFps(bool value) {

@@ -133,6 +133,7 @@ bool g_frameGraph = RuntimeConfigFile::FrameGraph(false) || RuntimeConfigFile::S
 bool g_touchControls = RuntimeConfigFile::TouchControls(true);
 int g_frameGraphSize = std::clamp(static_cast<int>(RuntimeConfigFile::FrameGraphSize(50)), 5, 200);
 std::atomic<bool> g_vsync{RuntimeConfigFile::VSync(false)};
+std::atomic<bool> g_batterySaver{RuntimeConfigFile::BatterySaver(false)};
 #if defined(__APPLE__)
 bool g_metalFxSpatialUpscaling = RuntimeConfigFile::MetalFxSpatialUpscaling(false);
 #endif
@@ -220,6 +221,14 @@ bool IsHighResolutionScale(float scale) {
 
 bool IsHighFrameRateMode() {
     return kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)] > 60;
+}
+
+// What aurora interpolates to: the chosen target, or none while Battery Saver is on (interpolation
+// assumes a frame every retrace, and Battery Saver presents one every other).
+uint32_t AppliedFrameInterpolationFps() {
+    return g_batterySaver.load(std::memory_order_relaxed)
+               ? 0u
+               : kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)];
 }
 
 void SetResolutionScale(float scale) {
@@ -1226,7 +1235,7 @@ void DrawGraphicsSettings() {
     }
     if (frameInterpolationModeChanged) {
         const uint32_t targetFps = kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)];
-        aurora_set_frame_interpolation_fps(targetFps);
+        aurora_set_frame_interpolation_fps(AppliedFrameInterpolationFps());
         RuntimeConfigFile::SetFrameInterpolationFps(targetFps);
         LimitResolutionForFrameRate();
         if (aurora_get_display_mode() == AURORA_DISPLAY_MODE_EXCLUSIVE) {
@@ -1750,9 +1759,8 @@ void InitializeRuntimeSettings() noexcept {
 #if defined(__APPLE__)
     aurora_set_metalfx_spatial(g_metalFxSpatialUpscaling);
 #endif
-    const uint32_t targetFps = kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)];
     LimitResolutionForFrameRate();
-    aurora_set_frame_interpolation_fps(targetFps);
+    aurora_set_frame_interpolation_fps(AppliedFrameInterpolationFps());
     AuroraSetTexturePatches(RuntimeConfigFile::SpinningCoins(true));
     aurora_set_vsync(g_vsync.load());
     aurora_set_display_mode(static_cast<AuroraDisplayMode>(g_displayMode));
@@ -1874,6 +1882,32 @@ void SetVSync(bool enabled) noexcept {
 
 bool VSync() noexcept {
     return g_vsync.load(std::memory_order_relaxed);
+}
+
+void SetBatterySaver(bool enabled) noexcept {
+    g_batterySaver.store(enabled);
+    aurora_set_frame_interpolation_fps(AppliedFrameInterpolationFps());
+    RuntimeConfigFile::SetBatterySaver(enabled);
+}
+
+bool BatterySaver() noexcept {
+    return g_batterySaver.load(std::memory_order_relaxed);
+}
+
+bool BatterySaverActive() noexcept {
+    return BatterySaver() && !DetClock::Enabled();
+}
+
+namespace {
+std::atomic<bool> g_undrawnFrame{false};
+}
+
+void MarkUndrawnFrame() noexcept {
+    g_undrawnFrame.store(true, std::memory_order_release);
+}
+
+bool TakeUndrawnFrame() noexcept {
+    return g_undrawnFrame.exchange(false, std::memory_order_acq_rel);
 }
 
 void SetFullscreen(int mode) noexcept {

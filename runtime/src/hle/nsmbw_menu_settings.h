@@ -12,11 +12,11 @@ bool TakeOpenRequest() noexcept;
 bool PauseWindowClosed() noexcept;
 // The settings window closed: the pause window opens again, Settings selected.
 void ReopenPauseWindow() noexcept;
-// The settings window opened from the world map's menu has closed: the menu opens again (Settings picked).
-void ReopenMapMenu() noexcept;
-// The world map's + menu has the Settings button; it was pressed since the last call (the settings window
-// opens over the menu, which stays up).
+// The world map's + menu has the Settings button; it was picked since the last call (the menu has gone
+// out: the settings window opens).
 bool MapButtonActive() noexcept;
 bool TakeMapOpenRequest() noexcept;
+// The settings window opened from the world map's menu has closed: the menu opens again, Settings picked.
+void ReopenMapMenu() noexcept;
 
 } // namespace MenuSettings

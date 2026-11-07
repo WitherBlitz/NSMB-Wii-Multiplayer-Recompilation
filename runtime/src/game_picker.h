@@ -1,7 +1,8 @@
 #pragma once
 
 // The first-start chooser for the game files on Windows and Linux (game_folder.cpp asks it):
-// "Open ISO", "or", "Open Extracted Disc Folder", with Help and Cancel. Windows draws it with a
+// "Open ISO", "or", "Open Extracted Disc Folder", then Mods (only "Coming Soon!" for now), with Help
+// and Cancel. Windows draws it with a
 // native dialog (game_picker_win32.cpp), Linux with an SDL window and Dear ImGui
 // (game_picker_sdl.cpp). Both run before aurora brings up the game window.
 #if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))

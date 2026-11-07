@@ -375,6 +375,8 @@ Picked Show(const Text& text, const std::string& problem) {
     const auto answer = std::make_shared<Answer>();
     bool folderAsked = false;
     bool help = false;
+    bool mods = false;   // the Mods page is up in place of the choices
+    bool focus = false;  // the page just changed: its first button takes the keyboard and gamepad
     std::string notice;
     for (;;) {
         const bool open = Pump(50);
@@ -398,6 +400,31 @@ Picked Show(const Text& text, const std::string& problem) {
         bool cancel = false;
         Frame([&] {
             const float s = g_window.scale;
+            if (mods) {
+                // Mods: nothing to manage yet. Back (or Escape) returns to the choices.
+                if (g_window.head != nullptr) {
+                    ImGui::PushFont(g_window.head);
+                }
+                ImGui::TextUnformatted("Mods");
+                if (g_window.head != nullptr) {
+                    ImGui::PopFont();
+                }
+                ImGui::Dummy(ImVec2(0, 30 * s));
+                Centred(ImGui::CalcTextSize("Coming Soon!").x);
+                ImGui::TextUnformatted("Coming Soon!");
+                ImGui::Dummy(ImVec2(0, 30 * s));
+                ImGui::Separator();
+                ImGui::Spacing();
+                if (focus) {
+                    ImGui::SetKeyboardFocusHere();
+                    focus = false;
+                }
+                if (ImGui::Button("Back") || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                    mods = false;
+                    focus = true;
+                }
+                return;
+            }
             if (!pending && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
                 cancel = true;
             }
@@ -436,6 +463,16 @@ Picked Show(const Text& text, const std::string& problem) {
                 folderAsked = true;
                 notice.clear();
                 Ask(answer, true, text.folderTitle);
+            }
+            ImGui::Dummy(ImVec2(0, 4 * s));
+            Centred(buttonWidth);
+            if (focus) {
+                ImGui::SetKeyboardFocusHere();  // back from the Mods page, on its button
+                focus = false;
+            }
+            if (ImGui::Button("Mods", ImVec2(buttonWidth, 0))) {
+                mods = true;
+                focus = true;
             }
             ImGui::EndDisabled();
             ImGui::Dummy(ImVec2(0, 10 * s));

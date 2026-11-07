@@ -10,6 +10,7 @@
 
 #include "abi_bridge.h"
 #include "runtime_log.h"
+#include "settings_overlay.h"
 
 #include <algorithm>
 #include <atomic>
@@ -83,9 +84,11 @@ int64_t HitchNanos() {
     return nanos;
 }
 
+// Battery Saver presents every other frame: the frame it leaves out is not a hitch.
 bool InHitch() {
     const int64_t last = g_lastPresentNanos.load(std::memory_order_relaxed);
-    return last != 0 && NowNanos() - last >= HitchNanos();
+    const int64_t skipped = settings_overlay::BatterySaverActive() ? int64_t{16'666'667} : int64_t{0};
+    return last != 0 && NowNanos() - last >= HitchNanos() + skipped;
 }
 
 #ifdef _WIN32
