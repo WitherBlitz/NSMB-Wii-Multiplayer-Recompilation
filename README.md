@@ -134,6 +134,7 @@ On Android, the app can open straight into the game; Back > **Start Menu** bring
 | LG V30+ (LS998) | Qualcomm Snapdragon 835 (MSM8998) | Adreno 540 | 8.0 | Not supported: needs Android 9 or newer |
 | Windows 10 PC | AMD Ryzen 5 5600G | NVIDIA GeForce RTX 5070 | - | 60 fps, LAN play with the phones |
 | Windows PC | AMD Ryzen 7 5700X3D | NVIDIA GeForce RTX 5070 Ti | - | 60 fps, LAN play |
+| Windows PC | Intel Core i5-4440 | Intel HD Graphics 4600 (integrated) | - | 60 fps, LAN play |
 
 Linux has been run on Ubuntu 26.04 and Fedora 44, both under WSL with software rendering so far: it
 boots, plays with sound, and computes the same frames as Windows for LAN play. Reports from real
@@ -189,16 +190,16 @@ The app's start screen shows these steps until a game is imported, and **Help** 
 Download from the [Releases](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases/latest)
 page:
 
-- **Android:** `NSMBW-0.4.0-android-arm64.apk`. Open it on your phone and allow installing from that
+- **Android:** `NSMBW-0.4.1-android-arm64.apk`. Open it on your phone and allow installing from that
   app when Android asks. Updates install over it and keep your saves and game files.
-- **Windows:** `NSMBW-0.4.0-windows-x64.zip`. Extract it anywhere and run `NSMBW.exe`. Settings
+- **Windows:** `NSMBW-0.4.1-windows-x64.zip`. Extract it anywhere and run `NSMBW.exe`. Settings
   (including where your game files are), saves and caches live in `Documents\MarioWiiSaveData`, so a
   new version, extracted anywhere, carries on where the last one left off. The first start of 0.0.8 or
   later takes over the data of an older version extracted in the same folder (or of the version it
   replaces). On a processor without AVX2 (older than Intel Haswell or AMD Excavator), `NSMBW.exe`
   starts `compat\NSMBW-compat.exe` by itself: the same game, with its math done the long way, so it
   still plays LAN games with everyone else. Keep the `compat` folder next to `NSMBW.exe`.
-- **Linux:** `NSMBW-0.4.0-linux-x86_64.tar.gz`. Extract it anywhere and run `./NSMBW`. The first start
+- **Linux:** `NSMBW-0.4.1-linux-x86_64.tar.gz`. Extract it anywhere and run `./NSMBW`. The first start
   asks for the extracted game folder (with zenity or kdialog; or put the folder next to `NSMBW`,
   named `game`). Settings, saves and caches live in `~/.local/share/WiiCompiled`
   (`$XDG_DATA_HOME/WiiCompiled` if set). Older processors get `compat/NSMBW-compat` automatically, as
@@ -331,7 +332,7 @@ Open an issue with your device, what you did, and the log from `Documents\MarioW
 (Windows) or `~/.local/share/WiiCompiled/Logs` (Linux).
 
 **Is it done?**
-No, this is 0.4.0. It boots and plays on the tested devices, but not every level has been checked,
+No, this is 0.4.1. It boots and plays on the tested devices, but not every level has been checked,
 and rendering, performance and LAN play are still being worked on.
 
 ## AI usage
@@ -367,6 +368,12 @@ Bundled third-party components and their licenses live in
 This project is free software: you can redistribute it and/or modify it under the terms of the
 [GNU General Public License, version 3](LICENSE) as published by the Free Software Foundation, like
 WiiCompiled, which it is based on.
+
+**Credit is required.** Under section 7(b) of the GPLv3, if you use this project's own code, you
+must credit WitherBlitz in your project's README, with a link to this repository. A GitHub fork of
+this repository doesn't need to: its page already shows where it came from. If you only used this
+project as a reference, please credit it the same way. If you're making a recompilation from it,
+please make it a fork. See [`NOTICE.md`](NOTICE.md) for the exact terms.
 
 It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the
 implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public
