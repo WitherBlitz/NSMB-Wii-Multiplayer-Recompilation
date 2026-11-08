@@ -36,8 +36,9 @@ $configure = @(
     "-DCMAKE_MAKE_PROGRAM=$(ConvertTo-CMakePath (Join-Path $toolchain 'Ninja\ninja.exe'))",
     "-DCMAKE_TOOLCHAIN_FILE=$(ConvertTo-CMakePath (Join-Path $ndk 'build\cmake\android.toolchain.cmake'))",
     '-DANDROID_ABI=arm64-v8a',
-    # memfd_create (guest RAM) is in bionic from API 30.
-    '-DANDROID_PLATFORM=android-30',
+    # API 26, as every released build: the app supports Android 9 (API 28), and a library built for 30
+    # needs symbols Android 9 and 10 lack (pthread_cond_clockwait), so it would not load there.
+    '-DANDROID_PLATFORM=android-26',
     # One native library holds everything (SDL, Dawn, the game), so libc++ is linked in statically.
     '-DANDROID_STL=c++_static',
     '-DCMAKE_BUILD_TYPE=Release',
