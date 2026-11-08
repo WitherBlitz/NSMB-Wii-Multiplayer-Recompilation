@@ -100,6 +100,27 @@ projects/nsmbw/tools/build-linux.sh --game <your extracted game folder>
 The game is `../nsmbw-local-build/WiiCompiled`, with a `game` link to your extracted game beside it.
 SDL3, Dawn and the other third-party sources are fetched by CMake on the first configure.
 
+### Italian language-pack layouts
+
+The USA `SMNE01` executable does not include Italian. You can use the Italian files from your own
+NSMBW EU disc:
+
+1. Extract the EU disc with Dolphin's **Extract Entire Disc**. The language files are in
+   `files/EU/ItaEU/`.
+2. Locate the extracted USA game's `DATA` directory (the directory set as `paths.dvd_root` in
+   `Config.toml`).
+3. Copy the **contents** of the EU disc's `files/EU/ItaEU/` into
+   `<DATA>/files/EU/ItaEU/`, keeping the directory structure. For example, if the USA game is at
+   `~/Games/NSMBW/DATA`, the Italian message archive should be at
+   `~/Games/NSMBW/DATA/files/EU/ItaEU/Message/Message.arc`. Do not add another `ItaEU/` directory.
+4. Start the game, open **Settings > Language**, select **Italiano**, and restart the game.
+
+The runtime overlays the pack on the USA English files; only files present in the USA game are
+used. Because the EU layouts refer to differently named resources, the runtime adapts the internal
+resource names in `wiiStrap.arc`, `corseClear.arc` and `gameOver.arc` at startup. The originals in
+`DATA/files/EU/ItaEU/` are not modified; adapted copies are cached under `Cache/LanguageLayouts`
+beside `Config.toml`. Existing installations can still use `Languages/it/` beside `Config.toml`.
+
 ## 7. Newer Super Mario Bros. Wii
 
 [Newer Super Mario Bros. Wii](https://newerteam.com/wii/) runs on top of the USA game. Its disc

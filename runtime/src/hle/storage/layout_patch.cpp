@@ -62,11 +62,12 @@ struct U8Node {
     uint8_t type = 0;
     uint32_t nameOffset = 0;
     uint32_t a = 0, b = 0;  // file: data offset and size; folder: parent and next
+    std::string name;
     std::string path;
     std::vector<uint8_t> data;
 };
 
-bool ReadU8(const std::vector<uint8_t>& arc, std::vector<U8Node>& nodes, std::vector<uint8_t>& strings) {
+bool ReadU8(const std::vector<uint8_t>& arc, std::vector<U8Node>& nodes) {
     if (arc.size() < 0x20 || BE32(arc.data()) != 0x55AA382Du) {
         return false;
     }
@@ -80,7 +81,7 @@ bool ReadU8(const std::vector<uint8_t>& arc, std::vector<U8Node>& nodes, std::ve
     if (stringTable > arc.size() || root + headerSize > arc.size() || stringTable > root + headerSize) {
         return false;
     }
-    strings.assign(arc.begin() + stringTable, arc.begin() + root + headerSize);
+    const std::vector<uint8_t> strings(arc.begin() + stringTable, arc.begin() + root + headerSize);
     std::vector<std::pair<std::string, uint32_t>> dirs{{"", total}};
     for (uint32_t i = 0; i < total; ++i) {
         const uint8_t* n = &arc[root + i * 12];
@@ -93,6 +94,7 @@ bool ReadU8(const std::vector<uint8_t>& arc, std::vector<U8Node>& nodes, std::ve
         for (size_t k = node.nameOffset; k < strings.size() && strings[k] != 0; ++k) {
             name.push_back(static_cast<char>(strings[k]));
         }
+        node.name = name;
         while (i > 0 && dirs.size() > 1 && i >= dirs.back().second) {
             dirs.pop_back();
         }
@@ -111,8 +113,19 @@ bool ReadU8(const std::vector<uint8_t>& arc, std::vector<U8Node>& nodes, std::ve
     return true;
 }
 
-std::vector<uint8_t> WriteU8(const std::vector<U8Node>& nodes, const std::vector<uint8_t>& strings) {
+std::vector<uint8_t> WriteU8(const std::vector<U8Node>& nodes) {
     const uint32_t root = 0x20;
+    std::vector<uint8_t> strings;
+    std::vector<uint32_t> nameOffsets;
+    nameOffsets.reserve(nodes.size());
+    for (const U8Node& node : nodes) {
+        if (strings.size() > 0xFFFFFFu) {
+            return {};
+        }
+        nameOffsets.push_back(static_cast<uint32_t>(strings.size()));
+        strings.insert(strings.end(), node.name.begin(), node.name.end());
+        strings.push_back(0);
+    }
     const uint32_t headerSize = static_cast<uint32_t>(nodes.size() * 12 + strings.size());
     uint32_t dataStart = (root + headerSize + 0x1F) & ~0x1Fu;
     std::vector<uint8_t> out(dataStart, 0);
@@ -124,7 +137,7 @@ std::vector<uint8_t> WriteU8(const std::vector<U8Node>& nodes, const std::vector
     for (size_t i = 0; i < nodes.size(); ++i) {
         const U8Node& node = nodes[i];
         uint8_t* n = &out[root + i * 12];
-        Put32(n, static_cast<uint32_t>(node.type) << 24 | node.nameOffset);
+        Put32(n, static_cast<uint32_t>(node.type) << 24 | nameOffsets[i]);
         if (node.type == 1) {
             Put32(n + 4, node.a);
             Put32(n + 8, node.b);
@@ -137,6 +150,97 @@ std::vector<uint8_t> WriteU8(const std::vector<U8Node>& nodes, const std::vector
         out.resize((out.size() + 0x1F) & ~size_t{0x1F}, 0);
     }
     return out;
+}
+
+enum class ArchiveAdaptResult {
+    NotApplicable,
+    Adapted,
+    Unsupported,
+};
+
+ArchiveAdaptResult AdaptItalianArchiveEntries(const std::string& dvdPath, std::vector<uint8_t>& arc) {
+    std::map<std::string, std::string> names;
+    if (dvdPath == "/us/engus/layout/wiistrap/wiistrap.arc") {
+        names = {
+            {"wiiStrap_ItaEU_00_roop.brlan", "wiiStrap_EngUS_roop.brlan"},
+            {"wiiStrap_ItaEU_00.brlyt", "wiiStrap_EngUS.brlyt"},
+            {"ht_example_00_I.tpl", "ht_example_00_U.tpl"},
+            {"ht_example_01_I.tpl", "ht_example_01_U.tpl"},
+            {"ht_example_02_I.tpl", "ht_example_02_U.tpl"},
+        };
+    } else if (dvdPath == "/us/engus/layout/corseclear/corseclear.arc") {
+        names = {
+            {"corseClear_ItaEU_00_inText.brlan", "corseClear_EngUS_00_inText.brlan"},
+            {"corseClear_ItaEU_00_loopText.brlan", "corseClear_EngUS_00_loopText.brlan"},
+            {"corseClear_ItaEU_00_outText.brlan", "corseClear_EngUS_00_outText.brlan"},
+            {"corseClear_ItaEU_00.brlyt", "corseClear_EngUS_00.brlyt"},
+        };
+    } else if (dvdPath == "/us/engus/layout/gameover/gameover.arc") {
+        names = {
+            {"gameOver_ItaEU_00_inText.brlan", "gameOver_EngUS_00_inText.brlan"},
+            {"gameOver_ItaEU_00_loopText.brlan", "gameOver_EngUS_00_loopText.brlan"},
+            {"gameOver_ItaEU_00_outText.brlan", "gameOver_EngUS_00_outText.brlan"},
+            {"gameOver_ItaEU_00.brlyt", "gameOver_EngUS_00.brlyt"},
+        };
+    } else {
+        return ArchiveAdaptResult::NotApplicable;
+    }
+
+    std::vector<U8Node> nodes;
+    if (!ReadU8(arc, nodes)) {
+        return ArchiveAdaptResult::Unsupported;
+    }
+
+    std::set<std::string> found;
+    for (U8Node& node : nodes) {
+        if (node.type != 0) {
+            continue;
+        }
+        const auto it = names.find(node.name);
+        if (it == names.end()) {
+            continue;
+        }
+        if (!found.insert(node.name).second) {
+            return ArchiveAdaptResult::Unsupported;
+        }
+        const size_t slash = node.path.rfind('/');
+        node.name = it->second;
+        node.path = slash == std::string::npos ? node.name : node.path.substr(0, slash + 1) + node.name;
+    }
+    if (found.empty()) {
+        return ArchiveAdaptResult::NotApplicable;
+    }
+    if (found.size() != names.size()) {
+        return ArchiveAdaptResult::Unsupported;
+    }
+
+    std::set<std::string> outputPaths;
+    for (const U8Node& node : nodes) {
+        if (node.type == 0 && !outputPaths.insert(node.path).second) {
+            return ArchiveAdaptResult::Unsupported;
+        }
+    }
+    for (const auto& [from, to] : names) {
+        if (from.size() != to.size() || from.compare(from.size() - 4, 4, ".tpl") != 0) {
+            continue;
+        }
+        const auto first = from.begin();
+        const auto last = from.end();
+        size_t replacements = 0;
+        for (U8Node& node : nodes) {
+            auto at = node.data.begin();
+            while ((at = std::search(at, node.data.end(), first, last)) != node.data.end()) {
+                std::copy(to.begin(), to.end(), at);
+                at += static_cast<std::ptrdiff_t>(to.size());
+                ++replacements;
+            }
+        }
+        if (replacements == 0) {
+            return ArchiveAdaptResult::Unsupported;
+        }
+    }
+    arc = WriteU8(nodes);
+    return arc.empty() ? ArchiveAdaptResult::Unsupported : ArchiveAdaptResult::Adapted;
 }
 
 // ---------------------------------------------------------------- BRLYT / BRLAN sections
@@ -366,8 +470,7 @@ bool PatchMapLayout(std::vector<uint8_t>& file, std::map<std::string, std::strin
 
 bool PatchMapArchive(std::vector<uint8_t>& arc) {
     std::vector<U8Node> nodes;
-    std::vector<uint8_t> strings;
-    if (!ReadU8(arc, nodes, strings)) return false;
+    if (!ReadU8(arc, nodes)) return false;
     std::map<std::string, std::string> renames;
     bool layout = false;
     for (U8Node& node : nodes) {
@@ -386,7 +489,7 @@ bool PatchMapArchive(std::vector<uint8_t>& arc) {
         ++animations;
     }
     if (animations < 4) return false;
-    arc = WriteU8(nodes, strings);
+    arc = WriteU8(nodes);
     return true;
 }
 
@@ -549,8 +652,7 @@ bool PatchAnimation(std::vector<uint8_t>& file, const std::map<std::string, std:
 
 bool PatchPauseArchive(std::vector<uint8_t>& arc, float& pitch) {
     std::vector<U8Node> nodes;
-    std::vector<uint8_t> strings;
-    if (!ReadU8(arc, nodes, strings)) return false;
+    if (!ReadU8(arc, nodes)) return false;
     std::map<std::string, std::string> renames;
     bool layout = false;
     for (U8Node& node : nodes) {
@@ -571,11 +673,60 @@ bool PatchPauseArchive(std::vector<uint8_t>& arc, float& pitch) {
         ++animations;
     }
     if (animations < 4) return false;
-    arc = WriteU8(nodes, strings);
+    arc = WriteU8(nodes);
     return true;
 }
 
 } // namespace
+
+fs::path AdaptLanguageArchive(const std::string& dvdPath, const fs::path& hostPath) {
+    if (RuntimeProduct::Active().gameId != "SMNE01" || RuntimeConfigFile::Language() != "it") {
+        return {};
+    }
+    std::string lower = dvdPath;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (lower != "/us/engus/layout/wiistrap/wiistrap.arc" &&
+        lower != "/us/engus/layout/corseclear/corseclear.arc" &&
+        lower != "/us/engus/layout/gameover/gameover.arc") {
+        return {};
+    }
+
+    std::ifstream in(hostPath, std::ios::binary);
+    std::vector<uint8_t> arc((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (arc.empty()) {
+        RT_LOGF(RT_TAG_DVD, "layout compatibility: %s is not a supported Italian archive; leaving it unchanged\n",
+                dvdPath.c_str());
+        return {};
+    }
+    const ArchiveAdaptResult result = AdaptItalianArchiveEntries(lower, arc);
+    if (result == ArchiveAdaptResult::NotApplicable) {
+        return {};
+    }
+    if (result == ArchiveAdaptResult::Unsupported) {
+        RT_LOGF(RT_TAG_DVD, "layout compatibility: %s does not match the known Italian archive; leaving it unchanged\n",
+                dvdPath.c_str());
+        return {};
+    }
+
+    const fs::path dir = RuntimeConfigFile::ResolveConfigPath().parent_path() / "Cache" / "LanguageLayouts";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) {
+        RT_LOGF(RT_TAG_DVD, "layout compatibility: cannot create %s: %s\n", RuntimeConfigFile::PathToUtf8(dir).c_str(),
+                ec.message().c_str());
+        return {};
+    }
+    const fs::path out = dir / fs::path(dvdPath).filename();
+    std::ofstream file(out, std::ios::binary | std::ios::trunc);
+    file.write(reinterpret_cast<const char*>(arc.data()), static_cast<std::streamsize>(arc.size()));
+    if (!file) {
+        RT_LOGF(RT_TAG_DVD, "layout compatibility: cannot write %s\n", RuntimeConfigFile::PathToUtf8(out).c_str());
+        return {};
+    }
+    RT_LOGF(RT_TAG_DVD, "layout compatibility: adapted Italian resource names in %s\n", dvdPath.c_str());
+    return out;
+}
 
 fs::path Patch(const std::string& dvdPath, const fs::path& hostPath) {
     std::string lower = dvdPath;

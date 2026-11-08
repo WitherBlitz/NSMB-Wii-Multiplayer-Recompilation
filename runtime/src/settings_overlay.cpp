@@ -14,6 +14,7 @@
 #include "game_graphics_options.h"
 #include "music_attenuation.h"
 #include "runtime_config.h"
+#include "virtual_remote.h"
 #include "display_settings.h"
 #include <dolphin/gx/GXAurora.h>
 #include "runtime_log.h"
@@ -497,7 +498,9 @@ const char* KeyBindingName(int scancode) {
     }
 }
 
-enum class RebindKind { KeyboardButton, KeyboardAxis, Controller, MuteHotkey };
+enum class RebindKind { KeyboardButton, KeyboardAxis, Controller, MuteHotkey, RemoteAction };
+// Both read a button, trigger or stick off the port's gamepad.
+constexpr bool IsPadCapture(RebindKind kind) { return kind == RebindKind::Controller || kind == RebindKind::RemoteAction; }
 struct RebindState {
     bool active = false;
     bool openPopup = false;
@@ -530,7 +533,7 @@ void BeginRebind(RebindKind kind, uint16_t target, const char* label, bool secon
     std::copy_n(keys, std::min(count, static_cast<int>(g_rebind.keys.size())), g_rebind.keys.begin());
     g_rebind.mouse = SDL_GetMouseState(nullptr, nullptr);
     const int index = PADGetIndexForPort(g_rebind.port);
-    if (kind == RebindKind::Controller && index >= 0) {
+    if (IsPadCapture(kind) && index >= 0) {
         if (auto* pad = PADGetSDLGamepadForIndex(index)) {
             g_rebind.instance = aurora::sdl::GetGamepadID(pad);
             for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT; ++i)
@@ -564,6 +567,16 @@ void CompleteRebind(uint32_t value) {
         if (alternateValue != PAD_NATIVE_BUTTON_INVALID) config += ',' + NativeBindingConfig(alternateValue);
         for (size_t i = 0; i < kControllerButtons.size(); ++i)
             if (kControllerButtons[i].padButton == capture.target) RuntimeConfigFile::SetControllerButton(i, config);
+    } else if (capture.kind == RebindKind::RemoteAction) {
+        // Tilt left / right and shake: one input each, saved as [controller] tilt_left / tilt_right / shake.
+        // An axis starts at a 25% threshold (a light pull or push already counts); the slider changes it.
+        if (PADIsAxisButton(value)) {
+            value = PADEncodeAxisButton(PADAxisButtonAxis(value), PADAxisButtonNegative(value), 25);
+        }
+        RuntimeConfigFile::SetRemoteAction(capture.target, NativeBindingConfig(value));
+        VirtualRemote::ReloadRemoteBindings();
+        g_rebind.active = false;
+        return;
     } else if (capture.kind == RebindKind::MuteHotkey) {
         g_muteHotkey = static_cast<int32_t>(value);
         RuntimeConfigFile::SetMuteHotkey(g_muteHotkey);
@@ -593,7 +606,7 @@ void DrawRebindPrompt() {
     }
     if (g_rebind.active) {
         ImGui::Text("Rebind: %s", g_rebind.label.c_str());
-        ImGui::TextUnformatted(g_rebind.kind == RebindKind::Controller
+        ImGui::TextUnformatted(IsPadCapture(g_rebind.kind)
             ? "Press a controller button, pull a trigger, or move a stick."
             : g_rebind.kind == RebindKind::MuteHotkey
                 ? "Press a keyboard key."
@@ -608,9 +621,9 @@ void DrawRebindPrompt() {
         // UI clicks must not become mouse bindings (buttons activate on release).
         const bool overControl = ImGui::IsAnyItemHovered();
         if (g_rebind.active && (clear || remaining <= 0.0f)) {
-            CompleteRebind(g_rebind.kind == RebindKind::Controller ? PAD_NATIVE_BUTTON_DISABLED
+            CompleteRebind(IsPadCapture(g_rebind.kind) ? PAD_NATIVE_BUTTON_DISABLED
                                                                   : static_cast<uint32_t>(PAD_KEY_INVALID));
-        } else if (g_rebind.active && SDL_GetKeyboardFocus() != nullptr && g_rebind.kind != RebindKind::Controller) {
+        } else if (g_rebind.active && SDL_GetKeyboardFocus() != nullptr && !IsPadCapture(g_rebind.kind)) {
             int count = 0;
             const bool* keys = SDL_GetKeyboardState(&count);
             for (int i = 1; i < std::min(count, static_cast<int>(SDL_SCANCODE_COUNT)) && g_rebind.active; ++i) {
@@ -622,7 +635,7 @@ void DrawRebindPrompt() {
                 if (!overControl && g_rebind.kind != RebindKind::MuteHotkey &&
                     (mouse & ~g_rebind.mouse & (1u << (i - 1))) != 0) CompleteRebind(static_cast<uint32_t>(-i - 1));
             g_rebind.mouse = mouse;
-        } else if (g_rebind.active && SDL_GetKeyboardFocus() != nullptr && g_rebind.kind == RebindKind::Controller) {
+        } else if (g_rebind.active && SDL_GetKeyboardFocus() != nullptr && IsPadCapture(g_rebind.kind)) {
             auto* pad = aurora::sdl::GetGamepadFromID(g_rebind.instance);
             if (pad != nullptr) {
                 for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT && g_rebind.active; ++i) {
@@ -854,6 +867,53 @@ void DrawCombinationSettings() {
     }
 }
 
+// Tilt and shake are the sideways remote's own motions, not GameCube buttons, so they have rows of their
+// own (virtual_remote.cpp reads them). Each takes one input. A trigger or a stick tilts gradually, a button
+// tilts all the way. Unset keeps the built-in input.
+constexpr std::array<const char*, 3> kRemoteActionLabels = {"Tilt left", "Tilt right", "Shake"};
+constexpr std::array<const char*, 3> kRemoteActionDefaults = {"Right stick left", "Right stick right", "Z / R button"};
+
+void DrawRemoteActionSettings() {
+    ImGui::SeparatorText("Wii Remote motion");
+    ImGui::TextDisabled("Tilt and shake of the sideways remote. Default is the built-in input.");
+    ImGui::TextDisabled("Bind LT / L2 to Tilt left and RT / R2 to Tilt right to use the triggers instead of the right stick.");
+    ImGui::TextDisabled("A trigger or stick tilts gradually; a button tilts all the way.");
+    const float bindingWidth = ImGui::CalcTextSize("Right shoulder (RB / R1)").x +
+                               ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.x * 2.0f;
+    for (size_t i = 0; i < kRemoteActionLabels.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i) + 3000);
+        const auto& configured = RuntimeConfigFile::RemoteAction(i);
+        uint32_t native = configured ? ControllerNames::ParseNativeBinding(*configured) : PAD_NATIVE_BUTTON_INVALID;
+        const bool isDefault = native == PAD_NATIVE_BUTTON_INVALID;
+        ImGui::BeginGroup();
+        const std::string caption =
+            std::string(isDefault ? kRemoteActionDefaults[i] : NativeButtonForValue(native).label) + "##remoteAction";
+        if (ImGui::Button(caption.c_str(), ImVec2(bindingWidth, 0.0f))) {
+            BeginRebind(RebindKind::RemoteAction, static_cast<uint16_t>(i), kRemoteActionLabels[i]);
+        }
+        if (PADIsAxisButton(native)) {
+            int threshold = static_cast<int>(PADAxisButtonThreshold(native));
+            ImGui::SetNextItemWidth(bindingWidth);
+            if (ImGui::SliderInt("##remoteThreshold", &threshold, 1, 99, "Threshold: %d%%", ImGuiSliderFlags_AlwaysClamp)) {
+                native = PADAxisButtonIdentity(native) | (static_cast<uint32_t>(threshold) << 8);
+                RuntimeConfigFile::SetRemoteAction(i, NativeBindingConfig(native));
+                VirtualRemote::ReloadRemoteBindings();
+            }
+        }
+        ImGui::EndGroup();
+        ImGui::SameLine();
+        ImGui::TextUnformatted(kRemoteActionLabels[i]);
+        if (!isDefault) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Default")) {
+                RuntimeConfigFile::SetRemoteAction(i, "unmapped");
+                VirtualRemote::ReloadRemoteBindings();
+            }
+        }
+        ImGui::PopID();
+    }
+}
+
 void DrawControllerSettings() {
     for (int port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
         const std::string label = "Port " + std::to_string(port + 1);
@@ -1056,6 +1116,7 @@ void DrawControllerSettings() {
         ImGui::TextUnformatted(kControllerButtons[i].label);
         ImGui::PopID();
     }
+    DrawRemoteActionSettings();
     DrawExpressionSettings();
     DrawRumbleSettings();
     DrawCombinationSettings();
@@ -1809,7 +1870,7 @@ void HandleEvents(const AuroraEvent* events) noexcept {
         }
         if (g_rebind.active && (IsToggleKey(ev->sdl, SDL_SCANCODE_BACKSPACE) ||
                                 IsToggleKey(ev->sdl, SDL_SCANCODE_DELETE))) {
-            CompleteRebind(g_rebind.kind == RebindKind::Controller ? PAD_NATIVE_BUTTON_DISABLED
+            CompleteRebind(IsPadCapture(g_rebind.kind) ? PAD_NATIVE_BUTTON_DISABLED
                                                                   : static_cast<uint32_t>(PAD_KEY_INVALID));
         }
         // NSMBW: F11 toggles between a window and borderless fullscreen (saved like the F10 bar's
@@ -1989,6 +2050,7 @@ constexpr std::array<uint16_t, 12> kActionPadButton = {
     PAD_BUTTON_Y, PAD_TRIGGER_Z, 0, 0, PAD_BUTTON_START, PAD_TRIGGER_L,
 };
 constexpr int kActionTiltLeft = 8, kActionTiltRight = 9;
+constexpr uint16_t kRemoteActionTiltLeft = 0, kRemoteActionTiltRight = 1;
 
 // The first port with a gamepad on it, or -1. Wii Remotes (with or without an extension) reach the
 // game directly, not through these bindings.
@@ -2032,8 +2094,13 @@ int ControllerShoulderPressed() noexcept {
 
 namespace {
 std::string SingleControllerLabel(int action) {
-    if (action == kActionTiltLeft) return "Right stick left";
-    if (action == kActionTiltRight) return "Right stick right";
+    if (action == kActionTiltLeft || action == kActionTiltRight) {
+        const bool left = action == kActionTiltLeft;
+        const auto& configured = RuntimeConfigFile::RemoteAction(left ? 0 : 1);
+        const uint32_t native = configured ? ControllerNames::ParseNativeBinding(*configured) : PAD_NATIVE_BUTTON_INVALID;
+        if (native == PAD_NATIVE_BUTTON_INVALID) return left ? "Right stick left" : "Right stick right";
+        return ShortButtonLabel(NativeButtonForValue(native).label);
+    }
     const int port = GamepadPort();
     if (port < 0 || action < 0 || action >= static_cast<int>(kActionPadButton.size())) return "";
     uint32_t count = 0;
@@ -2046,12 +2113,85 @@ std::string SingleControllerLabel(int action) {
     }
     return "";
 }
-}  // namespace
+
+bool IsTiltAction(int action) noexcept {
+    return action == kActionTiltLeft || action == kActionTiltRight;
+}
+
+uint16_t RemoteActionIndex(int action) {
+    return action == kActionTiltLeft ? kRemoteActionTiltLeft : kRemoteActionTiltRight;
+}
+
+bool PollRemoteActionCapture() {
+    if (!g_rebind.active || !g_rebind.inGame || g_rebind.kind != RebindKind::RemoteAction) {
+        return true;
+    }
+
+    int keyCount = 0;
+    const bool* keys = SDL_GetKeyboardState(&keyCount);
+    const int escape = SDL_SCANCODE_ESCAPE;
+    const bool deletePressed =
+        keyCount > SDL_SCANCODE_DELETE && keys[SDL_SCANCODE_DELETE] && !g_rebind.keys[SDL_SCANCODE_DELETE];
+    const bool backspacePressed = keyCount > SDL_SCANCODE_BACKSPACE && keys[SDL_SCANCODE_BACKSPACE] &&
+                                  !g_rebind.keys[SDL_SCANCODE_BACKSPACE];
+    const int clear = deletePressed ? SDL_SCANCODE_DELETE
+                      : backspacePressed
+                          ? SDL_SCANCODE_BACKSPACE
+                          : -1;
+    const bool cancelled = escape < keyCount && keys[escape] && !g_rebind.keys[escape];
+    std::copy_n(keys, std::min(keyCount, static_cast<int>(g_rebind.keys.size())), g_rebind.keys.begin());
+    if (cancelled || Clock::now() >= g_rebind.deadline) {
+        g_rebind.active = false;
+        return true;
+    }
+    if (clear >= 0) {
+        CompleteRebind(PAD_NATIVE_BUTTON_DISABLED);
+        return true;
+    }
+
+    auto* pad = aurora::sdl::GetGamepadFromID(g_rebind.instance);
+    if (pad == nullptr) {
+        g_rebind.active = false;
+        return true;
+    }
+    for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT && g_rebind.active; ++i) {
+        const bool pressed = aurora::sdl::GetGamepadButton(pad, static_cast<SDL_GamepadButton>(i));
+        if (pressed && !g_rebind.buttons[i]) {
+            CompleteRebind(static_cast<uint32_t>(i));
+        }
+        g_rebind.buttons[i] = pressed;
+    }
+    for (int i = 0; i < SDL_GAMEPAD_AXIS_COUNT && g_rebind.active; ++i) {
+        const int value = aurora::sdl::GetGamepadAxis(pad, static_cast<SDL_GamepadAxis>(i));
+        if (std::abs(value) < 8000) {
+            g_rebind.axesReady[i] = true;
+        }
+        if (g_rebind.axesReady[i] && std::abs(value) >= 16384) {
+            CompleteRebind(PADEncodeAxisButton(static_cast<uint32_t>(i), value < 0));
+        }
+    }
+    return !g_rebind.active;
+}
+} // namespace
 
 std::vector<uint32_t> ControllerFirstBinding(int action) {
     std::vector<uint32_t> natives;
     const int port = GamepadPort();
-    if (port < 0 || action < 0 || action >= static_cast<int>(kActionPadButton.size())) return natives;
+    if (port < 0 || action < 0 || action >= static_cast<int>(kActionPadButton.size())) {
+        return natives;
+    }
+    if (IsTiltAction(action)) {
+        const size_t index = RemoteActionIndex(action);
+        const auto& configured = RuntimeConfigFile::RemoteAction(index);
+        uint32_t native = configured ? ControllerNames::ParseNativeBinding(*configured) : PAD_NATIVE_BUTTON_INVALID;
+        if (native == PAD_NATIVE_BUTTON_INVALID) {
+            native = ControllerNames::ParseNativeBinding(action == kActionTiltLeft ? "right_stick_left" : "right_stick_right");
+        }
+        if (native != PAD_NATIVE_BUTTON_DISABLED && native != PAD_NATIVE_BUTTON_INVALID) {
+            natives.push_back(native);
+        }
+        return natives;
+    }
     if (kActionPadButton[action] != 0) {
         uint32_t count = 0;
         const PADButtonMapping* mappings = PADGetButtonMappings(static_cast<uint32_t>(port), &count);
@@ -2078,13 +2218,20 @@ std::string ControllerBindingLabel(int action) {
 }
 
 bool ControllerActionRebindable(int action) noexcept {
-    return action >= 0 && action < static_cast<int>(kActionPadButton.size()) && kActionPadButton[action] != 0;
+    return action >= 0 && action < static_cast<int>(kActionPadButton.size()) &&
+           (kActionPadButton[action] != 0 || IsTiltAction(action));
 }
 
 void BeginControllerCapture(int action) noexcept {
     const int port = GamepadPort();
     if (port < 0 || !ControllerActionRebindable(action)) return;
     g_controllerPort = port;
+    if (IsTiltAction(action)) {
+        BeginRebind(RebindKind::RemoteAction, RemoteActionIndex(action), Keybinds::ActionName(action));
+        g_rebind.openPopup = false;
+        g_rebind.inGame = true;
+        return;
+    }
     BeginRebind(RebindKind::Controller, kActionPadButton[action], Keybinds::ActionName(action));
     g_rebind.openPopup = false;
     g_rebind.inGame = true;
@@ -2093,11 +2240,20 @@ void BeginControllerCapture(int action) noexcept {
 }
 
 std::string ControllerCaptureLabel() {
+    if (!g_rebind.active) {
+        return {};
+    }
+    if (g_rebind.kind == RebindKind::RemoteAction) {
+        return {};
+    }
     return PadCombos::CaptureLabel();
 }
 
 int ControllerCapturing() noexcept {
     if (!g_rebind.active || !g_rebind.inGame) return -1;
+    if (g_rebind.kind == RebindKind::RemoteAction && g_rebind.target <= kRemoteActionTiltRight) {
+        return kActionTiltLeft + g_rebind.target;
+    }
     for (size_t i = 0; i < kActionPadButton.size(); ++i) {
         if (kActionPadButton[i] == g_rebind.target) return static_cast<int>(i);
     }
@@ -2106,6 +2262,9 @@ int ControllerCapturing() noexcept {
 
 bool PollControllerCapture() noexcept {
     if (!g_rebind.active || !g_rebind.inGame) return true;
+    if (g_rebind.kind == RebindKind::RemoteAction) {
+        return PollRemoteActionCapture();
+    }
     uint32_t single = 0;
     switch (PadCombos::PollCapture(single)) {
     case PadCombos::CaptureResult::Running:
@@ -2142,6 +2301,10 @@ void ResetControllerBindings() noexcept {
                                    PADButtonMapping{PAD_NATIVE_BUTTON_INVALID, kControllerButtons[i].padButton});
         }
     }
+    for (uint16_t action = kRemoteActionTiltLeft; action <= kRemoteActionTiltRight; ++action) {
+        RuntimeConfigFile::SetRemoteAction(action, "unmapped");
+    }
+    VirtualRemote::ReloadRemoteBindings();
     PADSerializeMappings();
     Keybinds::NoteBindingsChanged();  // the prompts show the new buttons
 }

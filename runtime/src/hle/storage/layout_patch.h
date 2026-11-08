@@ -14,6 +14,11 @@
 // decides the same way at boot.
 namespace LayoutPatch {
 
+// Italy's EU archives have the same layouts the USA game expects, but their
+// U8 entries use EU resource names. Return a cached, USA-named copy when one
+// of the known Italian language archives is supplied.
+std::filesystem::path AdaptLanguageArchive(const std::string& dvdPath, const std::filesystem::path& hostPath);
+
 // dvd.cpp, once per disc path the game may read, after the overlays: a patched copy of the file to
 // serve in its place, or empty to serve it as it is.
 std::filesystem::path Patch(const std::string& dvdPath, const std::filesystem::path& hostPath);

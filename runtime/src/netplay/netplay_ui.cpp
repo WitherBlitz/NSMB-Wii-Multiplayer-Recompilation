@@ -2368,8 +2368,10 @@ void DrawKeybindsTab(const Canvas& c) {
         AddHit(x0 + 78, y, 178, 34, 1 + action);
     }
     if (capturing >= 0) {
-        // One key, or 2 or 3 held together for a combination; taken when they are all let go.
-        Text(c, pad ? "Hold a button, or 2 or 3 together, then let go. Esc cancels."
+        // Tilt uses one physical input; other controller actions can also use combinations.
+        const bool tiltCapture = pad && (capturing == Keybinds::kTiltLeft || capturing == Keybinds::kTiltRight);
+        Text(c, tiltCapture ? "Press a button, pull a trigger, or move a stick. Esc cancels, Delete clears."
+                    : pad ? "Hold a button, or 2 or 3 together, then let go. Esc cancels."
                     : "Hold a key, or 2 or 3 together, then let go. Esc cancels, Delete clears.",
              0, -120, 20, 1, 0xFFF0B0FFu);
     } else {
@@ -2557,8 +2559,7 @@ void FinishCloseSettings() {
 
 void HandleSettingsInput(bool left, bool right, bool up, bool down, bool confirm, bool back);
 
-// A choice the window can't take: the renderer with one to pick from, a controller row the right stick
-// owns (the tilts).
+// A choice the window can't take: the renderer with one to pick from, or a controller row without a binding.
 bool SettingsChoiceInvalid() {
     const int cursor = g_ui.cursor;
     if (g_settingsTab == kTabVideo && cursor == kVideoRenderer && kRendererCount <= 1) {
