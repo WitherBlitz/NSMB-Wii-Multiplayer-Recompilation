@@ -22,6 +22,7 @@ struct Text {
     std::string help;         // the steps behind Help
     std::string isoTitle;     // the file picker's title
     std::string folderTitle;  // the folder picker's title
+    bool mods = true;         // the Mods button: the original game's build only
 };
 
 enum class Choice { Iso, Folder, Cancel };
@@ -41,6 +42,9 @@ using Job = std::function<std::string(const Progress& progress, const std::atomi
 // Runs `job` while a progress window (titled text.title, with `line` and a Cancel button) is up.
 // Cancel sets `cancel`; the job is expected to stop soon after. Returns what the job returned.
 std::string RunWithProgress(const Text& text, const std::string& line, const Job& job);
+
+// An error message box over the chooser (titled text.title), with OK; returns once it's closed.
+void ShowError(const Text& text, const std::string& message);
 
 // Puts away whatever the chooser kept open between calls (Linux keeps its window). Call it once
 // the game folder is settled, before aurora creates the game window.

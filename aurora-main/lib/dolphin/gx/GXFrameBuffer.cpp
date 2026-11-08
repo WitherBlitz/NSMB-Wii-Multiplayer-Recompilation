@@ -248,7 +248,67 @@ u32 y_scale_to_integer(f32 yScale) {
   return static_cast<u32>(256.f / yScale) & 0x1ffu;
 }
 
+std::atomic<bool> g_texturePatches{true};  // AuroraSetTexturePatches
+
+// NSMBW_PATCH_READBACK=1: read texture patches back into RAM instead of patching the GPU texture.
+bool patch_readback() {
+  static const bool on = [] {
+    const char* value = std::getenv("NSMBW_PATCH_READBACK");
+    return value != nullptr && value[0] == '1';
+  }();
+  return on;
+}
+
+// NSMBW: the texture-copy setup as the producer last set it. With async copies the decoded state lags
+// behind the producer, which still has to tell copies that write guest RAM (run in place) from the
+// rest (queued). Kept by every setter, queued or not.
+struct ProducerTexCopy {
+  u16 srcWidth = 0;
+  u16 srcHeight = 0;
+  u16 dstWidth = 0;
+  u16 dstHeight = 0;
+  GXTexFmt format = GX_TF_RGBA8;
+  bool halfScale = false;
+};
+ProducerTexCopy s_producerTexCopy;
+
+// What GXCopyTex writes: the source extent (halved for a mipmap copy), within the destination size.
+aurora::Vec2<u32> copied_extent(u32 srcWidth, u32 srcHeight, u32 dstWidth, u32 dstHeight, bool halfScale) {
+  const u32 copiedWidth = std::max<u32>(srcWidth, 1) >> (halfScale ? 1 : 0);
+  const u32 copiedHeight = std::max<u32>(srcHeight, 1) >> (halfScale ? 1 : 0);
+  return {std::max<u32>(std::min<u32>(dstWidth, std::max<u32>(copiedWidth, 1)), 1),
+          std::max<u32>(std::min<u32>(dstHeight, std::max<u32>(copiedHeight, 1)), 1)};
+}
+
+// Whether a copy with this setup has efb_ram write its result into guest RAM by itself.
+bool copy_writes_guest_ram(u32 srcWidth, u32 srcHeight, u32 dstWidth, u32 dstHeight, GXTexFmt format,
+                           bool halfScale) {
+  const auto [width, height] = copied_extent(srcWidth, srcHeight, dstWidth, dstHeight, halfScale);
+  const bool patch = dstWidth > width && g_texturePatches.load(std::memory_order_relaxed);
+  return aurora::gfx::efb_ram::writes_guest_ram(format, width, height, patch && patch_readback() ? dstWidth : 0);
+}
+
+// Queue a copy command only off display lists: a recorded list would replay it.
+bool queue_copies() { return aurora::gx::fifo::async_copies() && !aurora::gx::fifo::in_display_list(); }
+
 } // namespace
+
+namespace aurora::gx {
+bool queue_tex_copy_src(u16 left, u16 top, u16 wd, u16 ht, bool renderSpace) {
+  s_producerTexCopy.srcWidth = wd;
+  s_producerTexCopy.srcHeight = ht;
+  if (!queue_copies()) {
+    return false;
+  }
+  GX_WRITE_AURORA(GX_LOAD_AURORA_TEX_COPY_SRC);
+  GX_WRITE_U16(left);
+  GX_WRITE_U16(top);
+  GX_WRITE_U16(wd);
+  GX_WRITE_U16(ht);
+  GX_WRITE_U8(renderSpace ? 1 : 0);
+  return true;
+}
+} // namespace aurora::gx
 
 namespace aurora::gx {
 void prune_copy_texture_pool(const void* dest) noexcept {
@@ -339,6 +399,9 @@ void GXSetDispCopySrc(u16 left, u16 top, u16 wd, u16 ht) {
 }
 
 void GXSetTexCopySrc(u16 left, u16 top, u16 wd, u16 ht) {
+  if (aurora::gx::queue_tex_copy_src(left, top, wd, ht, false)) {
+    return;
+  }
   aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   g_gxState.texCopySrc = {left, top, wd, ht};
   g_gxState.texCopySrcRenderSpace = false;
@@ -352,6 +415,18 @@ void GXSetDispCopyDst(u16 wd, u16 ht) {
 }
 
 void GXSetTexCopyDst(u16 wd, u16 ht, GXTexFmt fmt, GXBool mipmap) {
+  s_producerTexCopy.dstWidth = wd;
+  s_producerTexCopy.dstHeight = ht;
+  s_producerTexCopy.format = fmt;
+  s_producerTexCopy.halfScale = mipmap != GX_FALSE;
+  if (queue_copies()) {
+    GX_WRITE_AURORA(GX_LOAD_AURORA_TEX_COPY_DST);
+    GX_WRITE_U16(wd);
+    GX_WRITE_U16(ht);
+    GX_WRITE_U32(static_cast<u32>(fmt));
+    GX_WRITE_U8(mipmap != GX_FALSE ? 1 : 0);
+    return;
+  }
   aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   g_gxState.texCopyFmt = fmt;
   g_gxState.texCopyDstWidth = wd;
@@ -365,6 +440,11 @@ void GXSetDispCopyFrame2Field(u32 mode) {
 }
 
 void GXSetCopyClamp(GXFBClamp clamp) {
+  if (queue_copies()) {
+    GX_WRITE_AURORA(GX_LOAD_AURORA_COPY_CLAMP);
+    GX_WRITE_U8(static_cast<u8>(static_cast<u32>(clamp) & 3));
+    return;
+  }
   aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   g_gxState.copyClamp = static_cast<GXFBClamp>(static_cast<u32>(clamp) & 3);
 }
@@ -404,6 +484,26 @@ void GXSetCopyClear(GXColor color, u32 depth) {
 }
 
 void GXSetCopyFilter(GXBool aa, u8 sample_pattern[12][2], GXBool vf, u8 vfilter[7]) {
+  // The registers below are all the decoder needs (it derives the aa/vf flags from them), so with
+  // both tables given nothing has to wait. Without one, the decoded table stands in for it below.
+  if (sample_pattern != nullptr && vfilter != nullptr && queue_copies()) {
+    std::array<std::array<u8, 2>, 12> pattern;
+    for (size_t i = 0; i < pattern.size(); ++i) {
+      pattern[i] = aa ? std::array<u8, 2>{sample_pattern[i][0], sample_pattern[i][1]} : std::array<u8, 2>{6, 6};
+    }
+    std::array<u8, 7> filter{0, 0, 21, 22, 21, 0, 0};
+    if (vf) {
+      std::copy(vfilter, vfilter + filter.size(), filter.begin());
+    }
+    GX_WRITE_RAS_REG(pack_copy_filter_samples(0x01, pattern, 0));
+    GX_WRITE_RAS_REG(pack_copy_filter_samples(0x02, pattern, 6));
+    GX_WRITE_RAS_REG(pack_copy_filter_samples(0x03, pattern, 12));
+    GX_WRITE_RAS_REG(pack_copy_filter_samples(0x04, pattern, 18));
+    GX_WRITE_RAS_REG(pack_copy_filter0(filter));
+    GX_WRITE_RAS_REG(pack_copy_filter1(filter));
+    __gx->bpSent = 0;
+    return;
+  }
   aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   g_gxState.copyFilterAa = aa;
   g_gxState.copyFilterVf = vf;
@@ -481,16 +581,15 @@ void GXCopyDisp(void* dest, GXBool clear) {
   aurora::gx::set_display_copy_present_source();
 }
 
-std::atomic<bool> g_texturePatches{true};
 extern "C" void AuroraSetTexturePatches(bool enabled) { g_texturePatches.store(enabled, std::memory_order_relaxed); }
 
-void GXCopyTex(void* dest, GXBool clear) {
-  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
+} // extern "C"
+
+namespace {
+// NSMBW: the copy itself, on decoded state: on the calling thread after a sync, or on the GX thread
+// for a queued copy (`queued`), in FIFO order either way.
+void copy_tex_decoded(void* dest, GXBool clear, bool queued) {
   g_statCopies.fetch_add(1, std::memory_order_relaxed);
-  // Texture copies must see all earlier draws and state changes.
-  if (aurora::gx::fifo::get_buffer_size() != 0) {
-    aurora::gx::fifo::drain();
-  }
   if (aurora::gx::fifo::g_commandDigestOn) UNLIKELY {
     const int64_t copy[] = {static_cast<int64_t>(reinterpret_cast<uintptr_t>(dest)), clear, g_gxState.texCopySrc.x,
                             g_gxState.texCopySrc.y, g_gxState.texCopySrc.width, g_gxState.texCopySrc.height,
@@ -616,10 +715,7 @@ void GXCopyTex(void* dest, GXBool clear) {
   // ? blocks, copied into the tile atlas every frame). The patch is applied to the atlas's GPU texture
   // right after this copy resolves. Reading it back into RAM instead (NSMBW_PATCH_READBACK=1) works too
   // but re-decodes the 2 MB atlas every frame: 60 -> 35 FPS on a Snapdragon 6 Gen 1.
-  static const bool patchReadback = [] {
-    const char* value = std::getenv("NSMBW_PATCH_READBACK");
-    return value != nullptr && value[0] == '1';
-  }();
+  const bool patchReadback = patch_readback();
   const bool patch = g_gxState.texCopyDstWidth > logicalDstWidth && g_texturePatches.load(std::memory_order_relaxed);
   if (patch && !patchReadback) {
     for (auto& target : aurora::gx::find_patch_targets(dest)) {
@@ -628,10 +724,57 @@ void GXCopyTex(void* dest, GXBool clear) {
     }
   }
   const u32 patchStride = patch && patchReadback ? g_gxState.texCopyDstWidth : 0;
+  if (queued && aurora::gfx::efb_ram::writes_guest_ram(texCopyFmt, logicalDstWidth, logicalDstHeight, patchStride))
+    UNLIKELY {
+      // GXCopyTex decided from the producer's copy setup that this copy leaves guest RAM alone, and the
+      // decoded setup says otherwise: a copy register set some other way. Its readback still lands, a
+      // frame later as always, but its first-use fill in schedule() is written from the GX thread.
+      static bool logged = false;
+      if (!logged) {
+        logged = true;
+        std::fprintf(stderr, "[aurora] queued EFB copy %ux%u fmt %d at %p writes guest RAM\n", logicalDstWidth,
+                     logicalDstHeight, static_cast<int>(texCopyFmt), dest);
+      }
+    }
   aurora::gfx::efb_ram::schedule(dest, logicalDstWidth, logicalDstHeight, texCopyFmt, handle.handle, patchStride);
   // NSMBW: a draw after this copy must not merge into one before it: merged primitives are recorded
   // with the earlier draw and would render before the copy reads the EFB.
   g_gxState.stateDirty = true;
+}
+} // namespace
+
+namespace aurora::gx {
+bool run_queued_copy_tex(void* dest, bool clear) {
+  // Everything the copy may push (an alpha clear, the resolve and its clear, the atlas patch blits),
+  // checked before any of it happens: the staging batch cannot be split under the decoder's lock.
+  const uint64_t uniform16 = gfx::staging_uniform_bytes(16), uniform48 = gfx::staging_uniform_bytes(48);
+  if (!gfx::staging_has_space({0, 2 * uniform16 + 10 * uniform48, 0, 0})) {
+    return false;
+  }
+  copy_tex_decoded(dest, clear ? GX_TRUE : GX_FALSE, true);
+  return true;
+}
+} // namespace aurora::gx
+
+extern "C" {
+void GXCopyTex(void* dest, GXBool clear) {
+  // Queued, it runs on the GX thread after the draws before it and before those after it, as a GPU
+  // runs a copy in its FIFO. A copy that writes guest RAM (efb_ram's readbacks) stays here, after
+  // the wait, so guest memory changes on this thread as it always has.
+  const auto& setup = s_producerTexCopy;
+  if (queue_copies() && !copy_writes_guest_ram(setup.srcWidth, setup.srcHeight, setup.dstWidth, setup.dstHeight,
+                                               setup.format, setup.halfScale)) {
+    GX_WRITE_AURORA(GX_LOAD_AURORA_COPY_TEX);
+    GX_WRITE_U64(reinterpret_cast<u64>(dest));
+    GX_WRITE_U8(clear != GX_FALSE ? 1 : 0);
+    return;
+  }
+  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
+  // Texture copies must see all earlier draws and state changes.
+  if (aurora::gx::fifo::get_buffer_size() != 0) {
+    aurora::gx::fifo::drain();
+  }
+  copy_tex_decoded(dest, clear, false);
 }
 
 void GXClearBoundingBox() {

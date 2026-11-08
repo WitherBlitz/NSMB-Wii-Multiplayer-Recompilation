@@ -7,6 +7,7 @@
 #include "input_bindings.h"
 #include "memory.h"
 #include "wii_remote_input.h"
+#include "bt_passthrough.h"
 
 #include <algorithm>
 #include <array>
@@ -273,6 +274,70 @@ bool ReadSample(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
     return true;
 }
 
+// The runtime's per-frame work on the game's own thread, run from the first remote's read.
+void OnGameThread() {
+    settings_overlay::FlushGameSound();  // a Settings button's sound, from the game's own thread
+    HostSuspend::OnGameThread();         // a backup save before Android's pause, likewise
+    GameplayOptions::OnGameThread();     // the Gameplay tab's Power-Up, likewise
+}
+
+// Bluetooth passthrough: the game's own KPAD has read the real remote into `count` KPADStatus
+// entries (newest first). The runtime's game-styled menus still see and steer its buttons, as
+// ReadSample lets them with the HLE: FilterGameInput may add presses (a tap on the screen) or take
+// them away (while one of those menus is open), and an overlay that owns input blocks them all.
+// When neither changes anything, which is all of normal play, the entries are left untouched.
+uint32_t g_passthroughAdded[4] = {};
+void FilterPassthroughStatus(uint32_t chan, uint32_t statusPtr, int32_t count) {
+    if (chan >= 4 || statusPtr == 0 || count <= 0) {
+        return;
+    }
+    try {
+        const uint32_t raw = Memory::Read32(statusPtr + kHold);
+        const uint8_t devType = Memory::Read8(statusPtr + kDevType);
+        WiiRemoteInput::KpadSample sample;
+        sample.hold = raw;
+        sample.hasNunchuk = devType == kDevFreestyle;
+        sample.hasClassic = devType == kDevClassic;
+        NetplayUi::FilterGameInput(chan, sample);
+        const bool blocked = InputBindings::InputBlocked();
+        const uint32_t filtered = blocked ? 0 : sample.hold;
+        const uint32_t removed = raw & ~filtered;
+        const uint32_t added = filtered & ~raw;
+        uint32_t& previouslyAdded = g_passthroughAdded[chan];
+        if (removed == 0 && added == 0 && previouslyAdded == 0 && !blocked) {
+            return;
+        }
+        for (int32_t i = 0; i < std::min<int32_t>(count, 16); ++i) {
+            const uint32_t entry = statusPtr + static_cast<uint32_t>(i) * kKpadStatusSize;
+            uint32_t hold = (Memory::Read32(entry + kHold) & ~removed) | added;
+            uint32_t trig = Memory::Read32(entry + kTrig) & ~removed;
+            uint32_t release = Memory::Read32(entry + kRelease) & ~removed;
+            if (i == 0) {
+                trig |= added & ~previouslyAdded;
+                release |= previouslyAdded & ~filtered;
+            }
+            Memory::Write32(entry + kHold, hold);
+            Memory::Write32(entry + kTrig, trig);
+            Memory::Write32(entry + kRelease, release);
+            if (blocked) {
+                const uint8_t type = Memory::Read8(entry + kDevType);
+                if (type == kDevFreestyle) {
+                    Memory::WriteFloat32(entry + kFsStick, 0.0f);
+                    Memory::WriteFloat32(entry + kFsStick + 4, 0.0f);
+                } else if (type == kDevClassic) {
+                    Memory::Write32(entry + kClHold, 0);
+                    Memory::Write32(entry + kClTrig, 0);
+                    Memory::Write32(entry + kClRelease, 0);
+                    WriteZeroFloats(entry + kClLStick, 4);
+                    WriteZeroFloats(entry + kClLTrigger, 2);
+                }
+            }
+        }
+        previouslyAdded = added;
+    } catch (const Memory::AccessViolation&) {
+    }
+}
+
 } // namespace
 
 // KPADRead: fills KPADStatus[0] for `chan` from the Bluetooth remote, returns the entry count.
@@ -289,8 +354,22 @@ extern "C" int32_t KPAD__Read_HLE(uint32_t chan, uint32_t statusPtr, uint32_t co
         return 0;
     }
 }
-PPC_NATIVE_OVERRIDE(801ED3A0, KPAD__Read_HLE, int32_t, (uint32_t chan, uint32_t statusPtr, uint32_t count),
-         (chan, statusPtr, count));
+// With Bluetooth passthrough on, the game's own KPADRead (kept by REGISTER_NATIVE_FUNCTION_AS; see
+// wpad.cpp) reads the real remote. The call stays written out as func_xxx(ctx) so the translator
+// syncs the whole register file around this native.
+extern "C" void func_801ED3A0(CpuContext* ctx);  // the translated KPADRead
+extern "C" void KPADRead_Native_801ed3a0(CpuContext* ctx)
+{
+    const uint32_t chan = ctx->gpr[3];
+    const uint32_t statusPtr = ctx->gpr[4];
+    if (BtPassthrough::Active()) {
+        func_801ED3A0(ctx);
+        FilterPassthroughStatus(chan, statusPtr, static_cast<int32_t>(ctx->gpr[3]));
+        return;
+    }
+    ctx->gpr[3] = static_cast<uint32_t>(KPAD__Read_HLE(chan, statusPtr, ctx->gpr[5]));
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801ED3A0, KPADRead_Native_801ed3a0, "KPADRead_Native_801ed3a0");
 
 // KPADReadEx: KPADRead plus an optional s32* error out-parameter. In NSMBW both are thin wrappers
 // around KPADiRead, and the main input path (EGG::CoreControllerMgr, call at 0x802BCE0C) uses this
@@ -300,9 +379,7 @@ extern "C" int32_t KPAD__ReadEx_HLE(uint32_t chan, uint32_t statusPtr, uint32_t 
     constexpr int32_t kKpadReadErrNone = 0;
     constexpr int32_t kKpadReadErrNoController = -2;
     if (chan == 0) {
-        settings_overlay::FlushGameSound();  // a Settings button's sound, from the game's own thread
-        HostSuspend::OnGameThread();         // a backup save before Android's pause, likewise
-        GameplayOptions::OnGameThread();     // the Gameplay tab's Power-Up, likewise
+        OnGameThread();
     }
     const int32_t read = KPAD__Read_HLE(chan, statusPtr, count);
     if (errPtr != 0) {
@@ -313,8 +390,22 @@ extern "C" int32_t KPAD__ReadEx_HLE(uint32_t chan, uint32_t statusPtr, uint32_t 
     }
     return read;
 }
-PPC_NATIVE_OVERRIDE(801ED3B0, KPAD__ReadEx_HLE, int32_t,
-         (uint32_t chan, uint32_t statusPtr, uint32_t count, uint32_t errPtr), (chan, statusPtr, count, errPtr));
+extern "C" void func_801ED3B0(CpuContext* ctx);  // the translated KPADReadEx
+extern "C" void KPADReadEx_Native_801ed3b0(CpuContext* ctx)
+{
+    const uint32_t chan = ctx->gpr[3];
+    const uint32_t statusPtr = ctx->gpr[4];
+    if (BtPassthrough::Active()) {
+        if (chan == 0) {
+            OnGameThread();
+        }
+        func_801ED3B0(ctx);
+        FilterPassthroughStatus(chan, statusPtr, static_cast<int32_t>(ctx->gpr[3]));
+        return;
+    }
+    ctx->gpr[3] = static_cast<uint32_t>(KPAD__ReadEx_HLE(chan, statusPtr, ctx->gpr[5], ctx->gpr[6]));
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801ED3B0, KPADReadEx_Native_801ed3b0, "KPADReadEx_Native_801ed3b0");
 
 // KPADGetUnifiedWpadStatus: the raw WPAD status behind KPADStatus. The game
 // reads the Classic Controller's buttons, sticks and triggers from here. The

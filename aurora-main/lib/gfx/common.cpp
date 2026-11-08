@@ -1130,6 +1130,10 @@ static bool begin_frame_impl(bool clearEfb, bool capacityResume = false) {
     mapBuffer(g_textureUpload, TextureUploadSize);
   }
 
+  if (clearEfb && !capacityResume) {
+    // Texture replacement switched on or off since the last frame (aurora_set_texture_replacements).
+    texture_replacement::apply_pending();
+  }
   g_drawCallCount = 0;
   g_mergedDrawCallCount = 0;
   if (clearEfb) {

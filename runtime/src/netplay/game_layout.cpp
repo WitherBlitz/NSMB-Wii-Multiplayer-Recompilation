@@ -33,6 +33,10 @@ public:
     uint8_t ascent = 0;
     uint8_t cellWidth = 0;
     uint8_t cellHeight = 0;
+    // The rows of a capital letter's ink in its cell ('H', from the top; 0, 0 unknown): DrawParams::centerInk
+    // centres these, not the whole cell, whose descender room leaves letters looking high.
+    float inkTop = 0;
+    float inkBottom = 0;
     uint16_t defaultIndex = 0;
     std::vector<uint64_t> sheets;  // ImTextureID per sheet
     std::vector<Glyph> glyphs;     // by glyph index
@@ -433,6 +437,7 @@ std::shared_ptr<Font> LoadFontFile(const std::string& path) {
             font->height = f[20];
             font->width = f[21];
             font->ascent = f[22];
+            std::vector<Image> allSheets;  // kept until the capital's ink is measured (below)
             if (tglp + 0x18 <= data.size()) {
                 const uint8_t* t = &data[tglp];
                 font->cellWidth = t[0];
@@ -459,8 +464,9 @@ std::shared_ptr<Font> LoadFontFile(const std::string& path) {
                     }
                     font->sheets.push_back(Upload(sheet));
                     if (colour) {
-                        colourSheets.push_back(std::move(sheet));
+                        colourSheets.push_back(sheet);
                     }
+                    allSheets.push_back(std::move(sheet));
                 }
                 const uint32_t perSheet = static_cast<uint32_t>(perRow) * perColumn;
                 // Widths, then the glyph cells.
@@ -536,6 +542,29 @@ std::shared_ptr<Font> LoadFontFile(const std::string& path) {
                 cmap = BE32(m + 8);
             }
             font->ok = !font->sheets.empty() && !font->glyphs.empty();
+            // The capital H's ink rows.
+            if (const auto h = font->map.find(u'H'); font->ok && h != font->map.end() && h->second < font->glyphs.size()) {
+                const Font::Glyph& g = font->glyphs[h->second];
+                if (g.sheet < allSheets.size()) {
+                    const Image& sheet = allSheets[g.sheet];
+                    const uint32_t x0 = static_cast<uint32_t>(g.u0 * sheet.width + 0.5f);
+                    const uint32_t y0 = static_cast<uint32_t>(g.v0 * sheet.height + 0.5f);
+                    int top = -1, bottom = -1;
+                    for (uint32_t row = 0; row < font->cellHeight && y0 + row < sheet.height; ++row) {
+                        for (uint32_t col = 0; col < font->cellWidth && x0 + col < sheet.width; ++col) {
+                            if (sheet.rgba[((static_cast<size_t>(y0) + row) * sheet.width + x0 + col) * 4 + 3] > 127) {
+                                top = top < 0 ? static_cast<int>(row) : top;
+                                bottom = static_cast<int>(row) + 1;
+                                break;
+                            }
+                        }
+                    }
+                    if (top >= 0) {
+                        font->inkTop = static_cast<float>(top);
+                        font->inkBottom = static_cast<float>(bottom);
+                    }
+                }
+            }
         }
     }
     return font;
@@ -668,7 +697,7 @@ ImVec2 ToScreen(const View& view, const Mtx& m, float x, float y) {
 void DrawTextLines(ImDrawList* list, const View& view, const Mtx& m, const Font& font, const std::u16string& text,
                    float rectX0, float rectY0, float rectW, float rectH, int textPosition, int alignment, float fontW,
                    float fontH, float charSpace, float lineSpace, const Rgba& top, const Rgba& bottom,
-                   bool plainText) {
+                   bool plainText, bool centerInk = false) {
     if (!font.ok || font.width == 0 || font.height == 0) {
         return;
     }
@@ -685,10 +714,28 @@ void DrawTextLines(ImDrawList* list, const View& view, const Mtx& m, const Font&
     const int posV = textPosition / 3;
     const float blockX = rectX0 + (posH == 0 ? 0.0f : posH == 1 ? (rectW - blockWidth) / 2 : rectW - blockWidth);
     float y = rectY0 - (posV == 0 ? 0.0f : posV == 1 ? (rectH - blockHeight) / 2 : rectH - blockHeight);
+    if (centerInk && posV == 1 && font.inkBottom > font.inkTop) {
+        // The capitals' ink, not the cell, in the middle of the rectangle (the lines' ink as one block).
+        y = rectY0 - rectH / 2 + (font.inkTop + font.inkBottom) / 2 * scaleY + lineHeight * (lines.size() - 1) / 2;
+    }
     const ImU32 topCol = ToImU32(top), bottomCol = ToImU32(bottom);
     for (const auto& line : lines) {
         const int align = alignment == 0 ? posH : alignment - 1;
         float x = blockX + (align == 0 ? 0.0f : align == 1 ? (blockWidth - line.width) / 2 : blockWidth - line.width);
+        if (centerInk && align == 1 && !line.text.empty()) {
+            // The ink, not the advances, in the middle: the first letter's left bearing and the last one's
+            // right bearing differ.
+            const Font* firstOwner = &font;
+            const Font* lastOwner = &font;
+            const Font::Glyph* first = font.Find(line.text.front(), &firstOwner, plainText);
+            const Font::Glyph* last = font.Find(line.text.back(), &lastOwner, plainText);
+            if (first != nullptr && last != nullptr) {
+                const float leftBearing = first->left * scaleX * OwnerScale(font, *firstOwner, false);
+                const float rightBearing =
+                    (last->charWidth - last->left - last->glyphWidth) * scaleX * OwnerScale(font, *lastOwner, false);
+                x -= (leftBearing - rightBearing) / 2;
+            }
+        }
         for (char16_t c : line.text) {
             const Font* owner = &font;
             const Font::Glyph* g = font.Find(c, &owner, plainText);
@@ -1372,7 +1419,7 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
             const float L = x0, R = x0 + paneW, T = y0, B = y0 - paneH;
             const float W = paneW, H = paneH;
             const float t = std::min(texH(0), H), r = std::min(texW(1), W), l = std::min(texW(2), W), b = std::min(texH(3), H);
-            const auto draw = [&](int i, float qx0, float qy0, float qx1, float qy1, float u0, float u1, float v0, float v1) {
+            const auto drawWhole = [&](int i, float qx0, float qy0, float qx1, float qy1, float u0, float u1, float v0, float v1) {
                 if ((flips[i] & 1) != 0) {
                     u0 = 1.0f - u0;
                     u1 = 1.0f - u1;
@@ -1383,6 +1430,31 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
                 }
                 const float uv[4][2] = {{u0, v0}, {u1, v0}, {u0, v1}, {u1, v1}};
                 quad(mats[i], white, qx0, qy0, qx1, qy1, uv, 0);
+            };
+            // DrawParams::frameClip: only what lies outside the inner rectangle, each piece keeping its part
+            // of the texture.
+            const auto clip = params.frameClip.find(pane.name);
+            const auto draw = [&](int i, float qx0, float qy0, float qx1, float qy1, float u0, float u1, float v0, float v1) {
+                if (clip == params.frameClip.end()) {
+                    drawWhole(i, qx0, qy0, qx1, qy1, u0, u1, v0, v1);
+                    return;
+                }
+                const float ix0 = L + clip->second.first, ix1 = R - clip->second.first;
+                const float iy0 = T - clip->second.second, iy1 = B + clip->second.second;
+                const auto piece = [&](float px0, float py0, float px1, float py1) {
+                    if (px1 - px0 <= 0.001f || py0 - py1 <= 0.001f) {
+                        return;
+                    }
+                    const float fx0 = (px0 - qx0) / (qx1 - qx0), fx1 = (px1 - qx0) / (qx1 - qx0);
+                    const float fy0 = (qy0 - py0) / (qy0 - qy1), fy1 = (qy0 - py1) / (qy0 - qy1);
+                    drawWhole(i, px0, py0, px1, py1, u0 + (u1 - u0) * fx0, u0 + (u1 - u0) * fx1, v0 + (v1 - v0) * fy0,
+                              v0 + (v1 - v0) * fy1);
+                };
+                piece(qx0, qy0, qx1, std::max(qy1, iy0));                         // above the inner rectangle
+                piece(qx0, std::min(qy0, iy1), qx1, qy1);                         // below it
+                const float my0 = std::min(qy0, iy0), my1 = std::max(qy1, iy1);  // beside it
+                piece(qx0, my0, std::min(qx1, ix0), my1);
+                piece(std::max(qx0, ix1), my0, qx1, my1);
             };
             // Top strip, anchored top-left; right strip, top-right; bottom strip, bottom-right;
             // left strip, bottom-left.
@@ -1412,7 +1484,7 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
         }
         DrawTextLines(list, view, m, *m_fonts[pane.font], *text, x0, y0, paneW, paneH, pane.textPosition,
                       pane.textAlignment, pane.fontW * textScale, pane.fontH * textScale, pane.charSpace,
-                      pane.lineSpace, top, bottom, params.plainText);
+                      pane.lineSpace, top, bottom, params.plainText, params.centerInk);
     }
 
     const float mtx[6] = {m.a, m.b, m.c, m.d, m.tx, m.ty};

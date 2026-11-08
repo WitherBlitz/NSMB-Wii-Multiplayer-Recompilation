@@ -36,6 +36,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -242,6 +243,8 @@ void HideRemotesPanel(uint16_t scene) {
     }
 }
 
+void SingularPlayerCount(uint16_t scene);
+
 } // namespace
 
 void OnRetrace() {
@@ -260,6 +263,7 @@ void OnRetrace() {
     StartCardsOnSavedCharacter(scene);
     RememberCharacter(scene);
     HideRemotesPanel(scene);
+    SingularPlayerCount(scene);
 }
 
 void SetActiveFile(int file) {
@@ -504,6 +508,58 @@ uint32_t FindPane(uint32_t pane, const char* name, int depth = 0) {
         }
     }
     return 0;
+}
+
+// The character screen's heading T_titleNinzu_00 is message 2/0x1C, "<count> Players", its count
+// dInfo_c's number of players (TagProcessor_c::getPlayNumber). The game only opened the screen for 2
+// to 4 players; with P1 alone it reads "1 Players". The disc has no singular wording (its player
+// count screen shows only the digits), so for 1 the plural word at the end is swapped for its
+// singular, in the text box's own string (mTextBuf, mTextLen), after the game has set it. Only that
+// text box changes, and not in lockstep (LAN) play, where OnRetrace stops before this. Text with no
+// word from this table (another language, a mod's) is left as it is.
+void SingularPlayerCount(uint16_t scene) {
+    constexpr uint32_t kInfoInstance = 0x80429F7Cu;  // dInfo_c::m_instance
+    constexpr uint32_t kInfoPlayerCount = 0x3CC;     // what the message's count tag shows
+    constexpr uint32_t kScreenTitle = 0x608;         // the screen's T_titleNinzu_00 (0x807A10D8)
+    constexpr uint32_t kTextBuf = 0xD8, kTextLen = 0xFE;  // nw4r::lyt::TextBox
+    struct Word {
+        std::u16string_view plural, singular;
+    };
+    // The plural as the discs' languages write it (USA and PAL), and the Italian language pack's.
+    static constexpr Word kWords[] = {
+        {u"Players", u"Player"},     {u"joueurs", u"joueur"},     {u"Jugadores", u"Jugador"},
+        {u"jugadores", u"jugador"},  {u"giocatori", u"giocatore"},
+    };
+    uint32_t info = 0, count = 0, screen = 0, title = 0, buffer = 0;
+    if (scene != kSceneGameSetup || !Memory::TryRead32(kInfoInstance, info) || !InGuestRam(info) ||
+        !Memory::TryRead32(info + kInfoPlayerCount, count) || count != 1 ||
+        (screen = GameMenus::ProfileObject(kProfileCharacterScreen)) == 0 ||
+        !Memory::TryRead32(screen + kScreenTitle, title) || !InGuestRam(title) || !PaneNamed(title, "T_titleNinzu_00") ||
+        !Memory::TryRead32(title + kTextBuf, buffer) || !InGuestRam(buffer)) {
+        return;
+    }
+    const uint32_t length = Memory::Read16(title + kTextLen);
+    for (const Word& word : kWords) {
+        const auto size = static_cast<uint32_t>(word.plural.size());
+        if (length < size) {
+            continue;
+        }
+        const uint32_t start = buffer + 2 * (length - size);
+        bool match = true;
+        for (uint32_t i = 0; i < size && match; ++i) {
+            match = Memory::Read16(start + 2 * i) == word.plural[i];
+        }
+        if (!match) {
+            continue;
+        }
+        for (uint32_t i = 0; i < word.singular.size(); ++i) {
+            Memory::Write16(start + 2 * i, word.singular[i]);
+        }
+        const auto shown = static_cast<uint32_t>(length - size + word.singular.size());
+        Memory::Write16(buffer + 2 * shown, 0);
+        Memory::Write16(title + kTextLen, static_cast<uint16_t>(shown));
+        return;
+    }
 }
 
 void CardPortrait(CpuContext* ctx) {

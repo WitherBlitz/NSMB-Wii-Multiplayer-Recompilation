@@ -1432,6 +1432,36 @@ void invalidate_static_texture_cache() noexcept {
   g_gxState.stateDirty = true;
 }
 
+// Texture replacement was switched on or off (texture_replacement::apply_pending, at a frame's start):
+// every tier holds textures resolved under the old setting, so all of them go, as when the revision wraps
+// in invalidate_static_texture_cache, and each texture is looked up again the next time it is drawn.
+void reset_static_texture_caches() noexcept {
+  ++s_staticTextureCacheValidationRevision;
+  if (s_staticTextureCacheValidationRevision == 0) {
+    s_staticTextureCacheValidationRevision = 1;
+  }
+  s_textureCacheStamps = 0;
+  s_textureObjectCaches.clear();
+  s_tlutObjectCaches.clear();
+  s_staticTextureSourceCache.clear();
+  clear_static_texture_content_cache();
+  s_staticPaletteTextureSourceCache.clear();
+  s_texObjSourceKeys.clear();
+  s_texObjPaletteSourceKeys.clear();
+  s_texObjSourceKeyMemo.reset();
+  s_texObjPaletteSourceKeyMemo.reset();
+  clear_static_source_front_cache();
+  for (auto& entry : s_textureResolveIdentityCache) {
+    entry.valid = false;
+    entry.binding.reset();
+  }
+  s_lastTextureResolveIdentityValid.fill(false);
+  s_lastNoCopyResolveRevision.fill(0);
+  s_lastStaticSourceResolveKeyValid.fill(false);
+  s_lastStaticSourceNoCopyRevision.fill(0);
+  g_gxState.stateDirty = true;
+}
+
 void clear_copy_texture_cache() noexcept {
   g_gxState.copyTextures.clear();
   g_gxState.copyTextureCache.clear();

@@ -465,14 +465,16 @@ Picked Show(const Text& text, const std::string& problem) {
                 Ask(answer, true, text.folderTitle);
             }
             ImGui::Dummy(ImVec2(0, 4 * s));
-            Centred(buttonWidth);
-            if (focus) {
-                ImGui::SetKeyboardFocusHere();  // back from the Mods page, on its button
-                focus = false;
-            }
-            if (ImGui::Button("Mods", ImVec2(buttonWidth, 0))) {
-                mods = true;
-                focus = true;
+            if (text.mods) {
+                Centred(buttonWidth);
+                if (focus) {
+                    ImGui::SetKeyboardFocusHere();  // back from the Mods page, on its button
+                    focus = false;
+                }
+                if (ImGui::Button("Mods", ImVec2(buttonWidth, 0))) {
+                    mods = true;
+                    focus = true;
+                }
             }
             ImGui::EndDisabled();
             ImGui::Dummy(ImVec2(0, 10 * s));
@@ -549,6 +551,10 @@ std::string RunWithProgress(const Text& text, const std::string& line, const Job
     }
     worker.join();
     return result;
+}
+
+void ShowError(const Text& text, const std::string& message) {
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, text.title.c_str(), message.c_str(), g_window.window);
 }
 
 void Close() {

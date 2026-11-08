@@ -14,6 +14,10 @@ inline constexpr size_t MaxAsyncReadbackSlots = 32;
 // texture's row pitch apart. These are read back every frame so the texture sees them.
 void schedule(void* dest, uint32_t width, uint32_t height, GXTexFmt format, TextureHandle texture,
               uint32_t strideWidth = 0) noexcept;
+// NSMBW: whether schedule() could read a copy of this size back into guest RAM by itself (the
+// probe-sized readback, or a patch readback when strideWidth > width), i.e. whether the copy writes
+// guest memory. Async GX copies run those in place, on the game thread, as before.
+bool writes_guest_ram(GXTexFmt format, uint32_t width, uint32_t height, uint32_t strideWidth) noexcept;
 bool has_pending(void* dest = nullptr) noexcept;
 bool prepare_downloads(void* dest = nullptr);
 void encode_downloads(const wgpu::CommandEncoder& encoder, void* dest = nullptr) noexcept;

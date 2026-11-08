@@ -6,6 +6,7 @@
 #include "hle/controller_status_contract.h"
 #include "wii_remote_input.h"
 #include "wpad_speaker.h"
+#include "bt_passthrough.h"
 
 #include <aurora/sdl_gamepad.h>
 #include <SDL3/SDL_gamepad.h>
@@ -66,19 +67,44 @@ int32_t CompleteWpadRequest(uint32_t chan, uint32_t callback, int32_t result)
 
 } // namespace
 
+// Bluetooth passthrough (bt_passthrough.h): with a USB adapter in use, the game's own WPAD drives
+// the real remotes. Each native below is registered over the translated original, which
+// REGISTER_NATIVE_FUNCTION_AS keeps (unlike PPC_NATIVE_OVERRIDE), and calls it while passthrough
+// is on; otherwise it runs the HLE exactly as before. The decision is made once, before WPADInit.
+// The call stays written out as func_xxx(ctx): the translator reads these bodies to learn which
+// registers a native touches, and only a context handed on whole makes it sync them all.
+
 extern "C" int32_t WPADGetStatus_HLE()
 {
     // RVL::WPADGetStatus takes no channel arg; it reports global WUD library state.
     // Reading r3 here would leak a caller's stale register value into the result.
     return g_state.contract.GetLibraryStatus();
 }
-PPC_NATIVE_OVERRIDE(801DFB30, WPADGetStatus_HLE, int32_t, (), ());
+extern "C" void func_801DFB30(CpuContext* ctx);  // the translated WPADGetStatus
+extern "C" void WPADGetStatus_Native_801dfb30(CpuContext* ctx)
+{
+    if (BtPassthrough::Active()) {
+        func_801DFB30(ctx);
+        return;
+    }
+    ctx->gpr[3] = static_cast<uint32_t>(WPADGetStatus_HLE());
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801DFB30, WPADGetStatus_Native_801dfb30, "WPADGetStatus_Native_801dfb30");
 
 extern "C" uint32_t WPADGetDpdSensitivity_HLE()
 {
     return static_cast<uint32_t>(g_state.dpdSensitivity);
 }
-PPC_NATIVE_OVERRIDE(801E3890, WPADGetDpdSensitivity_HLE, uint32_t, (), ());
+extern "C" void func_801E3890(CpuContext* ctx);  // the translated WPADGetDpdSensitivity
+extern "C" void WPADGetDpdSensitivity_Native_801e3890(CpuContext* ctx)
+{
+    if (BtPassthrough::Active()) {
+        func_801E3890(ctx);
+        return;
+    }
+    ctx->gpr[3] = WPADGetDpdSensitivity_HLE();
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801E3890, WPADGetDpdSensitivity_Native_801e3890, "WPADGetDpdSensitivity_Native_801e3890");
 
 extern "C" int32_t WPADInitSub_HLE()
 {
@@ -106,13 +132,37 @@ extern "C" int32_t WPADInit_HLE()
     RT_LOGF(RT_TAG_AUDIO, "remote speaker volume %u\n", volume);
     return InitializeWpadLibrary();
 }
-PPC_NATIVE_OVERRIDE(801DFA50, WPADInit_HLE, int32_t, (), ());
+uint32_t SC_FinishBackgroundLoad();  // hle/sc.cpp
+extern "C" void func_801DFA50(CpuContext* ctx);  // the translated WPADInit
+extern "C" void WPADInit_Native_801dfa50(CpuContext* ctx)
+{
+    if (BtPassthrough::Active()) {
+        BtPassthrough::BeforeGameWpadInit();
+        SC_FinishBackgroundLoad();  // the SYSCONF with the paired remotes, parsed before WPAD reads it
+        func_801DFA50(ctx);
+        // _wpadSpeakerVol as the game's own __wpadInitSub set it: SYSCONF's BT.SPKV (0x58 = 88) once
+        // SC has loaded the passthrough's SYSCONF, the SDK's default 89 if it hasn't.
+        RT_LOGF(RT_TAG_AUDIO, "remote speaker volume %u (the game's own WPAD)\n", Memory::Read8(0x8042AAB7u));
+        return;
+    }
+    ctx->gpr[3] = static_cast<uint32_t>(WPADInit_HLE());
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801DFA50, WPADInit_Native_801dfa50, "WPADInit_Native_801dfa50");
 
 extern "C" int32_t WUDGetStatus_HLE()
 {
     return WpadContract::kStatusReady;
 }
-PPC_NATIVE_OVERRIDE(801F3530, WUDGetStatus_HLE, int32_t, (), ());
+extern "C" void func_801F3530(CpuContext* ctx);  // the translated WUDGetStatus
+extern "C" void WUDGetStatus_Native_801f3530(CpuContext* ctx)
+{
+    if (BtPassthrough::Active()) {
+        func_801F3530(ctx);
+        return;
+    }
+    ctx->gpr[3] = static_cast<uint32_t>(WUDGetStatus_HLE());
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801F3530, WUDGetStatus_Native_801f3530, "WUDGetStatus_Native_801f3530");
 
 // WPADGetDataFormat reads the per-channel format set by WPADSetDataFormat. Can't reuse the
 // translated SDK implementation: it dereferences Bluetooth control blocks that HLE'd WPADInit
@@ -121,14 +171,32 @@ extern "C" int32_t WPADGetDataFormat_HLE(uint32_t chan)
 {
     return g_state.contract.GetDataFormat(chan);
 }
-PPC_NATIVE_OVERRIDE(801E1150, WPADGetDataFormat_HLE, int32_t, (uint32_t chan), (chan));
+extern "C" void func_801E1150(CpuContext* ctx);  // the translated WPADGetDataFormat
+extern "C" void WPADGetDataFormat_Native_801e1150(CpuContext* ctx)
+{
+    if (BtPassthrough::Active()) {
+        func_801E1150(ctx);
+        return;
+    }
+    ctx->gpr[3] = static_cast<uint32_t>(WPADGetDataFormat_HLE(ctx->gpr[3]));
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801E1150, WPADGetDataFormat_Native_801e1150, "WPADGetDataFormat_Native_801e1150");
 
 // WPADSetDataFormat: records the per-channel data format the game asked for.
 extern "C" int32_t WPADSetDataFormat_HLE(uint32_t chan, int32_t format)
 {
     return g_state.contract.SetDataFormat(chan, format);
 }
-PPC_NATIVE_OVERRIDE(801E11A0, WPADSetDataFormat_HLE, int32_t, (uint32_t chan, int32_t format), (chan, format));
+extern "C" void func_801E11A0(CpuContext* ctx);  // the translated WPADSetDataFormat
+extern "C" void WPADSetDataFormat_Native_801e11a0(CpuContext* ctx)
+{
+    if (BtPassthrough::Active()) {
+        func_801E11A0(ctx);
+        return;
+    }
+    ctx->gpr[3] = static_cast<uint32_t>(WPADSetDataFormat_HLE(ctx->gpr[3], static_cast<int32_t>(ctx->gpr[4])));
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801E11A0, WPADSetDataFormat_Native_801e11a0, "WPADSetDataFormat_Native_801e11a0");
 
 // WPADProbe: reports the extension type of a Bluetooth remote on `chan`, or no controller.
 extern "C" int32_t WPADProbe_HLE(uint32_t chan, uint32_t typePtr)
@@ -175,7 +243,16 @@ extern "C" int32_t WPADProbe_HLE(uint32_t chan, uint32_t typePtr)
     }
     return WpadContract::kErrorNoController;
 }
-PPC_NATIVE_OVERRIDE(801E0F40, WPADProbe_HLE, int32_t, (uint32_t chan, uint32_t typePtr), (chan, typePtr));
+extern "C" void func_801E0F40(CpuContext* ctx);  // the translated WPADProbe
+extern "C" void WPADProbe_Native_801e0f40(CpuContext* ctx)
+{
+    if (BtPassthrough::Active()) {
+        func_801E0F40(ctx);
+        return;
+    }
+    ctx->gpr[3] = static_cast<uint32_t>(WPADProbe_HLE(ctx->gpr[3], ctx->gpr[4]));
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801E0F40, WPADProbe_Native_801e0f40, "WPADProbe_Native_801e0f40");
 
 extern "C" bool PAD_HLE_RumbleEnabled();
 #if defined(__ANDROID__)
@@ -223,7 +300,16 @@ extern "C" void WPADControlMotor_HLE(uint32_t chan, uint32_t command)
     }
 #endif
 }
-PPC_NATIVE_OVERRIDE(801E14E0, WPADControlMotor_HLE, void, (uint32_t chan, uint32_t command), (chan, command));
+extern "C" void func_801E14E0(CpuContext* ctx);  // the translated WPADControlMotor
+extern "C" void WPADControlMotor_Native_801e14e0(CpuContext* ctx)
+{
+    if (BtPassthrough::Active()) {
+        func_801E14E0(ctx);
+        return;
+    }
+    WPADControlMotor_HLE(ctx->gpr[3], ctx->gpr[4]);
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801E14E0, WPADControlMotor_Native_801e14e0, "WPADControlMotor_Native_801e14e0");
 
 extern "C" int32_t WPADGetInfoAsync_HLE(uint32_t chan, uint32_t infoPtr, uint32_t callback)
 {
@@ -234,8 +320,16 @@ extern "C" int32_t WPADGetInfoAsync_HLE(uint32_t chan, uint32_t infoPtr, uint32_
     (void)infoPtr;
     return CompleteWpadRequest(chan, callback, WpadContract::kErrorNoController);
 }
-PPC_NATIVE_OVERRIDE(801E12C0, WPADGetInfoAsync_HLE, int32_t,
-         (uint32_t chan, uint32_t infoPtr, uint32_t callback), (chan, infoPtr, callback));
+extern "C" void func_801E12C0(CpuContext* ctx);  // the translated WPADGetInfoAsync
+extern "C" void WPADGetInfoAsync_Native_801e12c0(CpuContext* ctx)
+{
+    if (BtPassthrough::Active()) {
+        func_801E12C0(ctx);
+        return;
+    }
+    ctx->gpr[3] = static_cast<uint32_t>(WPADGetInfoAsync_HLE(ctx->gpr[3], ctx->gpr[4], ctx->gpr[5]));
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801E12C0, WPADGetInfoAsync_Native_801e12c0, "WPADGetInfoAsync_Native_801e12c0");
 
 extern "C" int32_t WPADControlLed_HLE(uint32_t chan, uint32_t ledMask, uint32_t callback)
 {
@@ -245,8 +339,16 @@ extern "C" int32_t WPADControlLed_HLE(uint32_t chan, uint32_t ledMask, uint32_t 
     (void)ledMask;
     return CompleteWpadRequest(chan, callback, WpadContract::kErrorNoController);
 }
-PPC_NATIVE_OVERRIDE(801E1630, WPADControlLed_HLE, int32_t,
-         (uint32_t chan, uint32_t ledMask, uint32_t callback), (chan, ledMask, callback));
+extern "C" void func_801E1630(CpuContext* ctx);  // the translated WPADControlLed
+extern "C" void WPADControlLed_Native_801e1630(CpuContext* ctx)
+{
+    if (BtPassthrough::Active()) {
+        func_801E1630(ctx);
+        return;
+    }
+    ctx->gpr[3] = static_cast<uint32_t>(WPADControlLed_HLE(ctx->gpr[3], ctx->gpr[4], ctx->gpr[5]));
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801E1630, WPADControlLed_Native_801e1630, "WPADControlLed_Native_801e1630");
 
 extern "C" int32_t WPADStartSimpleSync_HLE()
 {
@@ -276,7 +378,16 @@ extern "C" int32_t WPADStopSimpleSync_HLE()
     }
     return 1;
 }
-PPC_NATIVE_OVERRIDE(801DFAD0, WPADStopSimpleSync_HLE, int32_t, (), ());
+extern "C" void func_801DFAD0(CpuContext* ctx);  // the translated WPADStopSimpleSync
+extern "C" void WPADStopSimpleSync_Native_801dfad0(CpuContext* ctx)
+{
+    if (BtPassthrough::Active()) {
+        func_801DFAD0(ctx);
+        return;
+    }
+    ctx->gpr[3] = static_cast<uint32_t>(WPADStopSimpleSync_HLE());
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801DFAD0, WPADStopSimpleSync_Native_801dfad0, "WPADStopSimpleSync_Native_801dfad0");
 
 // ---- The remote speaker (wpad_speaker.h) ----
 //
@@ -390,20 +501,46 @@ extern "C" int32_t WPADControlSpeaker_HLE(uint32_t chan, uint32_t command, uint3
     }
     return kStatusOk;
 }
-PPC_NATIVE_OVERRIDE(801E1E20, WPADControlSpeaker_HLE, int32_t,
-         (uint32_t chan, uint32_t command, uint32_t callback), (chan, command, callback));
+extern "C" void func_801E1E20(CpuContext* ctx);  // the translated WPADControlSpeaker
+extern "C" void WPADControlSpeaker_Native_801e1e20(CpuContext* ctx)
+{
+    if (BtPassthrough::Active()) {
+        func_801E1E20(ctx);
+        return;
+    }
+    ctx->gpr[3] = static_cast<uint32_t>(WPADControlSpeaker_HLE(ctx->gpr[3], ctx->gpr[4], ctx->gpr[5]));
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801E1E20, WPADControlSpeaker_Native_801e1e20, "WPADControlSpeaker_Native_801e1e20");
 
 extern "C" int32_t WPADIsSpeakerEnabled_HLE(uint32_t chan)
 {
     return chan < g_speakers.size() && g_speakers[chan].on.load(std::memory_order_relaxed) ? 1 : 0;
 }
-PPC_NATIVE_OVERRIDE(801E1DD0, WPADIsSpeakerEnabled_HLE, int32_t, (uint32_t chan), (chan));
+extern "C" void func_801E1DD0(CpuContext* ctx);  // the translated WPADIsSpeakerEnabled
+extern "C" void WPADIsSpeakerEnabled_Native_801e1dd0(CpuContext* ctx)
+{
+    if (BtPassthrough::Active()) {
+        func_801E1DD0(ctx);
+        return;
+    }
+    ctx->gpr[3] = static_cast<uint32_t>(WPADIsSpeakerEnabled_HLE(ctx->gpr[3]));
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801E1DD0, WPADIsSpeakerEnabled_Native_801e1dd0, "WPADIsSpeakerEnabled_Native_801e1dd0");
 
 extern "C" int32_t WPADCanSendStreamData_HLE(uint32_t chan)
 {
     return WPADIsSpeakerEnabled_HLE(chan);
 }
-PPC_NATIVE_OVERRIDE(801E35F0, WPADCanSendStreamData_HLE, int32_t, (uint32_t chan), (chan));
+extern "C" void func_801E35F0(CpuContext* ctx);  // the translated WPADCanSendStreamData
+extern "C" void WPADCanSendStreamData_Native_801e35f0(CpuContext* ctx)
+{
+    if (BtPassthrough::Active()) {
+        func_801E35F0(ctx);
+        return;
+    }
+    ctx->gpr[3] = static_cast<uint32_t>(WPADCanSendStreamData_HLE(ctx->gpr[3]));
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801E35F0, WPADCanSendStreamData_Native_801e35f0, "WPADCanSendStreamData_Native_801e35f0");
 
 // One packet of the game's ADPCM stream (20 bytes, 40 samples). A real remote gets it as output
 // report 0x18; anywhere else the mixer already plays the same sound from the remote's bus.
@@ -436,8 +573,16 @@ extern "C" int32_t WPADSendStreamData_HLE(uint32_t chan, uint32_t bufferPtr, uin
     }
     return kStatusOk;
 }
-PPC_NATIVE_OVERRIDE(801E3680, WPADSendStreamData_HLE, int32_t,
-         (uint32_t chan, uint32_t bufferPtr, uint32_t length), (chan, bufferPtr, length));
+extern "C" void func_801E3680(CpuContext* ctx);  // the translated WPADSendStreamData
+extern "C" void WPADSendStreamData_Native_801e3680(CpuContext* ctx)
+{
+    if (BtPassthrough::Active()) {
+        func_801E3680(ctx);
+        return;
+    }
+    ctx->gpr[3] = static_cast<uint32_t>(WPADSendStreamData_HLE(ctx->gpr[3], ctx->gpr[4], ctx->gpr[5]));
+}
+REGISTER_NATIVE_FUNCTION_AS(0x801E3680, WPADSendStreamData_Native_801e3680, "WPADSendStreamData_Native_801e3680");
 
 extern "C" uint32_t WPADSetSyncDeviceCallback_HLE(uint32_t callback)
 {

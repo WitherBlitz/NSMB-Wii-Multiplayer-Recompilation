@@ -1,5 +1,6 @@
 #pragma once
 #include "ppc_isa_fpenv.h"
+#include "../guest_thread_state.h"
 
 #include <cmath>
 #include <cstdint>
@@ -53,14 +54,12 @@ struct CpuContext {
     uint32_t msr;       // Machine State Register
 };
 
-inline thread_local CpuContext* g_currentCpuContext = nullptr;
-
 class CpuContextScope {
 public:
     explicit CpuContextScope(CpuContext* ctx)
-        : previous_(g_currentCpuContext)
+        : previous_(g_guestThreadState.currentCpuContext)
     {
-        g_currentCpuContext = ctx;
+        g_guestThreadState.currentCpuContext = ctx;
 
         savedMxcsr_ = MkwGetHostFpControl();
         if (ctx != nullptr)
@@ -69,7 +68,7 @@ public:
 
     ~CpuContextScope()
     {
-        g_currentCpuContext = previous_;
+        g_guestThreadState.currentCpuContext = previous_;
         if (previous_ != nullptr)
             MkwApplyHostNiMode(previous_->fpscr);
         else
@@ -86,7 +85,7 @@ private:
 
 inline CpuContext* TryGetCpuContext() noexcept
 {
-    return g_currentCpuContext;
+    return g_guestThreadState.currentCpuContext;
 }
 
 inline CpuContext* CurrentCpuContext()

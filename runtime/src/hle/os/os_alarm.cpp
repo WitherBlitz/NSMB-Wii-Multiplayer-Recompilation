@@ -12,6 +12,7 @@
 #include "ppc_runtime.h"
 #include "runtime_log.h"
 #include "hle/net/network.h"
+#include "bt_passthrough.h"
 #include "generated/RuntimeConfig.h"
 #include "os_internal.h"
 
@@ -239,6 +240,12 @@ bool ProcessAlarmQueue(CpuContext* cpu, int maxToProcess)
         completionNeedsReschedule = true;
     }
 
+    // Bluetooth passthrough: what the adapter sent fills the game's waiting USB reads; their IOS
+    // callbacks join the queue drained just below. Nothing to do (one atomic load) when it is off.
+    if (BtPassthrough::ProcessCompletions()) {
+        handledAny = true;
+        completionNeedsReschedule = true;
+    }
     if (NandProcessPendingCallbacks(cpu, maxToProcess)) {
         handledAny = true;
         completionNeedsReschedule = true;

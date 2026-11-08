@@ -3,6 +3,7 @@
 #ifdef AURORA_ENABLE_GX
 #include "gfx/common.hpp"
 #include "gfx/efb_ram_copy.hpp"
+#include "gfx/texture_replacement.hpp"
 #include "gx/fifo.hpp"
 #include "gx/shader_info.hpp"
 #include "imgui.hpp"
@@ -2148,6 +2149,13 @@ void aurora_set_frame_interpolation_fps(uint32_t targetFps) {
   (void)targetFps;
 #endif
 }
+void aurora_set_frame_interpolation_source_fps(uint32_t sourceFps) {
+#ifdef AURORA_ENABLE_GX
+  aurora::gx::set_frame_interpolation_source_fps(sourceFps);
+#else
+  (void)sourceFps;
+#endif
+}
 uint32_t aurora_get_frame_interpolation_fps() {
 #ifdef AURORA_ENABLE_GX
   return aurora::gx::frame_interpolation_fps();
@@ -2249,6 +2257,7 @@ void aurora_set_background_input(bool value) {
   aurora::window::set_background_input(value);
 }
 void aurora_set_display_mode(AuroraDisplayMode mode) { aurora::window::set_display_mode(mode); }
+void aurora_set_texture_replacements(bool enabled) { aurora::gfx::texture_replacement::request_enabled(enabled); }
 AuroraDisplayMode aurora_get_display_mode() { return aurora::window::get_display_mode(); }
 void aurora_set_metalfx_spatial(bool enabled) { aurora::g_metalfxRequested.store(enabled); }
 bool aurora_get_metalfx_spatial() { return aurora::g_metalfxRequested.load(); }

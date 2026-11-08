@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <cstring>
 #include <filesystem>
@@ -76,8 +77,18 @@ std::array<TlutMetadata, MaxTluts> s_loadedTluts{};
 std::list<RuntimeTextureKey> s_replacementLru;
 std::filesystem::path s_replacementRoot;
 std::filesystem::path s_dumpRoot;
+// Copies of g_config's paths, whose strings belong to the caller: the folder is indexed again when
+// replacement is turned on while the game runs (apply_pending).
+std::string s_userPath;
+std::string s_cachePath;
+std::atomic<int> s_pendingEnabled{-1};  // -1 nothing asked, else the setting to apply (request_enabled)
 uint64_t s_replacementCacheBytes = 0;
+#if defined(__ANDROID__)
+// A phone's GPU shares its few GB of memory with everything else.
+constexpr uint64_t kReplacementCacheBudgetBytes = 384ull << 20;
+#else
 constexpr uint64_t kReplacementCacheBudgetBytes = 4294967296; // 4GB, reasonable for modern hardware?
+#endif
 constexpr uint64_t kReplacementWildcardTextureHash = 0xFFFFFFFFFFFFFFFFull;
 constexpr uint64_t kReplacementWildcardTlutHash = 0xFFFFFFFFFFFFFFFEull;
 
@@ -506,8 +517,8 @@ void build_index() noexcept {
     return;
   }
 
-  auto userPath = fs_path_from_string(g_config.userPath);
-  auto cachePath = fs_path_from_string(g_config.cachePath);
+  auto userPath = fs_path_from_string(s_userPath);
+  auto cachePath = fs_path_from_string(s_cachePath);
 
   s_replacementRoot = userPath / "texture_replacements";
   s_dumpRoot = cachePath / "texture_dumps";
@@ -678,7 +689,39 @@ bool report_missing_key(const RuntimeTextureKey& key, const GXTexObj_& obj) noex
   return true;
 }
 
-void initialize() noexcept { build_index(); }
+void initialize() noexcept {
+  s_userPath = g_config.userPath != nullptr ? g_config.userPath : "";
+  s_cachePath = g_config.cachePath != nullptr ? g_config.cachePath : "";
+  build_index();
+}
+
+void request_enabled(bool enabled) noexcept { s_pendingEnabled.store(enabled ? 1 : 0, std::memory_order_release); }
+
+// At a frame's start, on the thread that runs the GX FIFO (gfx::begin_frame). Asked again with the same
+// setting, it indexes the folder again (a pack just installed).
+void apply_pending() noexcept {
+  const int pending = s_pendingEnabled.exchange(-1, std::memory_order_acq_rel);
+  if (pending < 0) {
+    return;
+  }
+  const bool enabled = pending != 0;
+  s_replacementIndex.clear();
+  s_replacementCache.clear();
+  s_failedKeys.clear();
+  s_reportedMisses.clear();
+  s_replacementLru.clear();
+  s_replacementCacheBytes = 0;
+  if (!enabled) {
+    s_pendingTluts.clear();
+    for (auto& tlut : s_loadedTluts) {
+      tlut = {};
+    }
+  }
+  g_config.allowTextureReplacements = enabled;
+  build_index();
+  aurora::gx::reset_static_texture_caches();
+  Log.info("Texture replacements {}", enabled ? "on" : "off");
+}
 
 void shutdown() noexcept {
   s_replacementIndex.clear();

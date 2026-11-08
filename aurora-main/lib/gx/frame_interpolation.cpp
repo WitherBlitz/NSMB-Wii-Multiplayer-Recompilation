@@ -26,6 +26,7 @@
 namespace aurora::gx {
 namespace detail {
 std::atomic_uint32_t g_frameInterpolationFps{0};
+std::atomic_uint32_t g_activeInterpolationSamples{0};
 } // namespace detail
 
 namespace {
@@ -257,9 +258,10 @@ std::atomic_bool s_frameInterpolationReplaySafe{true};
 uint32_t s_previousInterpolationFps = 0;
 
 // Adaptive slot count: the target moves at most one step per pacing window, while
-// s_activeInterpolationSamples is latched per frame and must not move mid-frame.
+// detail::g_activeInterpolationSamples is latched per frame and must not move mid-frame.
 std::atomic_uint32_t s_interpolationSampleTarget{0};
-std::atomic_uint32_t s_activeInterpolationSamples{0};
+// NSMBW: guest frames a second that carry a picture (30 with Battery Saver).
+std::atomic_uint32_t s_interpolationSourceFps{60};
 
 // Set when the producer already overran its retrace budget; the next seal then skips
 // inserted slots for that one frame, which helps the late frame catch back up.
@@ -273,12 +275,17 @@ constexpr uint32_t kPacingWindowFrames = 60; // ~1 second of guest frames
 constexpr uint32_t kPacingReducePercent = 75;
 constexpr uint32_t kPacingRestorePercent = 25;
 
-uint32_t maximum_interpolation_samples() noexcept {
-  const uint32_t targetFps = frame_interpolation_fps();
-  if (targetFps == 0) {
+// Slots between two pictures: target / source - 1 (120 from 60 is one, 60 from 30 is one).
+uint32_t interpolation_samples_for(uint32_t targetFps) noexcept {
+  const uint32_t sourceFps = s_interpolationSourceFps.load(std::memory_order_acquire);
+  if (targetFps <= sourceFps) {
     return 0;
   }
-  return std::min(targetFps / 60 - 1, MaxInterpolatedFrames);
+  return std::min(targetFps / sourceFps - 1, MaxInterpolatedFrames);
+}
+
+uint32_t maximum_interpolation_samples() noexcept {
+  return interpolation_samples_for(frame_interpolation_fps());
 }
 
 constexpr float kMinimumScale = 1.0e-5f;
@@ -725,14 +732,21 @@ float snapshot_match_distance_squared(const FrameTransformEntry& previousEntry,
   return static_cast<float>(distance / static_cast<double>(matchedMatrices));
 }
 
+void set_frame_interpolation_source_fps(uint32_t sourceFps) noexcept {
+  sourceFps = sourceFps == 30 ? 30u : 60u;
+  if (s_interpolationSourceFps.exchange(sourceFps, std::memory_order_acq_rel) != sourceFps) {
+    // The slot count follows the new source; start again at full quality.
+    set_frame_interpolation_fps(frame_interpolation_fps());
+  }
+}
+
 void set_frame_interpolation_fps(uint32_t targetFps) noexcept {
-  if (targetFps != 120 && targetFps != 180 && targetFps != 240) {
+  if (targetFps != 60 && targetFps != 120 && targetFps != 180 && targetFps != 240 && targetFps != 300) {
     targetFps = 0;
   }
   detail::g_frameInterpolationFps.store(targetFps, std::memory_order_release);
   // Start at the configured quality; the controller only ever backs off from here.
-  s_interpolationSampleTarget.store(targetFps == 0 ? 0u : std::min(targetFps / 60 - 1, MaxInterpolatedFrames),
-                                    std::memory_order_release);
+  s_interpolationSampleTarget.store(interpolation_samples_for(targetFps), std::memory_order_release);
   s_dropInterpolationAtSeal.store(false, std::memory_order_release);
   s_pacingWindowFrames.store(0, std::memory_order_release);
   s_pacingWindowMisses.store(0, std::memory_order_release);
@@ -795,9 +809,9 @@ void begin_frame_interpolation() noexcept {
     recycle_transform_entries(s_previousFrameTransforms);
     s_previousInterpolationFps = targetFps;
   }
-  // Latch the slot count for the frame starting here; see s_activeInterpolationSamples
+  // Latch the slot count for the frame starting here; see detail::g_activeInterpolationSamples
   // for why it cannot move again until the seal.
-  s_activeInterpolationSamples.store(
+  detail::g_activeInterpolationSamples.store(
       std::min(s_interpolationSampleTarget.load(std::memory_order_acquire),
                maximum_interpolation_samples()),
       std::memory_order_release);
@@ -1377,7 +1391,7 @@ void get_frame_interpolation_diagnostics(AuroraFrameInterpolationDiagnostics& di
   diagnostics.targetFps = frame_interpolation_fps();
   diagnostics.targetSamples = std::min(s_interpolationSampleTarget.load(std::memory_order_acquire),
                                        maximum_interpolation_samples());
-  diagnostics.activeSamples = s_activeInterpolationSamples.load(std::memory_order_acquire);
+  diagnostics.activeSamples = detail::g_activeInterpolationSamples.load(std::memory_order_acquire);
   diagnostics.candidates = s_diagCandidates.load(std::memory_order_relaxed);
   diagnostics.matchable = s_diagMatchable.load(std::memory_order_relaxed);
   diagnostics.matches = s_diagMatches.load(std::memory_order_relaxed);
@@ -1400,7 +1414,7 @@ uint32_t interpolated_frame_count() noexcept {
   }
   // The count latched when this frame began recording, not the configured maximum:
   // build_uniform staged exactly this many ranges for every draw.
-  return s_activeInterpolationSamples.load(std::memory_order_acquire);
+  return detail::g_activeInterpolationSamples.load(std::memory_order_acquire);
 }
 
 void drop_pending_frame_interpolation_uniforms() noexcept {
@@ -1512,7 +1526,7 @@ std::array<gfx::Range, MaxInterpolatedFrames> record_interpolation_draw(
   // A frame already split by a submitted prefix duplicates its slots instead of
   // replaying, so staging copies for the resumed suffix would only waste space.
   if (frame_interpolation_replay_safe() && stageInterpolation) {
-    const uint32_t sampleCount = s_activeInterpolationSamples.load(std::memory_order_acquire);
+    const uint32_t sampleCount = detail::g_activeInterpolationSamples.load(std::memory_order_acquire);
     for (uint32_t sample = 0; sample < sampleCount; ++sample) {
       auto [interpolatedBuffer, interpolatedRange] = gfx::map_uniform(uniformLayout.uniformSize);
       s_pendingUniformInterpolations.push_back({

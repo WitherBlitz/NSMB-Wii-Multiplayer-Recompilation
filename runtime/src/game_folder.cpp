@@ -4,13 +4,16 @@
 #include "runtime_config.h"
 #include "runtime_log.h"
 #include "runtime_product.h"
+#include "ui_text.h"
 #include "wii_disc.h"
 
 #include <cryptopp/sha.h>
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <thread>
@@ -31,6 +34,81 @@ std::string GameName() {
     return std::string(RuntimeProduct::Active().displayName);
 }
 
+// The one sentence a folder with any of the game's files left out gets, instead of starting and
+// stopping in the boot (issue #29: part of Dolphin's extract got as far as the shaders, then closed).
+// Translated in ui_text.cpp; the Android app's AppFiles.INCOMPLETE is the same sentence.
+constexpr const char* kIncomplete = "The folder doesn't include all required files.";
+
+// An FST name, or "" when it isn't plain ASCII (extractors spell other names differently, so such a
+// file isn't looked for) or can't be a file name.
+std::string AsciiName(const std::vector<char>& fst, size_t at) {
+    std::string name;
+    for (; at < fst.size() && fst[at] != 0; ++at) {
+        const auto c = static_cast<unsigned char>(fst[at]);
+        if (c < 0x20 || c >= 0x80 || c == '/' || c == '\\') {
+            return {};
+        }
+        name += static_cast<char>(c);
+    }
+    return name == "." || name == ".." ? std::string() : name;
+}
+
+// The files the game needs that `root` doesn't have, as paths relative to it, at most `limit`:
+// sys/boot.bin, sys/main.dol and sys/fst.bin, then every file the disc's own file table (fst.bin)
+// lists under files/, so any region's or revision's disc passes as long as nothing was left out.
+// Only whether each is there is checked (about 1200 files for the base game), never what's in it.
+// The Android app does the same (GameFileList.java).
+std::vector<std::string> MissingFiles(const fs::path& root, size_t limit) {
+    std::vector<std::string> missing;
+    std::error_code ec;
+    for (const char* name : {"sys/boot.bin", "sys/main.dol", "sys/fst.bin"}) {
+        if (!fs::is_regular_file(root / fs::u8path(name), ec)) {
+            missing.emplace_back(name);
+        }
+    }
+    if (!missing.empty()) {
+        return missing;
+    }
+    std::ifstream in(root / "sys" / "fst.bin", std::ios::binary);
+    const std::vector<char> fst((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const auto be32 = [&](size_t at) {
+        return uint32_t(uint8_t(fst[at])) << 24 | uint32_t(uint8_t(fst[at + 1])) << 16 |
+               uint32_t(uint8_t(fst[at + 2])) << 8 | uint32_t(uint8_t(fst[at + 3]));
+    };
+    // Entry 0 is the root: its third word is the number of entries, as a directory's is the index
+    // past its last entry. The names follow the entries.
+    const uint32_t entries = fst.size() >= 12 ? be32(8) : 0;
+    if (entries == 0 || uint64_t(entries) * 12 > fst.size()) {
+        return {"sys/fst.bin"};
+    }
+    const size_t strings = size_t(entries) * 12;
+    std::vector<std::string> dirs(size_t(entries) + 1);  // "" below a folder that isn't looked in
+    std::vector<uint32_t> ends(size_t(entries) + 1);
+    size_t depth = 0;
+    dirs[0] = "files";
+    ends[0] = entries;
+    for (uint32_t i = 1; i < entries && missing.size() < limit; ++i) {
+        while (depth > 0 && i >= ends[depth]) {
+            --depth;
+        }
+        const uint32_t word = be32(size_t(i) * 12);
+        const std::string name = AsciiName(fst, strings + (word & 0xFFFFFF));
+        const std::string path = dirs[depth].empty() || name.empty() ? std::string() : dirs[depth] + "/" + name;
+        if ((word >> 24) != 0) {
+            ++depth;
+            dirs[depth] = path;
+            ends[depth] = std::min(entries, be32(size_t(i) * 12 + 8));
+        } else if (!path.empty() && !fs::is_regular_file(root / fs::u8path(path), ec)) {
+            missing.push_back(path);
+        }
+    }
+    return missing;
+}
+
+// Problem(), and whether the trouble is files left out (`incomplete`: the player gets kIncomplete
+// in a message box too). Below.
+std::string Check(const fs::path& root, bool* incomplete);
+
 // Why a disc with this ID and revision can't be used ("" when it can).
 std::string IdProblem(const std::string& id, int revision) {
     const Disc kind = Identify(id, revision);
@@ -46,6 +124,15 @@ std::string IdProblem(const std::string& id, int revision) {
                 revision);
     }
     const std::string disc(RuntimeProduct::Active().discName);
+    // The release's two programs: each points to the other's game.
+    if (RuntimeProduct::Active().gameId == "SMNE01" && id == "SMNE03") {
+        return "That is Newer Super Mario Bros. Wii (SMNE03): open it with NewerSMBW, the release's other "
+               "program. This one runs only " + disc + ".";
+    }
+    if (RuntimeProduct::Active().gameId == "SMNE03" && id == "SMNE01") {
+        return "That is New Super Mario Bros. Wii (SMNE01): open it with NSMBW, the release's other program. "
+               "This one runs only " + disc + ".";
+    }
     if (id != RuntimeProduct::Active().gameId) {
         return "That is " + id + ", not " + disc + ". This build runs only that disc: it was translated from it.";
     }
@@ -64,6 +151,11 @@ fs::path ProgramDirectory() {
     return RuntimeConfigFile::ExecutableDirectory().value_or(fs::path{});  // the compat build's too
 }
 
+// The folder beside the program that is used by itself: "game", or a mod's own (runtime_product.h).
+std::string GameFolderName() {
+    return std::string(RuntimeProduct::Active().programGameFolder);
+}
+
 // What to extract, and how: the chooser's Help.
 std::string Steps(const char* openDolphin) {
     return "This port runs your own copy of " + std::string(RuntimeProduct::Active().discName) +
@@ -78,7 +170,7 @@ std::string Steps(const char* openDolphin) {
            "A compressed image (.rvz, .wia, .gcz) has to become an .iso first: in Dolphin, right-click the "
            "game, Convert File..., Format: ISO.\n\n"
            "(Dolphin shows the revision under Properties > Info. Or put the extracted folder next to this "
-           "program and name it \"game\".)";
+           "program and name it \"" + GameFolderName() + "\".)";
 }
 
 GamePicker::Text PickerText() {
@@ -93,6 +185,7 @@ GamePicker::Text PickerText() {
 #endif
     text.isoTitle = "Choose your disc image of " + GameName();
     text.folderTitle = "Choose the folder Dolphin extracted " + GameName() + " to";
+    text.mods = RuntimeProduct::Active().gameId == "SMNE01";  // the original game's build only
     return text;
 }
 
@@ -131,7 +224,8 @@ bool RenameTree(const fs::path& from, const fs::path& to, std::error_code& ec) {
 }
 
 // Where a disc image is extracted, best first: "game" next to the program (picked up there at every
-// start, so two installs keep two games), then "game" in the data folder. A portable install keeps
+// start, so two installs keep two games; a mod has a name of its own, so its program can sit beside
+// this one), then "game" in the data folder (already the mod's own). A portable install keeps
 // everything in its data folder.
 std::vector<fs::path> ExtractTargets() {
     const fs::path data = RuntimeConfigFile::ApplicationDataDirectory() / "game";
@@ -139,7 +233,7 @@ std::vector<fs::path> ExtractTargets() {
     if (RuntimeConfigFile::PortableRootDirectory() || program.empty()) {
         return {data};
     }
-    return {program / "game", data};
+    return {program / fs::u8path(GameFolderName()), data};
 }
 
 fs::path Staging(const fs::path& target) {
@@ -165,8 +259,8 @@ std::string Megabytes(uint64_t bytes) {
 }
 
 // Extracts the disc image at `image` and makes it the game folder. False when it can't: `problem`
-// then says why, or is empty when the player cancelled.
-bool ImportDiscImage(const fs::path& image, std::string& problem) {
+// then says why, or is empty when the player cancelled; `incomplete` as Check() sets it.
+bool ImportDiscImage(const fs::path& image, std::string& problem, bool& incomplete) {
     std::string error;
     const std::unique_ptr<WiiDisc::Disc> disc = WiiDisc::Disc::Open(image, error);
     if (!disc) {
@@ -252,8 +346,8 @@ bool ImportDiscImage(const fs::path& image, std::string& problem) {
         problem = "Couldn't extract the disc image: " + result + ". Nothing was changed.";
         return false;
     }
-    // What a folder is checked for: the code modules, and a mod's version.
-    problem = Problem(staging);
+    // What a folder is checked for: every file there, the code modules, and a mod's version.
+    problem = Check(staging, &incomplete);
     if (!problem.empty()) {
         RemoveTree(staging);
         return false;
@@ -315,15 +409,28 @@ std::optional<Offer> For(std::string_view, int) {
 }
 } // namespace SupportModule
 
-std::string Problem(const fs::path& root) {
+namespace {
+std::string Check(const fs::path& root, bool* incomplete) {
+    // Files left out: kIncomplete (in the player's language) and which ones, for the chooser's red line.
+    const auto leftOut = [&](const std::string& which) {
+        if (incomplete != nullptr) {
+            *incomplete = true;
+        }
+        RT_LOGF(RT_TAG_RUNTIME, "game folder %s: %s\n", RuntimeConfigFile::PathToUtf8(root).c_str(), which.c_str());
+        return UiText::Tr(kIncomplete) + " " + which;
+    };
     if (!IsExtractedDisc(root)) {
-        return "That folder isn't an extracted game: it needs the files and sys folders Dolphin's Extract "
-               "Entire Disc makes.";
+        return leftOut("It needs the files and sys folders Dolphin's Extract Entire Disc makes: choose the folder "
+                       "that holds both.");
+    }
+    std::error_code bootError;
+    if (!fs::is_regular_file(root / "sys" / "boot.bin", bootError)) {
+        return leftOut("It has no sys/boot.bin.");
     }
     std::ifstream boot(root / "sys" / "boot.bin", std::ios::binary);
     char header[8] = {};
     if (!boot.read(header, sizeof(header))) {
-        return "That folder has no sys/boot.bin, so the game can't be identified.";
+        return "That folder's sys/boot.bin is too short, so the game can't be identified.";
     }
     const std::string id(header, 6);
     const int revision = static_cast<unsigned char>(header[7]);
@@ -331,6 +438,17 @@ std::string Problem(const fs::path& root) {
     const std::string disc(product.discName);
     if (std::string problem = IdProblem(id, revision); !problem.empty()) {
         return problem;
+    }
+    // Every file the game reads (its own file table's list): a folder copied in part would start,
+    // build its shaders and stop at whatever file isn't there.
+    const auto start = std::chrono::steady_clock::now();
+    const std::vector<std::string> missing = MissingFiles(root, SIZE_MAX);
+    RT_LOGF(RT_TAG_RUNTIME, "game folder: %zu required file(s) missing (%.1f ms)\n", missing.size(),
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+    if (!missing.empty()) {
+        return leftOut(missing.size() == 1 ? "Missing: " + missing[0] + "."
+                                           : "Missing: " + missing[0] + " and " + std::to_string(missing.size() - 1) +
+                                                 " more files.");
     }
     // The game's code modules were translated with the rest: a disc whose modules were changed (a
     // repacked or modded image keeps the disc ID) would link nothing and stop at the first scene.
@@ -379,6 +497,11 @@ std::string Problem(const fs::path& root) {
         }
     }
     return {};
+}
+} // namespace
+
+std::string Problem(const fs::path& root) {
+    return Check(root, nullptr);
 }
 
 namespace {
@@ -448,15 +571,26 @@ bool EnsureConfigured() {
     CleanStaleImports();
     // A "game" folder next to the program needs no questions, and wins over the saved folder: every
     // install shares Documents\MarioWiiSaveData, so this is how two installs play two games (say the
-    // original and a mod), each with its own saves (nand_path.h keeps saves per game).
-    if (const fs::path beside = Find(ProgramDirectory() / "game"); !beside.empty() && Problem(beside).empty()) {
-        if (RuntimeConfigFile::DvdRoot().empty()) {
-            RuntimeConfigFile::SetDvdRoot(beside);
-        } else {
-            RuntimeConfigFile::UseDvdRootForThisRun(beside);
+    // original and a mod), each with its own saves (nand_path.h keeps saves per game). A mod's program
+    // looks for its own name ("game-newer"), so the release's two programs keep their games apart.
+    std::string besideProblem;
+    bool besideIncomplete = false;
+    std::error_code besideError;
+    if (const fs::path besidePath = ProgramDirectory() / fs::u8path(GameFolderName());
+        !ProgramDirectory().empty() && fs::is_directory(besidePath, besideError)) {
+        const fs::path beside = Find(besidePath);
+        besideProblem = Check(beside.empty() ? besidePath : beside, &besideIncomplete);
+        if (besideProblem.empty()) {
+            if (RuntimeConfigFile::DvdRoot().empty()) {
+                RuntimeConfigFile::SetDvdRoot(beside);
+            } else {
+                RuntimeConfigFile::UseDvdRootForThisRun(beside);
+            }
+            RT_LOGF(RT_TAG_RUNTIME, "game folder: %s\n", RuntimeConfigFile::PathToUtf8(beside).c_str());
+            return true;
         }
-        RT_LOGF(RT_TAG_RUNTIME, "game folder: %s\n", RuntimeConfigFile::PathToUtf8(beside).c_str());
-        return true;
+        RT_LOGF(RT_TAG_RUNTIME, "game folder: %s can't be used: %s\n", RuntimeConfigFile::PathToUtf8(besidePath).c_str(),
+                besideProblem.c_str());
     }
 #endif
     const fs::path configured = Find(RuntimeConfigFile::ResolvedDvdRoot());
@@ -465,27 +599,37 @@ bool EnsureConfigured() {
     }
 #if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
     std::string problem;
+    bool incomplete = false;
     if (!RuntimeConfigFile::DvdRoot().empty()) {
         const fs::path saved = RuntimeConfigFile::ResolvedDvdRoot();
         std::error_code ec;
-        problem = fs::exists(saved, ec) ? Problem(configured.empty() ? saved : configured)
+        problem = fs::exists(saved, ec) ? Check(configured.empty() ? saved : configured, &incomplete)
                                         : "The game folder you chose before (" + RuntimeConfigFile::PathToUtf8(saved) +
                                               ") isn't there any more.";
     }
+    if (problem.empty() && !besideProblem.empty()) {
+        problem = besideProblem;
+        incomplete = besideIncomplete;
+    }
     const GamePicker::Text text = PickerText();
     for (;;) {
+        // Files left out: said in a message box as well as in the chooser's red line.
+        if (incomplete) {
+            GamePicker::ShowError(text, UiText::Tr(kIncomplete));
+            incomplete = false;
+        }
         const GamePicker::Picked picked = GamePicker::Show(text, problem);
         if (picked.choice == GamePicker::Choice::Cancel) {
             GamePicker::Close();
             return false;
         }
         if (picked.choice == GamePicker::Choice::Iso) {
-            if (!ImportDiscImage(picked.path, problem)) {
+            if (!ImportDiscImage(picked.path, problem, incomplete)) {
                 continue;
             }
         } else {
             const fs::path root = Find(picked.path);
-            problem = Problem(root.empty() ? picked.path : root);
+            problem = Check(root.empty() ? picked.path : root, &incomplete);
             if (!problem.empty()) {
                 continue;
             }

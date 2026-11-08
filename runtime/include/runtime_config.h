@@ -85,6 +85,11 @@ struct RuntimeUserConfig {
     // (Dolphin's "continuous scanning"), so a remote that dropped or was switched on
     // after launch shows up without restarting.
     std::optional<bool> wiiContinuousScan;
+    // NSMBW: [input] bluetooth_passthrough, "auto" (the default), "on" or "off". With a USB Bluetooth
+    // adapter this runtime can claim (on the WinUSB driver on Windows, permitted on Linux), the game's
+    // own Wii Remote stack drives real Wii Remotes through it as on a Wii, speaker included
+    // (bt_passthrough.h); "auto" uses one when there is one. Read once at startup.
+    std::optional<std::string> bluetoothPassthrough;
     // Accelerometer zero-point correction for the Bluetooth Wii Remote, in g and in
     // SDL's sensor frame (x right, y out of the button face, z towards the user).
     // SDL's Wii driver falls back to a nominal zero point when its read of the
@@ -218,10 +223,10 @@ inline bool IsSupportedDisplayMode(std::string_view value) {
     return std::find(values.begin(), values.end(), value) != values.end();
 }
 
-// 240 was offered by an early build and is no longer supported; a saved 240 is
-// migrated to 180 at the parse site.
+// NSMBW: 0 (off), 60 (only does anything with Battery Saver, whose pictures come at 30), 120, 180,
+// 240 and 300.
 inline bool IsSupportedFrameInterpolationFps(uint32_t value) {
-    return value == 0 || value == 120 || value == 180;
+    return value == 0 || value == 60 || value == 120 || value == 180 || value == 240 || value == 300;
 }
 
 // NSMBW: the compat build (for older processors) lives in a "compat" folder inside the download; its
@@ -652,9 +657,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         config.displayMode = *value;
     }
     if (auto value = FindConfigUint(document, "video", "frame_interpolation_fps")) {
-        const uint32_t migrated = *value == 240u ? 180u : *value;
-        if (IsSupportedFrameInterpolationFps(migrated)) {
-            config.frameInterpolationFps = migrated;
+        if (IsSupportedFrameInterpolationFps(*value)) {
+            config.frameInterpolationFps = *value;
         }
     }
     config.metalFxSpatialUpscaling =
@@ -705,6 +709,10 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         FindConfigValue<bool>(document, "audio", "attenuate_music_when_media_plays");
     config.wiiRemotes = FindConfigValue<bool>(document, "controller", "wii_remotes");
     config.wiiContinuousScan = FindConfigValue<bool>(document, "controller", "wii_continuous_scan");
+    if (auto value = FindConfigValue<std::string>(document, "input", "bluetooth_passthrough");
+        value && (*value == "auto" || *value == "on" || *value == "off")) {
+        config.bluetoothPassthrough = *value;
+    }
     config.wiiAccelOffsetX = FindConfigValue<double>(document, "controller", "wii_accel_offset_x");
     config.wiiAccelOffsetY = FindConfigValue<double>(document, "controller", "wii_accel_offset_y");
     config.wiiAccelOffsetZ = FindConfigValue<double>(document, "controller", "wii_accel_offset_z");
@@ -1355,6 +1363,20 @@ inline bool SetWiiContinuousScanEnabled(bool value) {
     return WriteSetting("controller", "wii_continuous_scan", value ? "true" : "false");
 }
 
+// Bluetooth passthrough: "auto", "on" or "off" (bt_passthrough.h). Takes effect on the next start.
+inline std::string BluetoothPassthroughMode() {
+    return Get().bluetoothPassthrough.value_or("auto");
+}
+
+// Persists the Bluetooth passthrough setting ("auto", "on" or "off").
+inline bool SetBluetoothPassthroughMode(const std::string& value) {
+    if (value != "auto" && value != "on" && value != "off") {
+        return false;
+    }
+    Mutable().bluetoothPassthrough = value;
+    return WriteSetting("input", "bluetooth_passthrough", FormatString(value));
+}
+
 // Wii Remote accelerometer zero-point correction (g, SDL sensor frame); all zero
 // when the remote has not been calibrated.
 inline std::array<double, 3> WiiAccelOffset() {
@@ -1410,6 +1432,12 @@ inline bool ShowFps(bool fallback = true) {
 
 inline bool TextureReplacements(bool fallback = false) {
     return Get().textureReplacements.value_or(fallback);
+}
+
+// The Mods tab's HD Texture Pack On / Off (aurora_set_texture_replacements makes it take effect at once).
+inline bool SetTextureReplacements(bool value) {
+    Mutable().textureReplacements = value;
+    return WriteSetting("video", "texture_replacements", value ? "true" : "false");
 }
 
 // Dumping only produces the names a replacement would need, so main.cpp

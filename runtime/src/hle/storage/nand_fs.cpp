@@ -6,6 +6,7 @@
 #include "isa/big_endian.h"
 #include "hle/storage/riivolution.h"
 #include "runtime_log.h"
+#include "bt_passthrough.h"
 
 // ============================================================================
 // Configuration
@@ -273,6 +274,11 @@ std::filesystem::path TranslateNandPath(const char* wiiPath) {
 
     std::filesystem::path redirectedHostPath;
     if (ResolveRiivolutionSaveHostPath(wiiPathStr, redirectedHostPath)) {
+        return redirectedHostPath;
+    }
+    // Bluetooth passthrough keeps a SYSCONF of its own (the paired remotes), so normal play and LAN
+    // never see one; without passthrough this path resolves as it always has.
+    if (wiiPathStr == "/shared2/sys/SYSCONF" && BtPassthrough::SysconfHostPath(redirectedHostPath)) {
         return redirectedHostPath;
     }
 

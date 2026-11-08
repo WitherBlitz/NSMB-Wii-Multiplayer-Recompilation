@@ -243,8 +243,11 @@ void Layout(HWND dialog, State& state) {
     top += height + y(3);
     place(kFolder, bigLeft, top, bigWidth, bigHeight);
     top += bigHeight + y(6);
-    place(kMods, bigLeft, top, bigWidth, bigHeight);
-    top += bigHeight + y(11);
+    if (state.text->mods) {
+        place(kMods, bigLeft, top, bigWidth, bigHeight);
+        top += bigHeight + y(6);
+    }
+    top += y(5);
     place(kLine, x(kMargin), top, width - 2 * x(kMargin), 2);
     top += y(7);
     const int smallWidth = x(50);
@@ -276,6 +279,7 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lPa
         state = reinterpret_cast<State*>(lParam);
         SetWindowLongPtrW(dialog, DWLP_USER, lParam);
         ShowWindow(GetDlgItem(dialog, kProblem), state->problem->empty() ? SW_HIDE : SW_SHOW);
+        ShowWindow(GetDlgItem(dialog, kMods), state->text->mods ? SW_SHOW : SW_HIDE);
         MakeHeadFont(dialog, *state);
         LoadIcons(dialog, *state);
         Layout(dialog, *state);
@@ -428,6 +432,10 @@ std::string RunWithProgress(const Text& text, const std::string& line, const Job
         dialog->Release();
     }
     return result;
+}
+
+void ShowError(const Text& text, const std::string& message) {
+    MessageBoxW(nullptr, Widen(message).c_str(), Widen(text.title).c_str(), MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
 }
 
 void Close() {}

@@ -10,4 +10,8 @@ void register_tlut(const GXTlutObj* obj, const void* data, GXTlutFmt format, uin
 void load_tlut(const GXTlutObj* obj, uint32_t idx) noexcept;
 std::optional<TextureHandle> find_replacement(const GXTexObj_& obj) noexcept;
 std::string build_texture_replacement_name(const GXTexObj_& obj) noexcept;
+// Turns replacement on or off (aurora_set_texture_replacements), from any thread: apply_pending makes the
+// change at the next frame's start, re-indexing the folder when it turns on.
+void request_enabled(bool enabled) noexcept;
+void apply_pending() noexcept;
 } // namespace aurora::gfx::texture_replacement

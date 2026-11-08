@@ -4,6 +4,7 @@
 
 #include "nand_internal.h"
 
+#include "bt_passthrough.h"
 #include "discord_presence.h"
 #include "runtime_log.h"
 
@@ -385,6 +386,10 @@ extern "C" int32_t NAND_IOS_Open_HLE(uint32_t pathPtr, uint32_t mode) {
         if (std::strcmp(path, "/dev/dolphin") == 0) {
             return DOLPHIN_DEV_FD;
         }
+        // The Wii's Bluetooth module, while Bluetooth passthrough drives a real adapter (0 otherwise).
+        if (const int32_t bluetoothFd = BtPassthrough::IosOpen(path)) {
+            return bluetoothFd;
+        }
         LogNandWarning("IOS_Open", "unknown device '%s' mode=%u", path, mode);
         return ISFS_ENOENT;
     }
@@ -453,6 +458,9 @@ extern "C" int32_t NAND_IOS_Close_HLE(uint32_t fd) {
     }
     if (Network_HLE_IsFd(fd)) {
         return Network_HLE_Close(fd);
+    }
+    if (BtPassthrough::IsFd(fd)) {
+        return BtPassthrough::IosClose(fd);
     }
     
     auto* handle = GetHandle(fd);
@@ -1143,6 +1151,10 @@ extern "C" void NAND_IOS_Ioctlv_Entry_HLE(CpuContext* ctx) {
         if (handled) {
             return;
         }
+    }
+    if (BtPassthrough::IsFd(fd)) {
+        ctx->gpr[3] = static_cast<uint32_t>(BtPassthrough::IosIoctlv(fd, cmd, numIn, numOut, vectorPtr));
+        return;
     }
 
     ctx->gpr[3] = static_cast<uint32_t>(

@@ -11,6 +11,7 @@
 #include <string>
 #include <map>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -23,12 +24,48 @@ std::mutex g_efbCopyDestinationsMutex;
 std::map<uint32_t, uint32_t> g_efbCopyDestinations;
 uint32_t g_largestEfbCopyDestination = 0;
 
+// How many destinations touch each 64 KiB bucket of guest RAM: every DCStoreRange asks whether it
+// overlaps a destination, and nearly all don't, so a range with no destination in its buckets is
+// answered without walking the map (that walk was ~0.5% of the game thread on a slow Android device).
+constexpr uint32_t kEfbCopyBucketShift = 16;
+std::unordered_map<uint32_t, uint32_t> g_efbCopyBuckets;
+
+void CountEfbCopyBuckets(uint64_t start, uint32_t size, int delta) {
+    const uint64_t last = (start + size - 1u) >> kEfbCopyBucketShift;
+    for (uint64_t bucket = start >> kEfbCopyBucketShift; bucket <= last; ++bucket) {
+        g_efbCopyBuckets[static_cast<uint32_t>(bucket)] += static_cast<uint32_t>(delta);
+    }
+}
+
+bool AnyEfbCopyBucketLocked(uint64_t start, uint32_t size) {
+    const uint64_t first = start >> kEfbCopyBucketShift;
+    const uint64_t last = (start + size - 1u) >> kEfbCopyBucketShift;
+    if (last - first + 1u > g_efbCopyBuckets.size()) {
+        return true;  // a range wider than the index: let the map walk answer
+    }
+    for (uint64_t bucket = first; bucket <= last; ++bucket) {
+        const auto it = g_efbCopyBuckets.find(static_cast<uint32_t>(bucket));
+        if (it != g_efbCopyBuckets.end() && it->second != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void RememberEfbCopyDestination(uint32_t addr, uint32_t size) {
     if (size == 0) {
         return;
     }
     std::lock_guard<std::mutex> guard(g_efbCopyDestinationsMutex);
-    g_efbCopyDestinations[CanonicalizeGxMainRamAddress(addr)] = size;
+    const uint32_t canonical = CanonicalizeGxMainRamAddress(addr);
+    const auto [it, inserted] = g_efbCopyDestinations.try_emplace(canonical, size);
+    if (inserted) {
+        CountEfbCopyBuckets(canonical, size, +1);
+    } else if (it->second != size) {
+        CountEfbCopyBuckets(canonical, it->second, -1);
+        CountEfbCopyBuckets(canonical, size, +1);
+        it->second = size;
+    }
     // A conservative monotonic maximum lets invalidation jump directly to
     // the only map interval that could overlap instead of walking every copy
     // destination on every DCStoreRange.
@@ -47,6 +84,9 @@ void InvalidateEfbCopyDestinationsForRange(uint32_t addr, uint32_t size) {
     std::vector<uint32_t> retired;
     {
         std::lock_guard<std::mutex> guard(g_efbCopyDestinationsMutex);
+        if (!AnyEfbCopyBucketLocked(dirtyStart, size)) {
+            return;
+        }
         const uint64_t earliestCandidate =
             dirtyStart > g_largestEfbCopyDestination ? dirtyStart - g_largestEfbCopyDestination : 0;
         for (auto it = g_efbCopyDestinations.lower_bound(static_cast<uint32_t>(earliestCandidate));
@@ -58,6 +98,7 @@ void InvalidateEfbCopyDestinationsForRange(uint32_t addr, uint32_t size) {
                 continue;
             }
             retired.push_back(it->first);
+            CountEfbCopyBuckets(it->first, it->second, -1);
             it = g_efbCopyDestinations.erase(it);
         }
     }
@@ -144,8 +185,11 @@ PPC_NATIVE_OVERRIDE_VOID(801c6150, GX__CopyDisp_8016fc38, (uint32_t da, uint32_t
 
 extern "C" void GX__CopyTex_8016fd74(uint32_t da, uint32_t c) {
     EnsureAuroraFrameActive();
-    // Match GX FIFO ordering: texture copies observe all prior draws.
-    GXDrawDone();
+    // Match GX FIFO ordering: texture copies observe all prior draws. Async copies (aurora's
+    // NSMBW_ASYNC_COPY) are queued behind those draws instead, so there is nothing to wait for.
+    if (!AuroraAsyncCopies()) {
+        GXDrawDone();
+    }
     const uint16_t rawSrcLeft = g_texCopyState.srcLeft;
     const uint16_t rawSrcTop = g_texCopyState.srcTop;
     const uint16_t rawSrcWidth = g_texCopyState.srcWidth;

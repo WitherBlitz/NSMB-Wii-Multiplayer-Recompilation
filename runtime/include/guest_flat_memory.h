@@ -5,6 +5,7 @@
 // view at kFlatGuestBase has page protections as the interception mechanism (unmapped/MMIO/
 // executable/deferred-read pages are uncommitted or protected), while the HOST view is a plain
 // alias native runtime code (image loading, DVD reads, HLE, GX) writes through unchecked.
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -111,6 +112,18 @@ void UnprotectDeferredRange(uint32_t address, size_t length);
 void RegisterExecutableRange(uint32_t start, uint32_t end);
 
 FaultCounters Counters();
+
+// Bluetooth passthrough: the game's own WPAD switches the sensor bar's power through a Hollywood
+// GPIO register (HW_GPIOB_OUT, 0xCD0000C0), which no device backs. BackRegisterPage makes that
+// register's 4 KiB page plain memory for the rest of the run (zero at first; reads give back what
+// was written), in the guest view and on the MMIO store path. One page; false when the flat view
+// isn't in use. Never called in normal play, where any access there stays a reported fault.
+inline std::atomic<uint32_t> g_backedRegisterPage{0};
+inline bool IsBackedRegisterAddress(uint32_t address) noexcept {
+    const uint32_t page = g_backedRegisterPage.load(std::memory_order_relaxed);
+    return page != 0 && (address & ~0xFFFu) == page;
+}
+bool BackRegisterPage(uint32_t address);  // Windows and Linux (guest_flat_memory.cpp)
 
 // End-of-run report for the counters above. An unmapped touch is a wild guest
 // pointer whose block this module silently committed so execution could go on,

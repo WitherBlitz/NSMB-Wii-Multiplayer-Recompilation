@@ -59,9 +59,15 @@ const char* RunningGraphicsApi() noexcept;
 void SetVSync(bool enabled) noexcept;
 bool VSync() noexcept;
 // Battery Saver: the game keeps its 60 steps a second but draws and presents every other one, so the
-// screen shows 30 FPS (DisplaySettings' dSys_c::execute port). Frame interpolation is off while it is
-// on. Off by default. Saved to Config.toml.
+// screen shows 30 FPS (DisplaySettings' dSys_c::execute port). Frame interpolation then fills in from
+// those 30 pictures. Off by default. Saved to Config.toml.
 void SetBatterySaver(bool enabled) noexcept;
+// Frame interpolation: 0 (off), 60, 120, 180, 240 or 300 frames a second, drawn between the game's own
+// pictures (aurora). 60 only does anything with Battery Saver on. Saved to Config.toml.
+void SetFrameInterpolationFps(uint32_t fps) noexcept;
+uint32_t FrameInterpolationFps() noexcept;
+// Once a frame (hle/vi.cpp): keeps aurora's source rate right when LAN play pauses Battery Saver.
+void SyncFrameInterpolation() noexcept;
 bool BatterySaver() noexcept;
 // Battery Saver on and not paused: lockstep (LAN) play draws every frame, as every peer must run the
 // same guest code.

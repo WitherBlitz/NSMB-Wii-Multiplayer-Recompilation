@@ -5,6 +5,7 @@
 #include "hle_stubs.h"
 #include "memory.h"
 #include "hle/net/network.h"
+#include "bt_passthrough.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -179,6 +180,12 @@ extern "C" void IOS_IoctlvAsync_HLE(CpuContext* ctx)
     const uint32_t vectorPtr = ctx->gpr[7];
     const uint32_t callback = ctx->gpr[8];
     const uint32_t callbackArg = ctx->gpr[9];
+    // Bluetooth passthrough's module (/dev/usb/oh1/57e/305): HCI to a real adapter.
+    if (BtPassthrough::IsFd(fd)) {
+        BtPassthrough::IosIoctlvAsync(fd, cmd, numIn, numOut, vectorPtr, callback, callbackArg);
+        SetIosReturn(ctx, 0);
+        return;
+    }
     if (TryDeferredNetworkAsync(
             ctx, fd, callback, callbackArg,
             [&] {

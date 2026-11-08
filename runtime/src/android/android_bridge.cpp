@@ -67,6 +67,47 @@ bool StartAppUpdate() {
     return true;
 }
 
+// The Mods tab's HD Texture Pack (hd_texture_pack.cpp), from its worker thread: GameActivity.downloadForGame
+// GETs `url` into the file `path` on this thread and answers null, or why it failed.
+std::string DownloadFile(const std::string& url, const std::string& path) {
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (env == nullptr || activity == nullptr) {
+        return "no activity";
+    }
+    jclass type = env->GetObjectClass(activity);
+    jmethodID download = type != nullptr
+                             ? env->GetMethodID(type, "downloadForGame", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;")
+                             : nullptr;
+    std::string error;
+    if (download == nullptr) {
+        env->ExceptionClear();
+        error = "the app has no downloadForGame";
+    } else {
+        jstring jUrl = env->NewStringUTF(url.c_str());
+        jstring jPath = env->NewStringUTF(path.c_str());
+        auto result = static_cast<jstring>(env->CallObjectMethod(activity, download, jUrl, jPath));
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            error = "downloadForGame threw";
+        } else if (result != nullptr) {
+            const char* text = env->GetStringUTFChars(result, nullptr);
+            error = text != nullptr ? text : "failed";
+            if (text != nullptr) {
+                env->ReleaseStringUTFChars(result, text);
+            }
+            env->DeleteLocalRef(result);
+        }
+        env->DeleteLocalRef(jUrl);
+        env->DeleteLocalRef(jPath);
+    }
+    if (type != nullptr) {
+        env->DeleteLocalRef(type);
+    }
+    env->DeleteLocalRef(activity);
+    return error;
+}
+
 // The Wii Remote's rumble on the phone itself (player 1 with no controller): GameActivity.vibrateForGame
 // honours the app's Vibration setting.
 void Vibrate(bool on) {
@@ -264,8 +305,9 @@ JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeTap(JNIEnv*, jcl
 
 // GameActivity.nativeTakeSettings: {render scale, show FPS 1/0, aspect, spinning coins 1/0, frame graph 1/0,
 // V-Sync 1/0, frametime graph size %, touch controls 1/0 or -1 unchanged, renderer 0 automatic / 1 Vulkan /
-// 2 OpenGL ES or -1 unchanged, Depth Blur 1/0, Battery Saver 1/0} when the game's settings window changed them since
-// the last call, else null; the app saves them for the next start.
+// 2 OpenGL ES or -1 unchanged, Depth Blur 1/0, Battery Saver 1/0, HD Texture Pack on 1/0, frame interpolation FPS
+// (0 off)} when the game's settings window changed them since the last call, else null; the app saves them for the
+// next start.
 JNIEXPORT jfloatArray JNICALL Java_com_wither_nsmbw_GameActivity_nativeTakeSettings(JNIEnv* env, jclass)
 {
     float scale = 1.0f;
@@ -279,16 +321,19 @@ JNIEXPORT jfloatArray JNICALL Java_com_wither_nsmbw_GameActivity_nativeTakeSetti
     int renderer = -1;
     bool depthBlur = true;
     bool batterySaver = false;
+    bool textureReplacements = false;
     if (!NetplayUi::TakeSettingsChange(scale, showFps, aspect, spinningCoins, frameGraph, vsync, frameGraphSize,
-                                       touchControls, renderer, depthBlur, batterySaver)) {
+                                       touchControls, renderer, depthBlur, batterySaver, textureReplacements)) {
         return nullptr;
     }
-    constexpr jsize kCount = 11;
+    constexpr jsize kCount = 13;
     jfloatArray result = env->NewFloatArray(kCount);
     const jfloat values[kCount] = {scale, showFps ? 1.0f : 0.0f, static_cast<jfloat>(aspect), spinningCoins ? 1.0f : 0.0f,
                                    frameGraph ? 1.0f : 0.0f, vsync ? 1.0f : 0.0f, static_cast<jfloat>(frameGraphSize),
                                    static_cast<jfloat>(touchControls), static_cast<jfloat>(renderer),
-                                   depthBlur ? 1.0f : 0.0f, batterySaver ? 1.0f : 0.0f};
+                                   depthBlur ? 1.0f : 0.0f, batterySaver ? 1.0f : 0.0f,
+                                   textureReplacements ? 1.0f : 0.0f,
+                                   static_cast<jfloat>(settings_overlay::FrameInterpolationFps())};
     env->SetFloatArrayRegion(result, 0, kCount, values);
     return result;
 }

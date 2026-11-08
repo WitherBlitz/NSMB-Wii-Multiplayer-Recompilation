@@ -52,6 +52,6 @@ void DirectAddressEntered(const std::string& address);
 // (Android: 0 automatic, 1 Vulkan, 2 OpenGL ES).
 bool TakeSettingsChange(float& renderScale, bool& showFps, int& aspect, bool& spinningCoins, bool& frameGraph,
                         bool& vsync, int& frameGraphSize, int& touchControls, int& renderer, bool& depthBlur,
-                        bool& batterySaver);
+                        bool& batterySaver, bool& textureReplacements);
 
 } // namespace NetplayUi

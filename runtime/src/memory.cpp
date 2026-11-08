@@ -623,10 +623,26 @@ namespace {
            << RecompMod::CurrentTranslatedExecutionAddress() << std::dec << std::nouppercase << ")";
     throw Memory::AccessViolation(addr, length, reason.str());
 }
+// A register page Bluetooth passthrough backed with memory (GuestFlat::BackRegisterPage).
+template <typename T>
+T ReadBackedRegister(uint32_t addr) {
+    T value{};
+    std::memcpy(&value, MKW_FLAT_GUEST_BASE + addr, sizeof(T));
+    if constexpr (sizeof(T) == 2) value = static_cast<T>(__builtin_bswap16(value));
+    if constexpr (sizeof(T) == 4) value = static_cast<T>(__builtin_bswap32(value));
+    return value;
+}
+template <typename T>
+void WriteBackedRegister(uint32_t addr, T value) {
+    if constexpr (sizeof(T) == 2) value = static_cast<T>(__builtin_bswap16(value));
+    if constexpr (sizeof(T) == 4) value = static_cast<T>(__builtin_bswap32(value));
+    std::memcpy(MKW_FLAT_GUEST_BASE + addr, &value, sizeof(T));
+}
 } // namespace
 
 uint8_t MemoryInline::Read8Slow(uint32_t addr) {
     if (IsMmioAddress(addr)) {
+        if (GuestFlat::IsBackedRegisterAddress(addr)) return ReadBackedRegister<uint8_t>(addr);
         ThrowMmioReadBlocked(addr, sizeof(uint8_t));
     }
     ResolveDeferredReads(addr, sizeof(uint8_t));
@@ -635,6 +651,7 @@ uint8_t MemoryInline::Read8Slow(uint32_t addr) {
 
 uint16_t MemoryInline::Read16Slow(uint32_t addr) {
     if (IsMmioAddress(addr)) {
+        if (GuestFlat::IsBackedRegisterAddress(addr)) return ReadBackedRegister<uint16_t>(addr);
         ThrowMmioReadBlocked(addr, sizeof(uint16_t));
     }
     ResolveDeferredReads(addr, sizeof(uint16_t));
@@ -643,6 +660,7 @@ uint16_t MemoryInline::Read16Slow(uint32_t addr) {
 
 uint32_t MemoryInline::Read32Slow(uint32_t addr) {
     if (IsMmioAddress(addr)) {
+        if (GuestFlat::IsBackedRegisterAddress(addr)) return ReadBackedRegister<uint32_t>(addr);
         ThrowMmioReadBlocked(addr, sizeof(uint32_t));
     }
     ResolveDeferredReads(addr, sizeof(uint32_t));
@@ -686,6 +704,10 @@ void MemoryInline::Write8Slow(uint32_t addr, uint8_t val) {
         return;
     }
     if (IsMmioAddress(addr)) {
+        if (GuestFlat::IsBackedRegisterAddress(addr)) {
+            WriteBackedRegister<uint8_t>(addr, val);
+            return;
+        }
         throw Memory::AccessViolation(addr, sizeof(val), "MMIO write blocked (non-GPU)");
     }
     WriteScalar(addr, val);
@@ -697,6 +719,10 @@ void MemoryInline::Write16Slow(uint32_t addr, uint16_t val) {
         return;
     }
     if (IsMmioAddress(addr)) {
+        if (GuestFlat::IsBackedRegisterAddress(addr)) {
+            WriteBackedRegister<uint16_t>(addr, val);
+            return;
+        }
         throw Memory::AccessViolation(addr, sizeof(val), "MMIO write blocked (non-GPU)");
     }
     WriteScalar(addr, val);
@@ -708,6 +734,10 @@ void MemoryInline::Write32Slow(uint32_t addr, uint32_t val) {
         return;
     }
     if (IsMmioAddress(addr)) {
+        if (GuestFlat::IsBackedRegisterAddress(addr)) {
+            WriteBackedRegister<uint32_t>(addr, val);
+            return;
+        }
         throw Memory::AccessViolation(addr, sizeof(val), "MMIO write blocked (non-GPU)");
     }
     WriteScalar(addr, val);

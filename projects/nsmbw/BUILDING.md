@@ -172,6 +172,10 @@ Things that are specific to Newer:
 - With `NSMBW_GAME_ID=SMNE03` the game calls itself Newer Super Mario Bros. Wii and accepts only Newer
   v1.30 for the USA (NTSC). Every Newer version keeps the disc ID, so the version is told by the size of
   `files/NewerRes/DLCodeUS_1.bin`, Newer's code (`src/product/base_product.cpp`).
+- Newer's program keeps its own settings, saves, logs and caches (`Documents\NewerWiiSaveData` on
+  Windows, a `NewerWiiSaveData` folder inside the base game's data folder elsewhere), and the extracted
+  game it finds by itself beside it is `game-newer`, not `game`. So both programs can share one folder
+  (releases name them `NSMBW` and `NewerSMBW`).
 
 ## Other tools
 

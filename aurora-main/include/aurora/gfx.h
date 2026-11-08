@@ -67,9 +67,12 @@ typedef struct {
 
 void aurora_get_frame_interpolation_diagnostics(AuroraFrameInterpolationDiagnostics* diagnostics);
 
-// Generates transform-interpolated perspective frames between consecutive 60 Hz logical frames.
-// Supported targets are 0 (off), 120, 180 and 240. Guest simulation and VI timing are unchanged.
+// Generates transform-interpolated perspective frames between consecutive logical frames.
+// Supported targets are 0 (off), 60, 120, 180, 240 and 300. Guest simulation and VI timing are unchanged.
 void aurora_set_frame_interpolation_fps(uint32_t targetFps);
+// NSMBW: logical frames a second that carry a picture: 60, or 30 while Battery Saver draws every other
+// frame. A target at or below it inserts nothing.
+void aurora_set_frame_interpolation_source_fps(uint32_t sourceFps);
 // NSMBW: V-Sync on (Fifo) or off (Immediate, else Mailbox); off by default.
 void aurora_set_vsync(bool enabled);
 bool aurora_get_vsync();

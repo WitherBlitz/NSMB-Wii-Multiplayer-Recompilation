@@ -4,6 +4,7 @@
 #include "settings_overlay.h"
 #include "runtime_product.h"
 #include "audio_backend.h"
+#include "bt_passthrough.h"
 #include "aurora_events.h"
 #include "controller_button_names.h"
 #include "controller_mapping_wizard.h"
@@ -106,16 +107,8 @@ bool g_audioMuted = RuntimeConfigFile::AudioMuted(false);
 int32_t g_muteHotkey = RuntimeConfigFile::MuteHotkey(SDL_SCANCODE_BACKSLASH);
 bool g_audioMixWorker = RuntimeConfigFile::AudioMixWorkerEnabled(true);
 bool g_attenuateMusicWhenMediaPlays = RuntimeConfigFile::AttenuateMusicWhenMediaPlays(false);
-int g_frameInterpolationMode = [] {
-    switch (RuntimeConfigFile::FrameInterpolationFps(0)) {
-    case 120:
-        return 1;
-    case 180:
-        return 2;
-    default:
-        return 0;
-    }
-}();
+// The chosen target: 0 (off), 60, 120, 180, 240 or 300 (runtime_config.h checks it).
+std::atomic<uint32_t> g_frameInterpolationFps{RuntimeConfigFile::FrameInterpolationFps(0)};
 int g_displayMode = [] {
     const std::string mode = RuntimeConfigFile::DisplayMode("windowed");
     if (mode == "borderless") {
@@ -214,22 +207,28 @@ constexpr std::array<AspectItem, 4> kAspects = {{
     {"Fill Window", DisplaySettings::kAspectFill},
 }};
 
-constexpr std::array<uint32_t, 3> kFrameInterpolationTargetFps{0, 120, 180};
+constexpr std::array<uint32_t, 6> kFrameInterpolationTargetFps{0, 60, 120, 180, 240, 300};
 
 bool IsHighResolutionScale(float scale) {
     return std::fabs(scale - 6.0f) < 0.001f || std::fabs(scale - 8.0f) < 0.001f;
 }
 
 bool IsHighFrameRateMode() {
-    return kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)] > 60;
+    return g_frameInterpolationFps.load(std::memory_order_relaxed) > 60;
 }
 
-// What aurora interpolates to: the chosen target, or none while Battery Saver is on (interpolation
-// assumes a frame every retrace, and Battery Saver presents one every other).
-uint32_t AppliedFrameInterpolationFps() {
-    return g_batterySaver.load(std::memory_order_relaxed)
-               ? 0u
-               : kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)];
+// Whether aurora was last told the pictures come at 30 (Battery Saver drawing every other frame).
+std::atomic<bool> g_interpolationFromThirty{false};
+
+// Tells aurora the target and how often the game draws: with Battery Saver drawing, pictures come at 30
+// a second, so 60 adds one frame between each; without it they come at 60 and a 60 target adds nothing,
+// so it is off.
+void ApplyFrameInterpolation() {
+    const bool thirty = BatterySaverActive();
+    g_interpolationFromThirty.store(thirty, std::memory_order_relaxed);
+    const uint32_t chosen = g_frameInterpolationFps.load(std::memory_order_relaxed);
+    aurora_set_frame_interpolation_source_fps(thirty ? 30u : 60u);
+    aurora_set_frame_interpolation_fps(!thirty && chosen <= 60 ? 0u : chosen);
 }
 
 void SetResolutionScale(float scale) {
@@ -1275,34 +1274,25 @@ void DrawGraphicsSettings() {
             "Requests the closest native-resolution display mode to the output frame "
             "rate (60 Hz, or the frame interpolation target).");
     }
-    constexpr std::array<const char*, 3> kFrameInterpolationModes{
-        "Off", "120 FPS", "180 FPS",
+    constexpr std::array<const char*, 6> kFrameInterpolationModes{
+        "Off", "60 FPS", "120 FPS", "180 FPS", "240 FPS", "300 FPS",
     };
-    const char* currentFrameInterpolationMode =
-        kFrameInterpolationModes[static_cast<size_t>(g_frameInterpolationMode)];
-    bool frameInterpolationModeChanged = false;
-    if (ImGui::BeginCombo("Race frame interpolation (experimental)", currentFrameInterpolationMode)) {
-        for (int mode = 0; mode < static_cast<int>(kFrameInterpolationModes.size()); ++mode) {
-            const bool selected = g_frameInterpolationMode == mode;
-            if (ImGui::Selectable(kFrameInterpolationModes[static_cast<size_t>(mode)], selected)) {
-                g_frameInterpolationMode = mode;
-                frameInterpolationModeChanged = true;
+    const uint32_t currentFps = g_frameInterpolationFps.load(std::memory_order_relaxed);
+    size_t currentMode = 0;
+    for (size_t mode = 0; mode < kFrameInterpolationTargetFps.size(); ++mode) {
+        if (kFrameInterpolationTargetFps[mode] == currentFps) currentMode = mode;
+    }
+    if (ImGui::BeginCombo("Frame interpolation", kFrameInterpolationModes[currentMode])) {
+        for (size_t mode = 0; mode < kFrameInterpolationModes.size(); ++mode) {
+            const bool selected = currentMode == mode;
+            if (ImGui::Selectable(kFrameInterpolationModes[mode], selected)) {
+                SetFrameInterpolationFps(kFrameInterpolationTargetFps[mode]);
             }
             if (selected) {
                 ImGui::SetItemDefaultFocus();
             }
         }
         ImGui::EndCombo();
-    }
-    if (frameInterpolationModeChanged) {
-        const uint32_t targetFps = kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)];
-        aurora_set_frame_interpolation_fps(AppliedFrameInterpolationFps());
-        RuntimeConfigFile::SetFrameInterpolationFps(targetFps);
-        LimitResolutionForFrameRate();
-        if (aurora_get_display_mode() == AURORA_DISPLAY_MODE_EXCLUSIVE) {
-            // Re-apply exclusive mode so the display refresh tracks the new target.
-            aurora_set_display_mode(AURORA_DISPLAY_MODE_EXCLUSIVE);
-        }
     }
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 380.0f);
     ImGui::TextDisabled("Frame interpolation is experimental, you might find visual artifacts");
@@ -1403,6 +1393,32 @@ void DrawFrameGraph() {
         const float x = origin.x + i * w;
         list->AddRectFilled(ImVec2(x, yOf(t)), ImVec2(x + std::max(w, 1.0f), origin.y + size.y), color);
     }
+}
+
+// Bluetooth passthrough's messages (bt_passthrough.h): the adapter found at boot, pairing, and the
+// countdown while the sync key is held. Bottom centre, for a few seconds; nothing when it is off.
+void DrawBluetoothNotice() {
+    const std::string notice = BtPassthrough::Notice();
+    if (notice.empty()) {
+        return;
+    }
+    const ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y - 24.0f), ImGuiCond_Always,
+                            ImVec2(0.5f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.7f);
+    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDecoration |
+                                         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoInputs |
+                                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoNav |
+                                         ImGuiWindowFlags_NoSavedSettings;
+    if (ImGui::Begin("Bluetooth Notice", nullptr, kFlags)) {
+        ImGui::SetWindowFontScale(MonitorFontScale());
+        // Long reasons wrap inside the window rather than run off its edges.
+        ImGui::PushTextWrapPos(std::max(200.0f, std::min(io.DisplaySize.x - 64.0f, 900.0f)));
+        ImGui::TextUnformatted(notice.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::SetWindowFontScale(1.0f);
+    }
+    ImGui::End();
 }
 
 void DrawFpsOverlay() {
@@ -1821,7 +1837,7 @@ void InitializeRuntimeSettings() noexcept {
     aurora_set_metalfx_spatial(g_metalFxSpatialUpscaling);
 #endif
     LimitResolutionForFrameRate();
-    aurora_set_frame_interpolation_fps(AppliedFrameInterpolationFps());
+    ApplyFrameInterpolation();
     AuroraSetTexturePatches(RuntimeConfigFile::SpinningCoins(true));
     aurora_set_vsync(g_vsync.load());
     aurora_set_display_mode(static_cast<AuroraDisplayMode>(g_displayMode));
@@ -1887,6 +1903,12 @@ void HandleEvents(const AuroraEvent* events) noexcept {
             SetTopBarVisible(!g_topBarVisible);
             ApplyInputBlockState();
         }
+        // Bluetooth passthrough: F9 is the console's red sync button (press: pair remotes; hold for
+        // 10 seconds: forget them all). Does nothing while passthrough is off.
+        if (!g_rebind.active && (ev->sdl.type == SDL_EVENT_KEY_DOWN || ev->sdl.type == SDL_EVENT_KEY_UP) &&
+            ev->sdl.key.scancode == SDL_SCANCODE_F9 && !ev->sdl.key.repeat) {
+            BtPassthrough::SetSyncButtonDown(ev->sdl.type == SDL_EVENT_KEY_DOWN);
+        }
         if (!g_rebind.active && g_muteHotkey != PAD_KEY_INVALID &&
             IsToggleKey(ev->sdl, static_cast<SDL_Scancode>(g_muteHotkey))) {
             g_audioMuted = !g_audioMuted;
@@ -1947,8 +1969,31 @@ bool VSync() noexcept {
 
 void SetBatterySaver(bool enabled) noexcept {
     g_batterySaver.store(enabled);
-    aurora_set_frame_interpolation_fps(AppliedFrameInterpolationFps());
+    ApplyFrameInterpolation();
     RuntimeConfigFile::SetBatterySaver(enabled);
+}
+
+void SetFrameInterpolationFps(uint32_t fps) noexcept {
+    if (!RuntimeConfigFile::IsSupportedFrameInterpolationFps(fps)) return;
+    g_frameInterpolationFps.store(fps, std::memory_order_relaxed);
+    ApplyFrameInterpolation();
+    RuntimeConfigFile::SetFrameInterpolationFps(fps);
+    LimitResolutionForFrameRate();
+    if (aurora_get_display_mode() == AURORA_DISPLAY_MODE_EXCLUSIVE) {
+        // Re-apply exclusive mode so the display refresh tracks the new target.
+        aurora_set_display_mode(AURORA_DISPLAY_MODE_EXCLUSIVE);
+    }
+}
+
+uint32_t FrameInterpolationFps() noexcept {
+    return g_frameInterpolationFps.load(std::memory_order_relaxed);
+}
+
+void SyncFrameInterpolation() noexcept {
+    // LAN play pauses Battery Saver (its frames are all drawn): the source rate follows.
+    if (BatterySaverActive() != g_interpolationFromThirty.load(std::memory_order_relaxed)) {
+        ApplyFrameInterpolation();
+    }
 }
 
 bool BatterySaver() noexcept {
@@ -2433,6 +2478,7 @@ void Draw() noexcept {
     }
     NetplayUi::Draw();
     DrawFpsOverlay();
+    DrawBluetoothNotice();
     DrawTopBar();
     DrawExitPrompt();
     controller_mapping_wizard::Draw();

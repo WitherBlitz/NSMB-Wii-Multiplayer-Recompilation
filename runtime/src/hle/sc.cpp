@@ -1,5 +1,8 @@
 #include "hle_stubs.h"
 
+#include "bt_passthrough.h"
+#include "guest_interrupt_context.h"
+
 #include "console_identity.h"
 #include "sc_serial_contract.h"
 #include <cstdlib>
@@ -39,10 +42,59 @@ uint32_t LookupProductRegion(uint32_t table, uint32_t stride, uint32_t count,
 // SCCheckStatus is polled in OSInit's busy loop (while(SCCheckStatus()==1) waits on async SYSCONF
 // load via NAND IPC); we have no async IPC callbacks, so return 0 (SUCCESS) immediately.
 
+// The step of the real SCCheckStatus that the answer above leaves out: once SCInit's background load
+// has read the files (BgJobStatus 3), parse the SYSCONF it read (ParseConfBuf), keep it as the
+// working copy, and go idle; a SYSCONF that doesn't parse becomes an empty one, as on the console.
+// Normal play has no SYSCONF, so it never needs this. Bluetooth passthrough has one (the paired
+// remotes, BT.SPKV...), which the game's own WPAD reads through SC. Returns the status (0 ok,
+// 1 still loading, 2 error, or the parse's error).
+uint32_t SC_FinishBackgroundLoad()
+{
+    constexpr uint32_t kBgJobStatus = 0x8042AA50u;  // r13-0x4C30
+    constexpr uint32_t kDirtyFlag = 0x8042AA65u;    // r13-0x4C1B
+    constexpr uint32_t kControl = 0x80396140u;      // the SC control block
+    constexpr uint32_t kConfBuf = 0x803962E0u;      // the working SYSCONF
+    constexpr uint32_t kConfSize = 0x4000u;
+    constexpr uint32_t kParseConfBuf = 0x801DBEB0u;
+    const uint8_t status = Memory::Read8(kBgJobStatus);
+    if (status != 3) {
+        return status;
+    }
+    Memory::Write8(kBgJobStatus, 1);
+    const uint32_t buffer = Memory::Read32(kControl + 0x16Cu);
+    const uint32_t length = Memory::Read32(kControl + 0x17Cu);
+    GuestInterruptCallbackContext call;
+    call.get()->gpr[3] = buffer;
+    call.get()->gpr[4] = length;
+    InvokeIndirectCpu(kParseConfBuf, call.get());
+    const uint32_t result = call.get()->gpr[3];
+    if (result == 0) {
+        if (buffer != kConfBuf && Memory::Contains(buffer, kConfSize)) {
+            std::memmove(Memory::GetPointer(kConfBuf, kConfSize), Memory::GetPointer(buffer, kConfSize), kConfSize);
+        }
+    } else if (Memory::Contains(buffer, kConfSize)) {
+        uint8_t* conf = Memory::GetPointer(buffer, kConfSize);
+        std::memset(conf, 0, kConfSize);
+        std::memcpy(conf, "SCv0", 4);
+        std::memcpy(conf + kConfSize - 4, "SCed", 4);
+        Memory::Write16(buffer + 6, 8);  // no items: the end offset right after the header
+    }
+    Memory::Write8(kDirtyFlag, 0);
+    Memory::Write8(kBgJobStatus, 0);
+    RT_LOGF(RT_TAG_HLE, "SC: parsed the loaded SYSCONF (%s)\n", result == 0 ? "ok" : "invalid, emptied");
+    return result;
+}
+
 // 0x801DB8E0 -> SCCheckStatus()
 // Returns: 0 = success, 1 = busy, 2 = error
 extern "C" uint32_t SCCheckStatus_HLE()
 {
+    if (BtPassthrough::Active()) {
+        // Still loading answers "done" as below, so OSInit's loop can't hang; the parse then happens
+        // at a later call (the WPADInit native makes one).
+        const uint32_t status = SC_FinishBackgroundLoad();
+        return status == 1 ? 0 : status;
+    }
     // Return 0 (success) immediately to avoid infinite busy-wait in OSInit
     return 0;
 }

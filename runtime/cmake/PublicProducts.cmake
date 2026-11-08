@@ -82,7 +82,8 @@ target_compile_definitions(mkw_runtime_common PRIVATE
     _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION)
 target_link_libraries(mkw_runtime_common PRIVATE
     aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx)
-target_link_libraries(mkw_runtime_common PRIVATE mkw_platform mkw::pugixml mkw::toml11 mkw::cryptopp mkw::mbedtls)
+target_link_libraries(mkw_runtime_common PRIVATE mkw_platform mkw::pugixml mkw::lzma mkw::toml11 mkw::cryptopp mkw::mbedtls)
+nsmbw_bt_passthrough_configure_runtime(mkw_runtime_common)
 if(MKW_PLATFORM_WINDOWS)
     # ole32/uuid/comctl32: the first-start game picker (game_picker_win32.cpp).
     target_link_libraries(mkw_runtime_common PRIVATE shell32 windowsapp ole32 uuid comctl32)
@@ -207,10 +208,11 @@ function(mkw_configure_product target)
     # include the same fat translated headers; bound them by the same pool.
     mkw_bound_translated_compiles(${target})
     target_link_libraries(${target} PRIVATE
-        mkw_platform mkw_base_shared mkw::pugixml mkw::toml11 mkw::cryptopp mkw::mbedtls)
+        mkw_platform mkw_base_shared mkw::pugixml mkw::lzma mkw::toml11 mkw::cryptopp mkw::mbedtls)
 
     target_link_libraries(${target} PRIVATE
         aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx)
+    nsmbw_bt_passthrough_link_product(${target})
     if(MKW_PLATFORM_MACOS)
         target_link_libraries(${target} PRIVATE
             "${MKW_IOKIT_FRAMEWORK}" "${MKW_COREFOUNDATION_FRAMEWORK}" "${MKW_COREAUDIO_FRAMEWORK}")
@@ -253,6 +255,11 @@ function(mkw_configure_product target)
         # devices that use them.
         target_link_libraries(${target} PRIVATE android log ${CMAKE_DL_LIBS})
         target_link_options(${target} PRIVATE "LINKER:-z,max-page-size=16384" "LINKER:--no-undefined")
+        # Calls between the library's own functions bind inside it: as a shared library with default
+        # visibility, every call from one translated function to another (and to the runtime) went
+        # through a PLT stub and a GOT load, 5.8% of the game thread's samples on a slow Android device.
+        # Nothing interposes on libmain's functions; the JNI entry points stay exported.
+        target_link_options(${target} PRIVATE "LINKER:-Bsymbolic-functions")
         # A picked GPU driver: Dawn's dlopen of libvulkan.so lands in src/android/gpu_driver.cpp, which
         # opens libadrenotools.so only then. Built here, staged as assets by stage-android.ps1.
         target_link_options(${target} PRIVATE "LINKER:--wrap=dlopen" "LINKER:--wrap=dlclose")

@@ -2238,8 +2238,10 @@ static bool admit_draw(GXPrimitive prim, GXVtxFmt fmt, u16 count, uint32_t verte
   if (merged) return gfx::staging_has_space(demand);
   const auto& info = resolve_pipeline_state(prim, fmt).shaderInfo;
   demand[1] = gfx::staging_uniform_bytes(info.uniformSize);
+  // NSMBW: the slots this frame actually stages, not the maximum (nine, for 300 FPS from Battery
+  // Saver's 30): reserving nine copies at 120 FPS would split batches for nothing.
   if (frame_interpolation_identity_needed() && frame_interpolation_replay_safe())
-    demand[1] *= 1 + MaxInterpolatedFrames;
+    demand[1] *= 1 + active_interpolation_samples();
   for (int i = GX_VA_POS; i <= GX_VA_TEX7; ++i) {
     if ((g_gxState.vtxDesc[i] == GX_INDEX8 || g_gxState.vtxDesc[i] == GX_INDEX16) &&
         g_gxState.arrays[i].cachedRange.size == 0)
@@ -2741,6 +2743,29 @@ bool handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     CHECK(pos + 1 <= size, "GX_LOAD_AURORA_DRAW_DROP read overrun");
     s_dropDraws = data[pos] != 0;
     pos += 1;
+  } else if (subCmd == GX_LOAD_AURORA_TEX_COPY_SRC) {
+    CHECK(pos + 9 <= size, "GX_LOAD_AURORA_TEX_COPY_SRC read overrun");
+    g_gxState.texCopySrc = {read_u16(data + pos, bigEndian), read_u16(data + pos + 2, bigEndian),
+                            read_u16(data + pos + 4, bigEndian), read_u16(data + pos + 6, bigEndian)};
+    g_gxState.texCopySrcRenderSpace = data[pos + 8] != 0;
+    pos += 9;
+  } else if (subCmd == GX_LOAD_AURORA_TEX_COPY_DST) {
+    CHECK(pos + 9 <= size, "GX_LOAD_AURORA_TEX_COPY_DST read overrun");
+    g_gxState.texCopyDstWidth = read_u16(data + pos, bigEndian);
+    g_gxState.texCopyDstHeight = read_u16(data + pos + 2, bigEndian);
+    g_gxState.texCopyFmt = static_cast<GXTexFmt>(read_u32(data + pos + 4, bigEndian));
+    g_gxState.texCopyHalfScale = data[pos + 8] != 0;
+    pos += 9;
+  } else if (subCmd == GX_LOAD_AURORA_COPY_CLAMP) {
+    CHECK(pos + 1 <= size, "GX_LOAD_AURORA_COPY_CLAMP read overrun");
+    g_gxState.copyClamp = static_cast<GXFBClamp>(data[pos] & 3);
+    pos += 1;
+  } else if (subCmd == GX_LOAD_AURORA_COPY_TEX) {
+    CHECK(pos + 9 <= size, "GX_LOAD_AURORA_COPY_TEX read overrun");
+    if (!run_queued_copy_tex(reinterpret_cast<void*>(read_u64(data + pos, bigEndian)), data[pos + 8] != 0)) {
+      throw gfx::StagingBatchFull{};  // nothing done yet: split, then retry it
+    }
+    pos += 9;
   } else if (subCmd == GX_LOAD_AURORA_DEBUG_GROUP_PUSH) {
     auto label = read_string(data, pos, size, bigEndian);
     gfx::push_debug_group(std::move(label));
@@ -2786,6 +2811,8 @@ extern "C" uint64_t AuroraTakeUnmergedDraws() {
 }
 
 extern "C" void AuroraGxSync() { aurora::gx::fifo::sync_if_threaded(); }
+
+extern "C" int AuroraAsyncCopies() { return aurora::gx::fifo::async_copies() ? 1 : 0; }
 
 extern "C" int AuroraLightTextureReuseWatched() { return aurora::webgpu::g_watchLightTextureReuse ? 1 : 0; }
 

@@ -78,6 +78,16 @@ extern "C" {
 #define GX_LOAD_AURORA_SCISSOR_OFFSET 0x0043
 // NSMBW: AuroraSetDrawDrop: u8 1 = skip the primitives that follow (register loads still apply), 0 = draw.
 #define GX_LOAD_AURORA_DRAW_DROP 0x0044
+// NSMBW: texture copies (NSMBW_ASYNC_COPY), queued with the draws they copy, so the game thread no
+// longer waits for the GX thread at each one.
+// GXSetTexCopySrc / GXSetTexCopySrcRender: u16 left, top, width, height, u8 render-space flag.
+#define GX_LOAD_AURORA_TEX_COPY_SRC 0x0050
+// GXSetTexCopyDst: u16 width, height, u32 format, u8 mipmap.
+#define GX_LOAD_AURORA_TEX_COPY_DST 0x0051
+// GXSetCopyClamp: u8 clamp.
+#define GX_LOAD_AURORA_COPY_CLAMP 0x0052
+// GXCopyTex: u64 destination, u8 clear.
+#define GX_LOAD_AURORA_COPY_TEX 0x0053
 
 
 /*
@@ -144,6 +154,9 @@ void AuroraGetVtxFormatRegs(uint32_t fmt, uint32_t out[6]);
 // NSMBW: with the GX thread (NSMBW_GX_THREAD=1), waits until it has decoded everything queued, so
 // memory a queued command points at may be reused. A no-op otherwise.
 void AuroraGxSync(void);
+// NSMBW: whether texture copies and their setters are queued for the GX thread (NSMBW_ASYNC_COPY)
+// rather than done on the calling thread after waiting for it.
+int AuroraAsyncCopies(void);
 // NSMBW: from here on, in stream order, skip (true) or draw (false) the primitives decoded; every other
 // command still applies, so the decoded GX state keeps in step with the game's. Host-only: nothing the
 // game can read changes (runtime/src/hle/gx/depth_blur.cpp).

@@ -46,6 +46,7 @@
 #endif
 
 #include <aurora/aurora.h>
+#include <aurora/gfx.h>
 
 // Forward declaration for OSWakeupThread - used to wake threads on VI retrace queue
 extern "C" void OSWakeupThread_HLE_801aaaa4(CpuContext* ctx);
@@ -1115,12 +1116,17 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         const uint32_t retracesElapsed = retraceCount - s_lastPacedRetraceCount;
         paceThisFrame = retracesElapsed == 0;
         s_lastPacedRetraceCount = retraceCount;
+        // NSMBW: Battery Saver draws every other frame, so each picture healthily spans two retraces,
+        // and its interpolated slots (if any) spread over both.
+        settings_overlay::SyncFrameInterpolation();
+        const bool thirty = settings_overlay::BatterySaverActive();
+        const uint32_t retracesPerPicture = thirty ? 2u : 1u;
         // aurora_report_producer_paced needs a different signal than the pace-wait above: the guest
         // self-paces via VIWaitForRetrace, so one retrace per produced frame is the healthy locked-60
         // cadence, and zero only happens when production outruns VI. "Kept up" means <=1 retrace
         // elapsed; 2+ means a boundary was missed, so Aurora seals that frame without its interpolated
         // slots (a windowed backstop lowers the slot target only under sustained overload).
-        aurora_report_producer_paced(retracesElapsed <= 1);
+        aurora_report_producer_paced(retracesElapsed <= retracesPerPicture);
         // Stamp the sealed frame's presentation schedule so Aurora paces interpolated slots against
         // this same VI timeline. Anchor to the NEXT retrace boundary, not the period just produced,
         // since slots anchored to the current period would already be expired by seal time. Encoding
@@ -1133,7 +1139,10 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             anchorNanos = s_lastPresentAnchorNanos + intervalNanos;
         }
         s_lastPresentAnchorNanos = anchorNanos;
-        aurora_set_present_schedule(anchorNanos, intervalNanos);
+        // Only interpolated groups use the interval as their span; a lone native present keeps its
+        // one-period offset (aurora's slotPresentDeadline).
+        const bool spanTwo = thirty && aurora_get_frame_interpolation_fps() != 0;
+        aurora_set_present_schedule(anchorNanos, spanTwo ? intervalNanos * retracesPerPicture : intervalNanos);
     } else {
         // Retrace-context presents (VI black, boot) have no display period of
         // their own to subdivide; present as soon as the frame is ready. The

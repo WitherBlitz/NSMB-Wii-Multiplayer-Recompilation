@@ -65,6 +65,11 @@ struct DrawParams {
     // Text panes show letters only: a mod's icons in place of letters (Newer's parentheses) are the
     // Mario font's letters there, as the runtime's own text has them (Font::plain).
     bool plainText = false;
+    // Text panes centred vertically put a capital's ink in the middle (Font::inkTop / inkBottom), and centred
+    // lines their letters' ink, not the cell and the advances.
+    bool centerInk = false;
+    // A window pane's frame is drawn only outside a rectangle inset this far (x, y) from the pane's sides.
+    std::unordered_map<std::string, std::pair<float, float>> frameClip;
 };
 
 class Layout {
