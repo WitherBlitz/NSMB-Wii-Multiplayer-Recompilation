@@ -85,10 +85,10 @@ struct RuntimeUserConfig {
     // (Dolphin's "continuous scanning"), so a remote that dropped or was switched on
     // after launch shows up without restarting.
     std::optional<bool> wiiContinuousScan;
-    // NSMBW: [input] bluetooth_passthrough, "auto" (the default), "on" or "off". With a USB Bluetooth
-    // adapter this runtime can claim (on the WinUSB driver on Windows, permitted on Linux), the game's
-    // own Wii Remote stack drives real Wii Remotes through it as on a Wii, speaker included
-    // (bt_passthrough.h); "auto" uses one when there is one. Read once at startup.
+    // NSMBW: [input] bluetooth_passthrough, "off" (the default until it's been tried on real hardware),
+    // "auto" or "on". With a USB Bluetooth adapter this runtime can claim (on the WinUSB driver on Windows,
+    // permitted on Linux), the game's own Wii Remote stack drives real Wii Remotes through it as on a Wii,
+    // speaker included (bt_passthrough.h); "auto" uses one when there is one. Read once at startup.
     std::optional<std::string> bluetoothPassthrough;
     // Accelerometer zero-point correction for the Bluetooth Wii Remote, in g and in
     // SDL's sensor frame (x right, y out of the button face, z towards the user).
@@ -1363,9 +1363,11 @@ inline bool SetWiiContinuousScanEnabled(bool value) {
     return WriteSetting("controller", "wii_continuous_scan", value ? "true" : "false");
 }
 
-// Bluetooth passthrough: "auto", "on" or "off" (bt_passthrough.h). Takes effect on the next start.
+// Bluetooth passthrough: "auto", "on" or "off" (bt_passthrough.h). Takes effect on the next start. Off by
+// default for 0.5.0: nobody has tried it with a real adapter yet, and with it on, the keyboard and
+// controllers don't drive the game.
 inline std::string BluetoothPassthroughMode() {
-    return Get().bluetoothPassthrough.value_or("auto");
+    return Get().bluetoothPassthrough.value_or("off");
 }
 
 // Persists the Bluetooth passthrough setting ("auto", "on" or "off").
