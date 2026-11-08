@@ -86,6 +86,17 @@ final class AppSettings {
     boolean batterySaver() { return prefs().getBoolean("battery_saver", false); }
     void setBatterySaver(boolean on) { prefs().edit().putBoolean("battery_saver", on).commit(); }
 
+    /** Frame interpolation: 0 off, or 60 (Battery Saver only), 120, 180, 240, 300 ([video] frame_interpolation_fps). */
+    int frameInterpolationFps() {
+        final int fps = prefs().getInt("frame_interpolation_fps", 0);
+        return fps == 60 || fps == 120 || fps == 180 || fps == 240 || fps == 300 ? fps : 0;
+    }
+    void setFrameInterpolationFps(int fps) { prefs().edit().putInt("frame_interpolation_fps", fps).commit(); }
+
+    /** The game's Mods tab: the HD Texture Pack on ([video] texture_replacements; the game downloads it). */
+    boolean textureReplacements() { return prefs().getBoolean("texture_replacements", false); }
+    void setTextureReplacements(boolean on) { prefs().edit().putBoolean("texture_replacements", on).commit(); }
+
     /** The Performance Monitor: FPS counter and frametime graph (the old FPS Counter switch turns it on). */
     boolean performanceMonitor() {
         return prefs().getBoolean("frame_graph", false) || prefs().getBoolean("show_fps", false);

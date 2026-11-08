@@ -322,36 +322,15 @@ final class Lang {
         put("%d of %d files", "%d de %d archivos", "%d fichiers sur %d");
         put("%d of %d MB", "%d de %d MB", "%d sur %d Mo");
         put("%d files", "%d archivos", "%d fichiers");
-        put("That folder is not an extracted game: it needs files/ and sys/ (or a DATA folder holding them), "
-                + "as Dolphin's Extract Entire Disc makes.",
-                "Esa carpeta no es un juego extraído: necesita files/ y sys/ (o una carpeta DATA que las "
-                + "contenga), como las que crea Extraer disco completo de Dolphin.",
-                "Ce dossier n'est pas un jeu extrait : il lui faut files/ et sys/ (ou un dossier DATA qui les "
-                + "contient), comme ceux que crée Extraire le disque entier de Dolphin.");
-        put("That folder has no sys/boot.bin, so the game can't be identified.",
-                "Esa carpeta no tiene sys/boot.bin, así que no se puede identificar el juego.",
-                "Ce dossier n'a pas de sys/boot.bin, le jeu ne peut donc pas être identifié.");
+        put("The folder doesn't include all required files.",
+                "La carpeta no incluye todos los archivos necesarios.",
+                "Le dossier ne contient pas tous les fichiers requis.");
         put("That folder's sys/boot.bin is too short, so the game can't be identified.",
                 "El sys/boot.bin de esa carpeta es demasiado corto, así que no se puede identificar el juego.",
                 "Le sys/boot.bin de ce dossier est trop court, le jeu ne peut donc pas être identifié.");
-        put("That zip doesn't hold an extracted game: zip the folder Dolphin's Extract Entire Disc made (the "
-                + "one with files and sys in it).",
-                "Ese zip no contiene un juego extraído: comprime la carpeta que creó Extraer disco completo de "
-                + "Dolphin (la que tiene files y sys).",
-                "Ce zip ne contient pas de jeu extrait : zippez le dossier créé par Extraire le disque entier "
-                + "de Dolphin (celui qui contient files et sys).");
-        put("That isn't an extracted game: it needs the files and sys folders Dolphin's Extract Entire Disc "
-                + "makes.",
-                "Eso no es un juego extraído: necesita las carpetas files y sys que crea Extraer disco "
-                + "completo de Dolphin.",
-                "Ce n'est pas un jeu extrait : il lui faut les dossiers files et sys que crée Extraire le "
-                + "disque entier de Dolphin.");
         put("Its sys/boot.bin is too short, so the game can't be identified.",
                 "Su sys/boot.bin es demasiado corto, así que no se puede identificar el juego.",
                 "Son sys/boot.bin est trop court, le jeu ne peut donc pas être identifié.");
-        put("It has no sys/boot.bin, so the game can't be identified.",
-                "No tiene sys/boot.bin, así que no se puede identificar el juego.",
-                "Il n'a pas de sys/boot.bin, le jeu ne peut donc pas être identifié.");
         put("That is %s, not New Super Mario Bros. Wii for the USA (SMNE01). This port runs only the USA disc, "
                 + "revision 1.",
                 "Eso es %s, no New Super Mario Bros. Wii de EE. UU. (SMNE01). Este port solo funciona con el "
@@ -838,27 +817,12 @@ final class Lang {
         it("%d of %d files", "%d di %d file");
         it("%d of %d MB", "%d di %d MB");
         it("%d files", "%d file");
-        it("That folder is not an extracted game: it needs files/ and sys/ (or a DATA folder holding them), "
-                + "as Dolphin's Extract Entire Disc makes.",
-                "Quella cartella non è un gioco estratto: servono files/ e sys/ (o una cartella DATA che li "
-                + "contiene), come quelli creati da Estrai intero disco di Dolphin.");
-        it("That folder has no sys/boot.bin, so the game can't be identified.",
-                "Quella cartella non ha sys/boot.bin, quindi il gioco non può essere identificato.");
+        it("The folder doesn't include all required files.", "La cartella non include tutti i file necessari.");
         it("That folder's sys/boot.bin is too short, so the game can't be identified.",
                 "Il sys/boot.bin di quella cartella è troppo corto, quindi il gioco non può essere "
                 + "identificato.");
-        it("That zip doesn't hold an extracted game: zip the folder Dolphin's Extract Entire Disc made (the "
-                + "one with files and sys in it).",
-                "Quello zip non contiene un gioco estratto: comprimi la cartella creata da Estrai intero "
-                + "disco di Dolphin (quella con files e sys).");
-        it("That isn't an extracted game: it needs the files and sys folders Dolphin's Extract Entire Disc "
-                + "makes.",
-                "Non è un gioco estratto: servono le cartelle files e sys create da Estrai intero disco di "
-                + "Dolphin.");
         it("Its sys/boot.bin is too short, so the game can't be identified.",
                 "Il suo sys/boot.bin è troppo corto, quindi il gioco non può essere identificato.");
-        it("It has no sys/boot.bin, so the game can't be identified.",
-                "Non ha sys/boot.bin, quindi il gioco non può essere identificato.");
         it("That is %s, not New Super Mario Bros. Wii for the USA (SMNE01). This port runs only the USA disc, "
                 + "revision 1.",
                 "Questo è %s, non New Super Mario Bros. Wii USA (SMNE01). Questo port funziona solo con il "

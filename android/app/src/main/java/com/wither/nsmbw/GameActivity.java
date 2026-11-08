@@ -144,8 +144,13 @@ public class GameActivity extends SDLActivity
 
     // --- the file select's Update button --------------------------------------------------------
 
-    /** Once per start: a newer GitHub release shows the game's Update button. */
+    /** When the game last looked for a newer release (SystemClock.elapsedRealtime), or -1. */
+    private static long sLastUpdateCheck = -1;
+
+    /** At start, and on coming back to the app at most once every five minutes: a newer GitHub release shows
+     *  the game's Update button. */
     private void checkForUpdate() {
+        sLastUpdateCheck = android.os.SystemClock.elapsedRealtime();
         new Thread(() -> {
             try {
                 final Updater.Release release = Updater.latest();
@@ -315,6 +320,39 @@ public class GameActivity extends SDLActivity
         }
         if (changed.length > 9) settings.setDepthBlur(changed[9] > 0.5f);  // the Video tab's Depth Blur
         if (changed.length > 10) settings.setBatterySaver(changed[10] > 0.5f);  // ... and its Battery Saver
+        if (changed.length > 11) settings.setTextureReplacements(changed[11] > 0.5f);  // the Mods tab's HD Texture Pack
+        if (changed.length > 12) settings.setFrameInterpolationFps(Math.round(changed[12]));  // ... Frame Interpolation
+    }
+
+    /**
+     * The game's Mods tab downloads the HD Texture Pack (hd_texture_pack.cpp) on a thread of its own, which
+     * calls this: GETs url into the file at path, following redirects. Null, or why it failed.
+     */
+    String downloadForGame(String url, String path) {
+        java.net.HttpURLConnection connection = null;
+        try {
+            connection = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            connection.setConnectTimeout(15000);
+            connection.setReadTimeout(30000);
+            connection.setInstanceFollowRedirects(true);
+            connection.setRequestProperty("User-Agent", "NSMBW");
+            if (connection.getResponseCode() != java.net.HttpURLConnection.HTTP_OK) {
+                return "HTTP " + connection.getResponseCode();
+            }
+            try (java.io.InputStream in = connection.getInputStream();
+                 java.io.OutputStream out = new java.io.FileOutputStream(path)) {
+                final byte[] buffer = new byte[1 << 16];
+                for (int n; (n = in.read(buffer)) > 0; ) {
+                    out.write(buffer, 0, n);
+                }
+            }
+            return null;
+        } catch (Exception e) {
+            Log.w("NSMBW", "download " + url, e);
+            return String.valueOf(e);
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
     }
 
     @Override
@@ -336,6 +374,11 @@ public class GameActivity extends SDLActivity
         menuPoll.removeCallbacks(pollMenu);
         menuPoll.post(pollMenu);
         hideSystemBars();
+        // Android often keeps the game in memory, so reopening the app comes back here without a new start.
+        if (nativeReady && update == null && sLastUpdateCheck >= 0
+                && android.os.SystemClock.elapsedRealtime() - sLastUpdateCheck >= 5 * 60 * 1000) {
+            checkForUpdate();
+        }
         // Back from "Allow from this source": carry on with the update that was waiting for it.
         if (updateWaitsForPermission && update != null) {
             updateWaitsForPermission = false;
