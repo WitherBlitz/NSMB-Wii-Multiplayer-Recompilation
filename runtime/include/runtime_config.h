@@ -112,6 +112,9 @@ struct RuntimeUserConfig {
     // comma-separated SDL-style physical button names ("south", or
     // "dpad_up,left_shoulder") as values; pressing either bound button counts.
     std::array<std::optional<std::string>, 12> controllerButtons;
+    // The sideways remote's own motions, picked in F10 > Controller settings: tilt_left, tilt_right and
+    // shake, each one physical input name ("left_trigger", "right_stick_left@30"). Unset = the built-in input.
+    std::array<std::optional<std::string>, 3> remoteActions;
     std::optional<bool> rumbleEnabled;
     std::optional<int32_t> muteHotkey;
     std::map<std::string, std::string> controllerExpressions;
@@ -583,6 +586,11 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         config.controllerButtons[index] =
             FindConfigValue<std::string>(document, "controller", buttonKeys[index]);
     }
+    static constexpr std::array<std::string_view, 3> remoteActionKeys = {"tilt_left", "tilt_right", "shake"};
+    for (size_t index = 0; index < remoteActionKeys.size(); ++index) {
+        config.remoteActions[index] =
+            FindConfigValue<std::string>(document, "controller", remoteActionKeys[index]);
+    }
 
     config.rumbleEnabled = FindConfigValue<bool>(document, "controller", "rumble");
     if (auto value = FindConfigInt(document, "audio", "mute_key")) {
@@ -760,6 +768,13 @@ inline constexpr std::array<std::string_view, 12> kControllerButtonKeys = {
     "a", "b", "x", "y", "start", "z", "l", "r", "up", "down", "left", "right",
 };
 
+inline constexpr std::array<std::string_view, 3> kRemoteActionKeys = {"tilt_left", "tilt_right", "shake"};
+
+inline const std::optional<std::string>& RemoteAction(size_t index) {
+    static const std::optional<std::string> empty;
+    return index < Get().remoteActions.size() ? Get().remoteActions[index] : empty;
+}
+
 inline const std::optional<std::string>& ControllerButton(size_t index) {
     static const std::optional<std::string> empty;
     return index < Get().controllerButtons.size() ? Get().controllerButtons[index] : empty;
@@ -925,11 +940,23 @@ inline bool DiscLanguage(const std::string& code) {
     return code == "en" || code == "es" || code == "fr";
 }
 
-// A language pack: Languages/<code> beside Config.toml, shaped like the disc's files/US/EngUS (Font,
-// Layout, Message, staffroll), or holding one folder that is. Only files the disc has are used.
+inline std::filesystem::path ResolvedDvdRoot();
+
+// Italian can live in the EU tree of the selected game dump. Keep the user-data path as a fallback
+// for existing installs and for other language packs.
 inline std::filesystem::path LanguagePackDir(const std::string& code) {
-    std::filesystem::path dir = ResolveConfigPath().parent_path() / "Languages" / PathFromUtf8(code);
     std::error_code ec;
+    if (code == "it") {
+        const std::filesystem::path gamePack = ResolvedDvdRoot() / "files" / "EU" / "ItaEU";
+        if (std::filesystem::is_directory(gamePack / "Message", ec)) {
+            return gamePack;
+        }
+    }
+
+    // Languages/<code> beside Config.toml, shaped like the disc's files/US/EngUS (Font, Layout,
+    // Message, staffroll), or holding one folder that is. Only files the disc has are used.
+    std::filesystem::path dir = ResolveConfigPath().parent_path() / "Languages" / PathFromUtf8(code);
+    ec.clear();
     if (!std::filesystem::is_directory(dir / "Message", ec)) {
         for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
             if (entry.is_directory(ec) && std::filesystem::is_directory(entry.path() / "Message", ec)) {
@@ -1077,6 +1104,14 @@ inline bool SetControllerButton(size_t index, std::string value) {
     }
     Mutable().controllerButtons[index] = value;
     return WriteSetting("controller", kControllerButtonKeys[index], FormatString(value));
+}
+
+inline bool SetRemoteAction(size_t index, std::string value) {
+    if (index >= kRemoteActionKeys.size()) {
+        return false;
+    }
+    Mutable().remoteActions[index] = value;
+    return WriteSetting("controller", kRemoteActionKeys[index], FormatString(value));
 }
 
 inline std::string ControllerExpression(const std::string& key) {

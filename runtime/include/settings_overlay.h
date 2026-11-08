@@ -35,7 +35,7 @@ std::string ControllerBindingLabel(int action);
 // The controller buttons (aurora's PAD native encoding) of the action's first binding: its button, else
 // its first combination's members; none without a controller. The button prompts show these.
 std::vector<uint32_t> ControllerFirstBinding(int action);
-bool ControllerActionRebindable(int action) noexcept;  // not the tilt rows (the right stick)
+bool ControllerActionRebindable(int action) noexcept;
 // Waits for the next controller button pressed and binds it to `action`; Escape or 10 s cancel.
 void BeginControllerCapture(int action) noexcept;
 int ControllerCapturing() noexcept;  // the action waiting for a button, or -1
