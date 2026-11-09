@@ -79,7 +79,7 @@ extern "C" void GX__SetZScaleOffset_80173400(float s, float o) {
             constexpr float kZ24Scale = 16777215.0f;
             Memory::WriteFloat32(gd + 0x55Cu, kZ24Scale * o);
             Memory::WriteFloat32(gd + 0x560u, 1.0f + kZ24Scale * s);
-            Memory::Write32(gd + 0x5FCu, Memory::Read32(gd + 0x5FCu) | 0x10000000u);
+            Memory::Write32(gd + kGXDataDirtyStateOffset, Memory::Read32(gd + kGXDataDirtyStateOffset) | 0x10000000u);
         }
     } catch (...) {}
 }
@@ -91,7 +91,7 @@ extern "C" void GX__SetScissorBoxOffset_801734e0(int32_t xo, int32_t yo) {
     GXSetScissorBoxOffset(xo, yo);
     try {
         const uint32_t gd = Memory::Read32(kGXDataPtrAddr);
-        if (gd) Memory::Write16(gd + 2, 0);
+        if (gd) Memory::Write16(gd + kGXDataBpSentOffset, 0);
     } catch (...) {}
 }
 PPC_NATIVE_OVERRIDE_VOID(801c9d20, GX__SetScissorBoxOffset_801734e0, (int32_t xo, int32_t yo), (xo, yo));

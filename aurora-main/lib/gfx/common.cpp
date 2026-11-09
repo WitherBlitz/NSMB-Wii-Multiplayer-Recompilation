@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <mutex>
@@ -194,6 +195,20 @@ struct RenderPass {
     uint32_t x = 0, y = 0, width = 0, height = 0;
   };
   std::vector<Patch> patches;
+  // NSMBW scratch strips: copies of this pass's target that are resolved after the pass ends.
+  // Consecutive GXCopyTex calls read the same strip content, so one pass split serves the group.
+  struct DeferredResolve {
+    TextureHandle target;
+    GXTexFmt format = GX_TF_RGBA8;
+    ClipRect rect;
+    Range uniformRange;
+    bool needsConversion = false;
+    bool needsShaderSampling = false;
+    bool linearSampling = false;
+    bool forceOpaqueAlpha = false;
+    std::vector<Patch> patches;
+  };
+  std::vector<DeferredResolve> deferred;
 };
 static std::vector<RenderPass> g_renderPasses;
 static u32 g_currentRenderPass = UINT32_MAX;
@@ -260,6 +275,14 @@ static RenderPass& push_render_pass(RenderPass&& pass) {
 // The producer may build the next frame's GX stream while the worker prepares the target, and
 // this is the only renderer-owned property that path queries, so publish it explicitly.
 static std::atomic_bool g_inOffscreen{false};
+// NSMBW: scratch strips live below the visible EFB lines. They are rendered into a small offscreen
+// target so a GX texture copy does not have to split (store/load) the full EFB pass.
+static std::atomic_bool g_inStripTarget{false};
+static float g_stripOriginX = 0.f;
+static float g_stripOriginY = 0.f;
+static uint32_t g_stripEfbWidth = 0;
+static uint32_t g_stripEfbHeight = 0;
+static ClipRect g_stripEfbRect{};
 static std::optional<RenderPass> g_suspendedEfbPass;
 static Viewport g_suspendedEfbViewport;
 static ClipRect g_suspendedEfbScissor;
@@ -470,6 +493,18 @@ struct OffscreenCacheEntry {
 static absl::flat_hash_map<OffscreenCacheKey, OffscreenCacheEntry> g_offscreenCache;
 std::vector<TextureUpload> g_textureUploads;
 
+// The sealed frame's recorded data, moved off the producer's buffers at the seal. The worker copies
+// it into the mapped staging buffer after SEALED, so the producer's decode never waits for the GPU
+// to release that buffer.
+struct FrameBuffers {
+  ByteBuffer verts, uniforms, indices, storage, textureUpload;
+  std::vector<TextureUpload> textureUploads;
+  uint32_t vertSize = 0, uniformSize = 0, indexSize = 0, storageSize = 0, textureSize = 0;
+};
+static FrameBuffers s_pendingFrame;
+static bool s_pendingFrameValid = false;
+
+
 static inline void push_command(CommandType type, const Command::Data& data) {
   if (!has_current_render_pass())
     UNLIKELY {
@@ -513,6 +548,10 @@ Vec2<uint32_t> get_frame_buffer_size() noexcept {
 // Render-thread only: the frame worker recycles g_renderPasses in end_frame, so an off-thread
 // read is a use-after-free rather than a stale value. Use get_frame_buffer_size() instead.
 Vec2<uint32_t> get_render_target_size() noexcept {
+  if (g_inStripTarget) {
+    // Logical coordinates and pipelines keep using the EFB geometry while the strip pass is open.
+    return {g_stripEfbWidth, g_stripEfbHeight};
+  }
   if (g_currentRenderPass < g_renderPasses.size()) {
     const auto& size = g_renderPasses[g_currentRenderPass].targetSize;
     return {size.width, size.height};
@@ -522,17 +561,27 @@ Vec2<uint32_t> get_render_target_size() noexcept {
 
 static Viewport g_cachedViewport;
 void set_viewport(const Viewport& cmd) noexcept {
-  if (cmd != g_cachedViewport) {
-    push_command(CommandType::SetViewport, Command::Data{.setViewport = cmd});
-    g_cachedViewport = cmd;
+  Viewport vp = cmd;
+  if (g_inStripTarget) {
+    vp.left -= g_stripOriginX;
+    vp.top -= g_stripOriginY;
+  }
+  if (vp != g_cachedViewport) {
+    push_command(CommandType::SetViewport, Command::Data{.setViewport = vp});
+    g_cachedViewport = vp;
   }
 }
 
 static ClipRect g_cachedScissor;
 void set_scissor(const ClipRect& cmd) noexcept {
-  if (cmd != g_cachedScissor) {
-    push_command(CommandType::SetScissor, Command::Data{.setScissor = cmd});
-    g_cachedScissor = cmd;
+  ClipRect sc = cmd;
+  if (g_inStripTarget) {
+    sc.x -= static_cast<int32_t>(std::lround(g_stripOriginX));
+    sc.y -= static_cast<int32_t>(std::lround(g_stripOriginY));
+  }
+  if (sc != g_cachedScissor) {
+    push_command(CommandType::SetScissor, Command::Data{.setScissor = sc});
+    g_cachedScissor = sc;
   }
 }
 
@@ -562,23 +611,31 @@ bool add_resolve_patch(const TextureHandle& source, TextureHandle dst, uint32_t 
       x + width > dst->size.width || y + height > dst->size.height || g_currentRenderPass >= g_renderPasses.size()) {
     return false;
   }
-  // The pass that resolves `source`: the most recent one with it as its target.
+  // One scratch texture per patch size: the blits and copies are encoded in order.
+  static absl::flat_hash_map<uint64_t, TextureHandle> natives;
+  auto& native = natives[(static_cast<uint64_t>(width) << 32) | height];
+  if (!native) {
+    native = new_conv_texture(width, height, GX_TF_RGBA8, "GX resolve patch");
+  }
+  const std::array blitUniform{
+      0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 64.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f,
+  };
+  auto makePatch = [&]() {
+    return RenderPass::Patch{std::move(dst), native, push_uniform(blitUniform), x, y, width, height};
+  };
+  // The pass or deferred resolve that produces `source`: the most recent one with it as its target.
   for (size_t i = g_currentRenderPass + 1; i-- > 0;) {
     auto& pass = g_renderPasses[i];
-    if (pass.resolveTarget != source) {
-      continue;
+    if (pass.resolveTarget == source) {
+      pass.patches.push_back(makePatch());
+      return true;
     }
-    // One scratch texture per patch size: the blits and copies are encoded in order.
-    static absl::flat_hash_map<uint64_t, TextureHandle> natives;
-    auto& native = natives[(static_cast<uint64_t>(width) << 32) | height];
-    if (!native) {
-      native = new_conv_texture(width, height, GX_TF_RGBA8, "GX resolve patch");
+    for (auto it = pass.deferred.rbegin(); it != pass.deferred.rend(); ++it) {
+      if (it->target == source) {
+        it->patches.push_back(makePatch());
+        return true;
+      }
     }
-    const std::array blitUniform{
-        0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 64.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f,
-    };
-    pass.patches.push_back({std::move(dst), native, push_uniform(blitUniform), x, y, width, height});
-    return true;
   }
   return false;
 }
@@ -593,6 +650,16 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
     Log.warn("Dropping resolve pass without an active render pass");
     return;
   }
+  if (g_inStripTarget) {
+    // Copies outside the scratch strip (the display copy, atlases) read the EFB, not the scratch
+    // target. Resume the EFB pass first so the resolve sees the real frame.
+    const bool inside = rect.x >= g_stripEfbRect.x && rect.y >= g_stripEfbRect.y &&
+                        rect.x + rect.width <= g_stripEfbRect.x + g_stripEfbRect.width &&
+                        rect.y + rect.height <= g_stripEfbRect.y + g_stripEfbRect.height;
+    if (!inside) {
+      end_strip_target();
+    }
+  }
   ensure_staging_space({0, 2 * staging_uniform_bytes(48), 0, 0});
   auto& prevPass = g_renderPasses[g_currentRenderPass];
   const auto targetWidth = static_cast<int32_t>(prevPass.targetSize.width);
@@ -605,6 +672,19 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
                                ? *sourceRectPixels
                                : Vec4<float>{static_cast<float>(rect.x), static_cast<float>(rect.y),
                                              static_cast<float>(rect.width), static_cast<float>(rect.height)};
+  if (g_inStripTarget) {
+    // The strip pass target is the EFB strip, so the copy source rect moves to strip-local space.
+    const auto originX = static_cast<int32_t>(std::lround(g_stripOriginX));
+    const auto originY = static_cast<int32_t>(std::lround(g_stripOriginY));
+    rect.x -= originX;
+    rect.y -= originY;
+    sourceRect = {
+        sourceRect.x() - g_stripOriginX,
+        sourceRect.y() - g_stripOriginY,
+        sourceRect.z(),
+        sourceRect.w(),
+    };
+  }
   if (targetWidth > 0 && targetHeight > 0) {
     const int32_t left = std::clamp(rect.x, 0, targetWidth - 1);
     const int32_t top = std::clamp(rect.y, 0, targetHeight - 1);
@@ -624,6 +704,49 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
     const float srcRight = std::clamp(sourceRect.x() + sourceRect.z(), srcLeft, srcW);
     const float srcBottom = std::clamp(sourceRect.y() + sourceRect.w(), srcTop, srcH);
     sourceRect = {srcLeft, srcTop, std::max(srcRight - srcLeft, 1.0f), std::max(srcBottom - srcTop, 1.0f)};
+  }
+  if (g_inStripTarget && !gx::is_depth_format(resolveFormat) && !halfScale) {
+    // Defer the resolve: the strip content stays valid until the next draw, so consecutive copies
+    // can share one pass split instead of splitting the strip once per copy. The copy clear is
+    // skipped: it only clears scratch the next strip draw or the next strip entry overwrites.
+    const std::array<u32, 3> filter =
+        copyFilterCoefficients != nullptr ? *copyFilterCoefficients : std::array<u32, 3>{0, 64, 0};
+    const bool filterActive = filter[0] != 0 || filter[1] != 64 || filter[2] != 0;
+    const auto samplingPlan =
+        make_resolve_sampling_plan(texture, resolveFormat, rect, sourceRect, halfScale, filterActive,
+                                   forceOpaqueAlpha);
+    const float srcW = static_cast<float>(targetWidth);
+    const float srcH = static_cast<float>(targetHeight);
+    const float clampTopPixels = clampTop ? sourceRect.y() : 0.0f;
+    const float clampBottomPixels = clampBottom ? sourceRect.y() + sourceRect.w() : srcH;
+    const float clampTopUv = (clampTopPixels + 0.5f) / srcH;
+    const float clampBottomUv = (clampBottomPixels - 0.5f) / srcH;
+    const std::array resolveUniform{
+        sourceRect.x() / srcW,
+        sourceRect.y() / srcH,
+        sourceRect.z() / srcW,
+        sourceRect.w() / srcH,
+        static_cast<float>(filter[0]),
+        static_cast<float>(filter[1]),
+        static_cast<float>(filter[2]),
+        filterActive ? 1.0f : 0.0f,
+        forceOpaqueAlpha ? 1.0f : 0.0f,
+        std::max(copyFilterRowStride, 1.0f),
+        clampTopUv,
+        clampBottomUv,
+    };
+    prevPass.requireReadyPipelines |= persistentCopy;
+    prevPass.deferred.push_back(RenderPass::DeferredResolve{
+        .target = std::move(texture),
+        .format = resolveFormat,
+        .rect = rect,
+        .uniformRange = push_uniform(resolveUniform),
+        .needsConversion = samplingPlan.needsConversion,
+        .needsShaderSampling = samplingPlan.needsShaderSampling,
+        .linearSampling = samplingPlan.usesLinearSampling,
+        .forceOpaqueAlpha = forceOpaqueAlpha,
+    });
+    return;
   }
   prevPass.resolveTarget = std::move(texture);
   prevPass.requireReadyPipelines |= persistentCopy;
@@ -743,7 +866,9 @@ void queue_palette_conv(tex_palette_conv::ConvRequest req) {
   g_renderPasses[g_currentRenderPass].paletteConvs.push_back(std::move(req));
 }
 
-bool is_offscreen() noexcept { return g_inOffscreen; }
+bool is_offscreen() noexcept { return g_inOffscreen && !g_inStripTarget; }
+
+bool is_strip_target_active() noexcept { return g_inStripTarget; }
 
 uint32_t get_sample_count() noexcept {
   if (!has_current_render_pass()) {
@@ -863,6 +988,57 @@ void begin_offscreen(uint32_t width, uint32_t height) {
   push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
 }
 
+void begin_strip_target(ClipRect efbRect, float originX, float originY) {
+  ZoneScoped;
+  CHECK(!g_inOffscreen, "begin_strip_target called inside an offscreen pass");
+  CHECK(g_currentRenderPass != UINT32_MAX, "begin_strip_target called outside of a frame");
+
+  const auto efbSize = get_render_target_size();
+  g_stripEfbWidth = efbSize.x;
+  g_stripEfbHeight = efbSize.y;
+  g_stripEfbRect = efbRect;
+  g_stripOriginX = originX;
+  g_stripOriginY = originY;
+
+  auto offscreenEntry = get_offscreen_textures(efbRect.width, efbRect.height);
+  g_offscreenColor = std::move(offscreenEntry.color);
+  g_offscreenDepth = std::move(offscreenEntry.depth);
+
+  const auto savedViewport = g_cachedViewport;
+  RenderPass newPass{
+      .colorView = g_offscreenColor.view,
+      .depthView = g_offscreenDepth.view,
+      .copySourceTexture = g_offscreenColor.texture,
+      .copySourceView = g_offscreenColor.view,
+      .copySourceDepthView = g_offscreenDepth.view,
+      .targetSize = {static_cast<uint32_t>(efbRect.width), static_cast<uint32_t>(efbRect.height), 1},
+      .msaaSamples = 1,
+      .clearColorValue = gx::g_gxState.clearColor,
+      .clearDepthValue = gx::clear_depth_value(),
+      .clearColor = true,
+      .clearDepth = true,
+  };
+  // Append the scratch pass after the EFB pass that is open now. That pass keeps its own clear
+  // flag, so the EFB clears exactly once per frame instead of once per scratch entry.
+  push_render_pass(std::move(newPass));
+  ++g_currentRenderPass;
+
+  g_inOffscreen = true;
+  g_inStripTarget = true;
+  static const bool logStrip = std::getenv("NSMBW_LOG_STRIP") != nullptr;
+  if (logStrip) {
+    std::fprintf(stderr, "[strip] begin rect %d,%d %dx%d origin %.2f,%.2f efb %ux%u vp %.1f,%.1f %.1fx%.1f\n",
+                 efbRect.x, efbRect.y, efbRect.width, efbRect.height, originX, originY, g_stripEfbWidth,
+                 g_stripEfbHeight, savedViewport.left, savedViewport.top, savedViewport.width,
+                 savedViewport.height);
+  }
+  g_cachedViewport = {savedViewport.left - originX, savedViewport.top - originY, savedViewport.width,
+                      savedViewport.height, savedViewport.znear, savedViewport.zfar};
+  g_cachedScissor = {0, 0, efbRect.width, efbRect.height};
+  push_command(CommandType::SetViewport, Command::Data{.setViewport = g_cachedViewport});
+  push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
+}
+
 void end_offscreen() {
   ZoneScoped;
   CHECK(g_inOffscreen, "end_offscreen called without begin_offscreen");
@@ -890,8 +1066,78 @@ void end_offscreen() {
   push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
 }
 
+void end_strip_target() {
+  ZoneScoped;
+  CHECK(g_inStripTarget, "end_strip_target called without begin_strip_target");
+  g_inStripTarget = false;
+  g_inOffscreen = false;
+  g_offscreenColor = {};
+  g_offscreenDepth = {};
+
+  // Continue on the EFB, loading what the pre-strip pass left there.
+  auto& pass = push_render_pass(RenderPass{});
+  pass.clearColor = false;
+  pass.clearDepth = false;
+  ++g_currentRenderPass;
+  set_efb_targets(g_renderPasses[g_currentRenderPass]);
+
+  // A new pass starts from the default viewport/scissor, so push the current logical mapping
+  // unconditionally instead of relying on the GX state early-outs.
+  const auto mapped = gx::map_logical_render_state();
+  g_cachedViewport = mapped.viewport;
+  g_cachedScissor = mapped.scissor;
+  push_command(CommandType::SetViewport, Command::Data{.setViewport = g_cachedViewport});
+  push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
+}
+
+// NSMBW: end the current strip segment before a draw changes its content. The pending resolves
+// are encoded after that pass, then a continuation pass takes the draw.
+static void flush_strip_resolves() {
+  if (!g_inStripTarget || g_currentRenderPass >= g_renderPasses.size()) {
+    return;
+  }
+  auto& pass = g_renderPasses[g_currentRenderPass];
+  if (pass.deferred.empty()) {
+    return;
+  }
+  RenderPass continuation{
+      .colorView = pass.colorView,
+      .resolveView = pass.resolveView,
+      .depthView = pass.depthView,
+      .copySourceTexture = pass.copySourceTexture,
+      .copySourceView = pass.copySourceView,
+      .copySourceDepthView = pass.copySourceDepthView,
+      .targetSize = pass.targetSize,
+      .msaaSamples = pass.msaaSamples,
+      .clearColor = false,
+      .clearDepth = false,
+  };
+  push_render_pass(std::move(continuation));
+  ++g_currentRenderPass;
+  push_command(CommandType::SetViewport, Command::Data{.setViewport = g_cachedViewport});
+  push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
+}
+
 template <>
 void push_draw_command(gx::DrawData data) {
+  if (g_inStripTarget) {
+    const auto& sc = gx::g_gxState.renderScissor;
+    const bool inside = sc.x >= g_stripEfbRect.x && sc.y >= g_stripEfbRect.y &&
+                        sc.x + sc.width <= g_stripEfbRect.x + g_stripEfbRect.width &&
+                        sc.y + sc.height <= g_stripEfbRect.y + g_stripEfbRect.height;
+    if (!inside) {
+      // The first draw outside the scratch strip goes back to the EFB pass.
+      static const bool logStripEnd = std::getenv("NSMBW_LOG_STRIP") != nullptr;
+      if (logStripEnd) {
+        std::fprintf(stderr, "[strip] end at draw scissor %d,%d %dx%d rect %d,%d %dx%d\n", sc.x, sc.y,
+                     sc.width, sc.height, g_stripEfbRect.x, g_stripEfbRect.y, g_stripEfbRect.width,
+                     g_stripEfbRect.height);
+      }
+      end_strip_target();
+    } else {
+      flush_strip_resolves();
+    }
+  }
   push_draw_command(ShaderDrawCommand{.type = ShaderType::GX, .gx = data});
 }
 
@@ -1085,6 +1331,36 @@ void map_staging_buffer() {
       });
 }
 
+// Waits for the staging buffer that is mapped next to become writable. The producer writes the
+// frame's vertex/uniform/index data into CPU buffers (see end_batch_impl), so this only has to
+// happen once per frame at the seal, on the frame worker, instead of in front of the producer's GX
+// decode.
+static bool wait_for_staging_map() {
+  ZoneScopedN("Wait for buffer map");
+  map_staging_buffer();
+  while (true) {
+    const auto mappingState = s_mappingState.state();
+    if (mappingState == BufferMapState::Mapped) {
+      break;
+    }
+    if (mappingState == BufferMapState::Unmapped) {
+      // The map was aborted; the caller's retry loop drops the frame and any one-shot bakes
+      // recorded into it. Rate-limited.
+      static uint32_t s_beginFrameMapFailCount = 0;
+      if (s_beginFrameMapFailCount < 64 || (s_beginFrameMapFailCount & 255) == 0) {
+        Log.warn("staging buffer unmapped (frame={} occurrences={})", g_frameIndex,
+                 s_beginFrameMapFailCount + 1);
+      }
+      ++s_beginFrameMapFailCount;
+      return false;
+    }
+    g_instance.ProcessEvents();
+    webgpu::fail_if_device_lost();
+    s_mappingState.wait_for_progress();
+  }
+  return true;
+}
+
 static bool begin_frame_impl(bool clearEfb, bool capacityResume = false) {
   ZoneScoped;
   {
@@ -1112,24 +1388,12 @@ static bool begin_frame_impl(bool clearEfb, bool capacityResume = false) {
     }
   }
   ++g_stagingEpoch;
-  g_recordingSnapshotSlot = currentStagingBuffer;
-  size_t bufferOffset = 0;
-  const auto& stagingBuf = g_stagingBuffers[currentStagingBuffer];
-  const auto mapBuffer = [&](ByteBuffer& buf, uint64_t size) {
-    if (size <= 0) {
-      return;
-    }
-    buf = ByteBuffer{static_cast<u8*>(stagingBuf.GetMappedRange(bufferOffset, size)), static_cast<size_t>(size)};
-    bufferOffset += size;
-  };
-  mapBuffer(g_verts, VertexBufferSize);
-  mapBuffer(g_uniforms, UniformBufferSize);
-  mapBuffer(g_indices, IndexBufferSize);
-  mapBuffer(g_storage, StorageBufferSize);
-  if constexpr (UseTextureBuffer) {
-    mapBuffer(g_textureUpload, TextureUploadSize);
-  }
-
+  // The frame sealed just before this one still owns the current staging slot until the worker
+  // stages it; this frame records into the next one.
+  g_recordingSnapshotSlot =
+      s_pendingFrameValid ? (currentStagingBuffer + 1) % FrameSlotCount : currentStagingBuffer;
+  // The frame's vertex/uniform/index data is recorded into CPU buffers and copied into the mapped
+  // staging buffer at the seal (end_batch_impl), so recording never waits for the GPU.
   if (clearEfb && !capacityResume) {
     // Texture replacement switched on or off since the last frame (aurora_set_texture_replacements).
     texture_replacement::apply_pending();
@@ -1192,6 +1456,8 @@ void abort_frame() noexcept {
   g_currentRenderPass = UINT32_MAX;
   discard_suspended_efb_pass();
   g_inOffscreen = false;
+  g_inStripTarget = false;
+  g_stripEfbRect = {};
   for (auto& array : gx::g_gxState.arrays) {
     array.cachedRange = {};
   }
@@ -1199,8 +1465,138 @@ void abort_frame() noexcept {
   end_pipeline_frame();
 }
 
+void seal_staging_buffers() {
+  ZoneScoped;
+  if (g_inStripTarget) {
+    end_strip_target();
+  }
+  ASSERT(!g_inOffscreen, "end_frame called while offscreen rendering is active");
+  gx::finalize_frame_interpolation();
+  g_uniforms.append_zeroes(gx::MaxUniformSize);  // Pad the end of the buffer
+  const auto used = staging_usage();
+  for (unsigned i = 0; i < used.size(); ++i) g_stagingHighWater[i] = std::max(g_stagingHighWater[i], used[i]);
+  g_stats.drawCallCount = g_drawCallCount;
+  g_stats.mergedDrawCallCount = g_mergedDrawCallCount;
+  flush_deferred_texture_writes();  // the static textures this frame loaded (TextureRef::lazy)
+  ASSERT(!s_pendingFrameValid, "a sealed frame is still waiting to be staged");
+  std::swap(g_verts, s_pendingFrame.verts);
+  std::swap(g_uniforms, s_pendingFrame.uniforms);
+  std::swap(g_indices, s_pendingFrame.indices);
+  std::swap(g_storage, s_pendingFrame.storage);
+  if constexpr (UseTextureBuffer) {
+    std::swap(g_textureUpload, s_pendingFrame.textureUpload);
+    std::swap(g_textureUploads, s_pendingFrame.textureUploads);
+  }
+  s_pendingFrameValid = true;
+  g_currentRenderPass = UINT32_MAX;
+  for (auto& array : gx::g_gxState.arrays) {
+    array.cachedRange = {};
+  }
+  end_pipeline_frame();
+  ++g_frameIndex;
+}
+
+void emit_staging_buffers(const wgpu::CommandEncoder& cmd) {
+  ZoneScopedN("Emit staging buffers");
+  if (!s_pendingFrameValid) {
+    return;
+  }
+  // Only the copy commands are recorded here; the frame's bytes still live in the CPU buffers. They
+  // are copied into the staging buffer by fill_staging_buffer() after the draw recording, so the
+  // wait for the GPU to release that buffer overlaps with the encode instead of preceding it.
+  s_pendingFrame.vertSize = static_cast<uint32_t>(s_pendingFrame.verts.size());
+  s_pendingFrame.uniformSize = static_cast<uint32_t>(s_pendingFrame.uniforms.size());
+  s_pendingFrame.indexSize = static_cast<uint32_t>(s_pendingFrame.indices.size());
+  s_pendingFrame.storageSize = static_cast<uint32_t>(s_pendingFrame.storage.size());
+  if constexpr (UseTextureBuffer) {
+    s_pendingFrame.textureSize = static_cast<uint32_t>(s_pendingFrame.textureUpload.size());
+  }
+  uint64_t offset = 0;
+  const auto copyOut = [&](uint32_t writeSize, wgpu::Buffer& out, uint64_t size) {
+    if (writeSize > 0) {
+      cmd.CopyBufferToBuffer(g_stagingBuffers[currentStagingBuffer], offset, out, 0, AURORA_ALIGN(writeSize, 4));
+    }
+    offset += size;
+  };
+  copyOut(s_pendingFrame.vertSize, g_vertexBuffer, VertexBufferSize);
+  copyOut(s_pendingFrame.uniformSize, g_uniformBuffer, UniformBufferSize);
+  copyOut(s_pendingFrame.indexSize, g_indexBuffer, IndexBufferSize);
+  copyOut(s_pendingFrame.storageSize, g_storageBuffer, StorageBufferSize);
+  if constexpr (UseTextureBuffer) {
+    for (const auto& item : s_pendingFrame.textureUploads) {
+      const wgpu::TexelCopyBufferInfo buf{
+          .layout =
+              wgpu::TexelCopyBufferLayout{
+                  .offset = item.layout.offset + offset,
+                  .bytesPerRow = AURORA_ALIGN(item.layout.bytesPerRow, 256),
+                  .rowsPerImage = item.layout.rowsPerImage,
+              },
+          .buffer = g_stagingBuffers[currentStagingBuffer],
+      };
+      cmd.CopyBufferToTexture(&buf, &item.tex, &item.size);
+    }
+  }
+}
+
+void fill_staging_buffer() {
+  ZoneScopedN("Fill staging buffer");
+  if (!s_pendingFrameValid) {
+    return;
+  }
+  s_pendingFrameValid = false;
+  const auto clearPending = [] {
+    s_pendingFrame.verts.clear();
+    s_pendingFrame.uniforms.clear();
+    s_pendingFrame.indices.clear();
+    s_pendingFrame.storage.clear();
+    s_pendingFrame.textureUpload.clear();
+    s_pendingFrame.textureUploads.clear();
+  };
+  if (!wait_for_staging_map()) {
+    // The map was aborted (device loss). Drop this frame's data but keep the staging rotation
+    // consistent so the next frame starts from a known state.
+    g_stagingBuffers[currentStagingBuffer].Unmap();
+    s_mappingState.reset();
+    clearPending();
+    currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();
+    map_staging_buffer();
+    return;
+  }
+  uint64_t bufferOffset = 0;
+  const auto stage = [&](ByteBuffer& buf, uint32_t writeSize, uint64_t size) {
+    if (writeSize > 0) {
+      std::memcpy(g_stagingBuffers[currentStagingBuffer].GetMappedRange(bufferOffset, AURORA_ALIGN(writeSize, 4)),
+                  buf.data(), writeSize);
+    }
+    bufferOffset += size;
+  };
+  stage(s_pendingFrame.verts, s_pendingFrame.vertSize, VertexBufferSize);
+  stage(s_pendingFrame.uniforms, s_pendingFrame.uniformSize, UniformBufferSize);
+  stage(s_pendingFrame.indices, s_pendingFrame.indexSize, IndexBufferSize);
+  stage(s_pendingFrame.storage, s_pendingFrame.storageSize, StorageBufferSize);
+  if constexpr (UseTextureBuffer) {
+    if (s_pendingFrame.textureSize > 0) {
+      std::memcpy(g_stagingBuffers[currentStagingBuffer].GetMappedRange(bufferOffset, TextureUploadSize),
+                  s_pendingFrame.textureUpload.data(), s_pendingFrame.textureSize);
+    }
+  }
+  g_stats.lastVertSize = s_pendingFrame.vertSize;
+  g_stats.lastUniformSize = s_pendingFrame.uniformSize;
+  g_stats.lastIndexSize = s_pendingFrame.indexSize;
+  g_stats.lastStorageSize = s_pendingFrame.storageSize;
+  g_stats.lastTextureUploadSize = s_pendingFrame.textureSize;
+  clearPending();
+  g_stagingBuffers[currentStagingBuffer].Unmap();
+  s_mappingState.reset();
+  currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();
+  map_staging_buffer();
+}
+
 static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
   ZoneScoped;
+  if (g_inStripTarget) {
+    end_strip_target();
+  }
   ASSERT(!advanceFrame || !g_inOffscreen, "end_frame called while offscreen rendering is active");
   if (advanceFrame) {
     gx::finalize_frame_interpolation();
@@ -1212,27 +1608,58 @@ static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
   g_uniforms.append_zeroes(gx::MaxUniformSize); // Pad the end of the buffer
   const auto used = staging_usage();
   for (unsigned i = 0; i < used.size(); ++i) g_stagingHighWater[i] = std::max(g_stagingHighWater[i], used[i]);
+  // The frame's data is in CPU buffers; copy it into the mapped staging buffer now, on the frame
+  // worker, so recording never had to wait for the GPU to release that buffer.
+  if (!wait_for_staging_map()) {
+    // The map was aborted (device loss). Drop this frame's data but keep the staging rotation
+    // consistent so the next frame starts from a known state.
+    g_stagingBuffers[currentStagingBuffer].Unmap();
+    s_mappingState.reset();
+    currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();
+    map_staging_buffer();
+    return;
+  }
   uint64_t bufferOffset = 0;
-  const auto writeBuffer = [&](ByteBuffer& buf, wgpu::Buffer& out, uint64_t size, std::string_view label) {
-    const auto writeSize = buf.size(); // Only need to copy this many bytes
+  const auto stageBuffer = [&](ByteBuffer& buf, uint64_t size) {
+    const auto writeSize = buf.size();
     if (writeSize > 0) {
-      cmd.CopyBufferToBuffer(g_stagingBuffers[currentStagingBuffer], bufferOffset, out, 0, AURORA_ALIGN(writeSize, 4));
-      buf.release();
+      std::memcpy(g_stagingBuffers[currentStagingBuffer].GetMappedRange(bufferOffset, AURORA_ALIGN(writeSize, 4)),
+                  buf.data(), writeSize);
+      buf.clear();
     }
     bufferOffset += size;
-    return writeSize;
+    return static_cast<uint32_t>(writeSize);
   };
-  g_stagingBuffers[currentStagingBuffer].Unmap();
-  s_mappingState.reset();
   g_stats.drawCallCount = g_drawCallCount;
   g_stats.mergedDrawCallCount = g_mergedDrawCallCount;
-  g_stats.lastVertSize = writeBuffer(g_verts, g_vertexBuffer, VertexBufferSize, "Vertex");
-  g_stats.lastUniformSize = writeBuffer(g_uniforms, g_uniformBuffer, UniformBufferSize, "Uniform");
-  g_stats.lastIndexSize = writeBuffer(g_indices, g_indexBuffer, IndexBufferSize, "Index");
-  g_stats.lastStorageSize = writeBuffer(g_storage, g_storageBuffer, StorageBufferSize, "Storage");
-  flush_deferred_texture_writes();  // the static textures this frame loaded (TextureRef::lazy)
+  g_stats.lastVertSize = stageBuffer(g_verts, VertexBufferSize);
+  g_stats.lastUniformSize = stageBuffer(g_uniforms, UniformBufferSize);
+  g_stats.lastIndexSize = stageBuffer(g_indices, IndexBufferSize);
+  g_stats.lastStorageSize = stageBuffer(g_storage, StorageBufferSize);
   if constexpr (UseTextureBuffer) {
     g_stats.lastTextureUploadSize = g_textureUpload.size();
+    if (!g_textureUpload.empty()) {
+      std::memcpy(g_stagingBuffers[currentStagingBuffer].GetMappedRange(bufferOffset, TextureUploadSize),
+                  g_textureUpload.data(), g_textureUpload.size());
+    }
+  }
+  g_stagingBuffers[currentStagingBuffer].Unmap();
+  s_mappingState.reset();
+  {
+    uint64_t offset = 0;
+    const auto copyOut = [&](uint32_t writeSize, wgpu::Buffer& out, uint64_t size) {
+      if (writeSize > 0) {
+        cmd.CopyBufferToBuffer(g_stagingBuffers[currentStagingBuffer], offset, out, 0, AURORA_ALIGN(writeSize, 4));
+      }
+      offset += size;
+    };
+    copyOut(g_stats.lastVertSize, g_vertexBuffer, VertexBufferSize);
+    copyOut(g_stats.lastUniformSize, g_uniformBuffer, UniformBufferSize);
+    copyOut(g_stats.lastIndexSize, g_indexBuffer, IndexBufferSize);
+    copyOut(g_stats.lastStorageSize, g_storageBuffer, StorageBufferSize);
+  }
+  flush_deferred_texture_writes();  // the static textures this frame loaded (TextureRef::lazy)
+  if constexpr (UseTextureBuffer) {
     {
       // Perform texture copies
       for (const auto& item : g_textureUploads) {
@@ -1248,7 +1675,7 @@ static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
         cmd.CopyBufferToTexture(&buf, &item.tex, &item.size);
       }
       g_textureUploads.clear();
-      g_textureUpload.release();
+      g_textureUpload.clear();
     }
   }
   currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();
@@ -1496,6 +1923,60 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
                                      .sampleFilter = tex_copy_conv::SampleFilter::Linear,
                                  });
         patch.dst->materialize();  // a static texture (TextureRef::lazy)
+        const wgpu::TexelCopyTextureInfo src{.texture = patch.native->texture};
+        const wgpu::TexelCopyTextureInfo dst{
+            .texture = patch.dst->texture,
+            .origin = wgpu::Origin3D{.x = patch.x, .y = patch.y},
+        };
+        const wgpu::Extent3D size{.width = patch.width, .height = patch.height, .depthOrArrayLayers = 1};
+        cmd.CopyTextureToTexture(&src, &dst, &size);
+      }
+    }
+    // NSMBW: strip copies deferred until the segment ended. All of them read the strip color that
+    // the pass just produced, so one split serves the whole copy group.
+    for (const auto& op : passInfo.deferred) {
+      if (!op.target) {
+        continue;
+      }
+      const tex_copy_conv::ConvRequest convReq{
+          .fmt = op.format,
+          .srcView = passInfo.copySourceView,
+          .uniformRange = op.uniformRange,
+          .dst = op.target,
+          .sampleFilter = op.linearSampling ? tex_copy_conv::SampleFilter::Linear
+                                            : tex_copy_conv::SampleFilter::Nearest,
+          .forceOpaqueAlpha = op.forceOpaqueAlpha,
+      };
+      if (op.needsConversion) {
+        tex_copy_conv::run(cmd, convReq);
+      } else if (op.needsShaderSampling) {
+        tex_copy_conv::blit(cmd, convReq);
+      } else {
+        const wgpu::TexelCopyTextureInfo src{
+            .texture = passInfo.copySourceTexture,
+            .origin = wgpu::Origin3D{.x = static_cast<uint32_t>(std::max(op.rect.x, 0)),
+                                     .y = static_cast<uint32_t>(std::max(op.rect.y, 0))},
+        };
+        const wgpu::TexelCopyTextureInfo dst{.texture = op.target->texture};
+        const wgpu::Extent3D size{
+            .width = static_cast<uint32_t>(op.rect.width),
+            .height = static_cast<uint32_t>(op.rect.height),
+            .depthOrArrayLayers = 1,
+        };
+        cmd.CopyTextureToTexture(&src, &dst, &size);
+      }
+      for (const auto& patch : op.patches) {
+        if (!patch.dst || !patch.native) {
+          continue;
+        }
+        tex_copy_conv::blit(cmd, tex_copy_conv::ConvRequest{
+                                     .fmt = GX_TF_RGBA8,
+                                     .srcView = op.target->sampleTextureView,
+                                     .uniformRange = patch.uniformRange,
+                                     .dst = patch.native,
+                                     .sampleFilter = tex_copy_conv::SampleFilter::Linear,
+                                 });
+        patch.dst->materialize();
         const wgpu::TexelCopyTextureInfo src{.texture = patch.native->texture};
         const wgpu::TexelCopyTextureInfo dst{
             .texture = patch.dst->texture,

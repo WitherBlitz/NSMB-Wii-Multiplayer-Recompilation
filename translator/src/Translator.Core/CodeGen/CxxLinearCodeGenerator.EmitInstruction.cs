@@ -419,7 +419,7 @@ public sealed partial class CxxLinearCodeGenerator
                         {
                             EmitLocalLrContinuationDispatch(sb, fallbackPad, labelNames);
                             sb.AppendLine($"{fallbackPad}if (TranslatedFunctionRegistry::FindByAddressPtr(ctx->lr) != nullptr) {{");
-                            sb.AppendLine($"{fallbackPad}    InvokeIndirectCpu(ctx->lr, ctx);");
+                            sb.AppendLine($"{fallbackPad}    InvokeIndirectCpuInContext(ctx->lr, ctx);");
                             sb.AppendLine($"{fallbackPad}}}");
                             sb.AppendLine($"{fallbackPad}return;");
                         }
@@ -508,7 +508,7 @@ public sealed partial class CxxLinearCodeGenerator
                 {
                     var indirectTarget = ToExpression(icall.Target, types);
                     AppendFlush(sb, pad);
-                    sb.AppendLine($"{pad}InvokeIndirectCpu({indirectTarget}, ctx);");
+                    sb.AppendLine($"{pad}InvokeIndirectCpuInContext({indirectTarget}, ctx);");
                     AppendReload(sb, pad);
                     // f1 is the conventional scalar floating-point return.
                     // Do not retag the other volatile FPRs: a callee that leaves
@@ -523,7 +523,7 @@ public sealed partial class CxxLinearCodeGenerator
                     // and this frame never observes registers again, so the
                     // locals must not be written back afterwards.
                     AppendFlush(sb, pad);
-                    sb.AppendLine($"{pad}InvokeIndirectJump({jumpTarget}, ctx);");
+                    sb.AppendLine($"{pad}InvokeIndirectJumpInContext({jumpTarget}, ctx);");
                     sb.AppendLine($"{pad}return;");
                 }
                 break;

@@ -161,7 +161,7 @@ public class RegisterResidencyCodeGenTests
 
         var body = FunctionBody(Emit(function), "resident_tail");
         var flush = body.IndexOf("ctx->gpr[3] = r3;", StringComparison.Ordinal);
-        var jump = body.IndexOf("InvokeIndirectJump(r3, ctx);", StringComparison.Ordinal);
+        var jump = body.IndexOf("InvokeIndirectJumpInContext(r3, ctx);", StringComparison.Ordinal);
 
         Assert.True(flush > 0 && jump > flush);
         // Exactly one publication: nothing may be written back after the tail

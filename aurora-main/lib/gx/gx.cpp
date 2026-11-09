@@ -1292,6 +1292,23 @@ void set_render_viewport(const gfx::Viewport& viewport) noexcept {
 
 void set_logical_scissor(const gfx::ClipRect& scissor) noexcept {
   g_gxState.logicalScissor = scissor;
+  // NSMBW: the area below the visible EFB lines is workspace scratch. Render each scratch strip
+  // into its own small target so GX texture copies do not split the full EFB pass.
+  if (!gfx::is_strip_target_active() && !gfx::is_offscreen()) {
+    const auto [logicalWidth, logicalHeight] = logical_fb_size();
+    const auto visibleHeight = aurora::vi::visible_fb_size().y;
+    const bool scratch = scissor.width > 0 && scissor.height > 0 && scissor.x >= 0 &&
+                         scissor.y >= static_cast<int32_t>(visibleHeight) &&
+                         scissor.x + scissor.width <= static_cast<int32_t>(logicalWidth) &&
+                         scissor.y + scissor.height <= static_cast<int32_t>(logicalHeight);
+    if (scratch) {
+      const auto mapped = map_logical_scissor(scissor);
+      if (mapped.width > 0 && mapped.height > 0) {
+        gfx::begin_strip_target(mapped, logical_to_target_x(static_cast<float>(scissor.x)),
+                                logical_to_target_y(static_cast<float>(scissor.y)));
+      }
+    }
+  }
   apply_logical_render_state();
 }
 

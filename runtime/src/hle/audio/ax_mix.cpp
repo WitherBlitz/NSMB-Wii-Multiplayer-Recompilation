@@ -6,6 +6,9 @@
 #include "audio_backend.h"
 #include "ax_mix_kernels.h"
 #include "ax_voice_tags.h"
+#include "axfx_delay_native.h"
+#include "axfx_reverb_native.h"
+#include "guest_profiler.h"
 #include "isa/big_endian.h"
 #include "memory.h"
 #include "music_attenuation.h"
@@ -31,6 +34,7 @@
 #include <string>
 #include <thread>
 #if defined(__linux__)
+#include <pthread.h>
 #include <sched.h>
 #endif
 
@@ -126,11 +130,54 @@ public:
         if (m_mixThread.joinable()) {
             const auto start = std::chrono::steady_clock::now();
             std::unique_lock<std::mutex> lock(m_mixMutex);
-            m_mixIdle.wait(lock, [this] { return !m_mixPending && !m_mixBusy; });
+            m_mixIdle.wait(lock, [this] {
+                return !m_mixPending && !m_mixBusy && !m_delayPending && !m_delayBusy &&
+                       !m_reverbPending && !m_reverbBusy;
+            });
             g_mixWaitNanos.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - start).count()), std::memory_order_relaxed);
         }
         PublishAuxOutputs();
+    }
+
+    // Runs a native FxDelay block on the worker. The guest waits: the delay callback's
+    // output is consumed later in the same __AXOutNewFrame, so this is a handoff, not an
+    // asynchronous queue.
+    bool RunDelay(uint32_t state, uint32_t buffers) {
+        if (!m_mixWorkerEnabled || !EnsureMixWorker()) {
+            return false;
+        }
+        std::unique_lock<std::mutex> lock(m_mixMutex);
+        m_mixIdle.wait(lock, [this] {
+            return !m_mixPending && !m_mixBusy && !m_delayPending && !m_delayBusy;
+        });
+        m_delayState = state;
+        m_delayBuffers = buffers;
+        m_delayResult = false;
+        m_delayPending = true;
+        m_mixWake.notify_one();
+        m_delayIdle.wait(lock, [this] { return !m_delayPending && !m_delayBusy; });
+        return m_delayResult;
+    }
+
+    // Same handoff as RunDelay: the reverb output is consumed later in the same
+    // __AXOutNewFrame, so the guest waits for the ax-mix worker.
+    bool RunReverb(uint32_t self, uint32_t buffers) {
+        if (!m_mixWorkerEnabled || !EnsureMixWorker()) {
+            return false;
+        }
+        std::unique_lock<std::mutex> lock(m_mixMutex);
+        m_mixIdle.wait(lock, [this] {
+            return !m_mixPending && !m_mixBusy && !m_delayPending && !m_delayBusy &&
+                   !m_reverbPending && !m_reverbBusy;
+        });
+        m_reverbSelf = self;
+        m_reverbBuffers = buffers;
+        m_reverbResult = false;
+        m_reverbPending = true;
+        m_mixWake.notify_one();
+        m_reverbIdle.wait(lock, [this] { return !m_reverbPending && !m_reverbBusy; });
+        return m_reverbResult;
     }
 
     void ShutdownMixWorker() {
@@ -1546,6 +1593,9 @@ private:
         m_mixStop = false;
         m_mixPending = false;
         m_mixBusy = false;
+        m_delayPending = false;
+        m_delayBusy = false;
+        m_delayResult = false;
         try {
             m_mixThread = std::thread([this] { MixWorkerMain(); });
         } catch (const std::system_error&) {
@@ -1559,14 +1609,80 @@ private:
     void MixWorkerMain() {
         t_onMixWorker = true;
         for (;;) {
+            uint32_t delayState = 0;
+            uint32_t delayBuffers = 0;
+            bool runDelay = false;
+            uint32_t reverbSelf = 0;
+            uint32_t reverbBuffers = 0;
+            bool runReverb = false;
             {
                 std::unique_lock<std::mutex> lock(m_mixMutex);
-                m_mixWake.wait(lock, [this] { return m_mixStop || m_mixPending; });
-                if (!m_mixPending) {
+                m_mixWake.wait(lock, [this] {
+                    return m_mixStop || m_mixPending || m_delayPending || m_reverbPending;
+                });
+                if (m_mixStop && !m_mixPending && !m_delayPending && !m_reverbPending) {
                     return;
                 }
-                m_mixPending = false;
-                m_mixBusy = true;
+                if (m_reverbPending) {
+                    m_reverbPending = false;
+                    m_reverbBusy = true;
+                    reverbSelf = m_reverbSelf;
+                    reverbBuffers = m_reverbBuffers;
+                    runReverb = true;
+                } else if (m_delayPending) {
+                    m_delayPending = false;
+                    m_delayBusy = true;
+                    delayState = m_delayState;
+                    delayBuffers = m_delayBuffers;
+                    runDelay = true;
+                } else {
+                    m_mixPending = false;
+                    m_mixBusy = true;
+                }
+            }
+
+            if (runReverb) {
+                bool result = false;
+                try {
+                    result = AxfxReverbNative::RunWorker(reverbSelf, reverbBuffers);
+                } catch (const std::exception& error) {
+                    ReportReverbWorkerFailure(error.what());
+                } catch (...) {
+                    ReportReverbWorkerFailure("unknown exception");
+                }
+#if defined(__linux__)
+                g_mixCpu.store(sched_getcpu(), std::memory_order_relaxed);
+#endif
+                {
+                    std::lock_guard<std::mutex> lock(m_mixMutex);
+                    m_reverbResult = result;
+                    m_reverbBusy = false;
+                }
+                m_reverbIdle.notify_all();
+                m_mixIdle.notify_all();
+                continue;
+            }
+
+            if (runDelay) {
+                bool result = false;
+                try {
+                    result = AxfxDelayNative::Run(delayState, delayBuffers);
+                } catch (const std::exception& error) {
+                    ReportDelayWorkerFailure(error.what());
+                } catch (...) {
+                    ReportDelayWorkerFailure("unknown exception");
+                }
+#if defined(__linux__)
+                g_mixCpu.store(sched_getcpu(), std::memory_order_relaxed);
+#endif
+                {
+                    std::lock_guard<std::mutex> lock(m_mixMutex);
+                    m_delayResult = result;
+                    m_delayBusy = false;
+                }
+                m_delayIdle.notify_all();
+                m_mixIdle.notify_all();
+                continue;
             }
 
             const auto mixStart = std::chrono::steady_clock::now();
@@ -1597,6 +1713,22 @@ private:
             return;
         }
         RT_LOGF(RT_TAG_AUDIO, "worker aborted a command list: %s\n", what);
+        std::fflush(stderr);
+    }
+
+    void ReportDelayWorkerFailure(const char* what) {
+        if (m_loggedDelayWorkerFailure.exchange(true, std::memory_order_relaxed)) {
+            return;
+        }
+        RT_LOGF(RT_TAG_AUDIO, "worker aborted a delay block: %s\n", what);
+        std::fflush(stderr);
+    }
+
+    void ReportReverbWorkerFailure(const char* what) {
+        if (m_loggedReverbWorkerFailure.exchange(true, std::memory_order_relaxed)) {
+            return;
+        }
+        RT_LOGF(RT_TAG_AUDIO, "worker aborted a reverb block: %s\n", what);
         std::fflush(stderr);
     }
 
@@ -1656,6 +1788,23 @@ private:
     bool m_mixStop = false;
     bool m_mixPending = false;
     bool m_mixBusy = false;
+    // Native FxDelay handoff. The guest waits for the worker because the callback's output
+    // is consumed later in the same __AXOutNewFrame.
+    uint32_t m_delayState = 0;
+    uint32_t m_delayBuffers = 0;
+    bool m_delayPending = false;
+    bool m_delayBusy = false;
+    bool m_delayResult = false;
+    std::condition_variable m_delayIdle;
+    std::atomic<bool> m_loggedDelayWorkerFailure{false};
+    // Native FxReverbHi handoff, same synchronous pattern as FxDelay.
+    uint32_t m_reverbSelf = 0;
+    uint32_t m_reverbBuffers = 0;
+    bool m_reverbPending = false;
+    bool m_reverbBusy = false;
+    bool m_reverbResult = false;
+    std::condition_variable m_reverbIdle;
+    std::atomic<bool> m_loggedReverbWorkerFailure{false};
     bool m_mixWorkerEnabled = false;
     AXCommandLayout m_mixLayout = AXCommandLayout::New;
     uint32_t m_mixCmdListSize = 0;
@@ -1777,6 +1926,14 @@ uint32_t AssertTask(uint32_t taskPtr) {
 
 void ServiceDeferredCallbacks() {
     Instance().ServiceDeferredCallbacks();
+}
+
+bool RunDelayJob(uint32_t state, uint32_t buffers) {
+    return Instance().RunDelay(state, buffers);
+}
+
+bool RunReverbJob(uint32_t self, uint32_t buffers) {
+    return Instance().RunReverb(self, buffers);
 }
 
 void InitAram() {

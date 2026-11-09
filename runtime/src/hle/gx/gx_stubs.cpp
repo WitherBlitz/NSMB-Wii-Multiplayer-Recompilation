@@ -19,8 +19,8 @@ extern "C" void GX_HLE_FIFO_Write8(uint8_t val) { HleFifoWrite(static_cast<u32>(
 extern "C" void GX__SetDrawSync_8016ed08(uint32_t token) {
     (void)token;
     try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) {
-        if (Memory::Read32(gd + 0x5FCu)) GX__SetDirtyState_8016ee78();
-        Memory::Write16(gd + 2, 0);
+        if (Memory::Read32(gd + kGXDataDirtyStateOffset)) GX__SetDirtyState_8016ee78();
+        Memory::Write16(gd + kGXDataBpSentOffset, 0);
     } } catch (...) {}
 }
 
@@ -45,7 +45,7 @@ extern "C" void GX__DrawDone_8016eab0() {
 PPC_NATIVE_OVERRIDE_VOID(801c4ea0, GX__DrawDone_8016eab0, (), ());
 
 extern "C" void GX__PixModeSync_8016eb70() {
-    try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) Memory::Write16(gd + 2, 0); } catch (...) {}
+    try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) Memory::Write16(gd + kGXDataBpSentOffset, 0); } catch (...) {}
     GXPixModeSync();
 }
 PPC_NATIVE_OVERRIDE_VOID(801c4f70, GX__PixModeSync_8016eb70, (), ());
@@ -63,7 +63,7 @@ PPC_NATIVE_OVERRIDE_VOID(801c1c80, __GX__InitRevisionBits_8016b720, (), ());
 
 extern "C" void __GX__SetSUTexRegs_801712f0() {
     __GXSetSUTexRegs();
-    try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) Memory::Write16(gd + 2, 0); } catch (...) {}
+    try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) Memory::Write16(gd + kGXDataBpSentOffset, 0); } catch (...) {}
 }
 PPC_NATIVE_OVERRIDE_VOID(801c78d0, __GX__SetSUTexRegs_801712f0, (), ());
 
@@ -75,7 +75,7 @@ PPC_NATIVE_OVERRIDE_VOID(801C7A40, __GX__SetTmemConfig_80171458, (uint32_t mode)
 
 extern "C" void __GX__FlushTextureState_80171c28() {
     // BP texture state flush - Aurora handles via API
-    try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) Memory::Write16(gd + 2, 0); } catch (...) {}
+    try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) Memory::Write16(gd + kGXDataBpSentOffset, 0); } catch (...) {}
 }
 PPC_NATIVE_OVERRIDE_VOID(801c8220, __GX__FlushTextureState_80171c28, (), ());
 
@@ -112,7 +112,7 @@ extern "C" void GX__ClearBoundingBox_8016fecc() {
     GXClearBoundingBox();
     try {
         const uint32_t gd = Memory::Read32(kGXDataPtrAddr);
-        if (gd) Memory::Write16(gd + 2, 0);
+        if (gd) Memory::Write16(gd + kGXDataBpSentOffset, 0);
     } catch (...) {}
 }
 PPC_NATIVE_OVERRIDE_VOID(801c63f0, GX__ClearBoundingBox_8016fecc, (), ());
@@ -122,7 +122,7 @@ PPC_NATIVE_OVERRIDE_VOID(801c63f0, GX__ClearBoundingBox_8016fecc, (), ());
 // ============================================================================
 
 extern "C" void GX__SetDirtyState_8016ee78() {
-    try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) Memory::Write32(gd + 0x5FCu, 0); } catch (...) {}
+    try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) Memory::Write32(gd + kGXDataDirtyStateOffset, 0); } catch (...) {}
 }
 PPC_NATIVE_OVERRIDE_VOID(801c52f0, GX__SetDirtyState_8016ee78, (), ());
 

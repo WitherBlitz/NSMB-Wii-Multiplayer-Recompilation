@@ -464,7 +464,7 @@ public sealed partial class CxxLinearCodeGenerator
                             // dispatcher: publish the locals and never write
                             // them back afterwards.
                             AppendFlush(body, "        ");
-                            body.AppendLine($"        InvokeIndirectJump({selectorExpr}, ctx);");
+                            body.AppendLine($"        InvokeIndirectJumpInContext({selectorExpr}, ctx);");
                             body.AppendLine("        return;");
                             body.AppendLine("    }");
                             break;
@@ -503,7 +503,7 @@ public sealed partial class CxxLinearCodeGenerator
                     body.AppendLine("[[maybe_unused]] lr_continuation_dispatch:");
                     EmitLocalLrContinuationDispatch(body, "    ", labelNames);
                     body.AppendLine("    if (TranslatedFunctionRegistry::FindByAddressPtr(ctx->lr) != nullptr) {");
-                    body.AppendLine("        InvokeIndirectCpu(ctx->lr, ctx);");
+                    body.AppendLine("        InvokeIndirectCpuInContext(ctx->lr, ctx);");
                     body.AppendLine("    }");
                     body.AppendLine("    return;");
                 }

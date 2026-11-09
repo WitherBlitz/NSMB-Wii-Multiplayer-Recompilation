@@ -44,7 +44,7 @@ public class SharedLrContinuationCodeGenTests
         Assert.Equal(callCount, code.Split("if (ctx->lr != ").Length - 1);
         Assert.Contains("case 0x80001100u:", code);
         Assert.Contains("goto loc_80001100;", code);
-        Assert.Contains("InvokeIndirectCpu(ctx->lr, ctx);", code);
+        Assert.Contains("InvokeIndirectCpuInContext(ctx->lr, ctx);", code);
         var sharedLabel = code.IndexOf("lr_continuation_dispatch:", StringComparison.Ordinal);
         Assert.True(code.IndexOf("r3 = 8;", StringComparison.Ordinal) < sharedLabel);
         Assert.True(code.IndexOf("case 0x80001100u:", StringComparison.Ordinal) > sharedLabel);

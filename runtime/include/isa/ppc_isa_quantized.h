@@ -47,9 +47,15 @@ inline uint64_t PpcLoadPairPsqFloatBitsPackedInline(uint64_t value)
         lanes, _mm_and_si128(nanMask, _mm_set1_epi32(0x00400000)));
     return static_cast<uint64_t>(_mm_cvtsi128_si64(result));
 #elif defined(__aarch64__)
-    // Equivalent to applying PpcLoadPsqFloatBitsInline to each 32-bit lane: the
-    // x86 body above only ever acts on these same two lanes (the upper 64 bits
-    // _mm_cvtsi64_si128 zero-fills never survive the final truncating extract).
+    // Both lanes at once in a 64-bit NEON register: quiet sNaN, leave everything
+    // else untouched.
+    const uint32x2_t lanes = vreinterpret_u32_u64(vdup_n_u64(value));
+    const uint32x2_t magnitude = vand_u32(lanes, vdup_n_u32(0x7FFFFFFFu));
+    const uint32x2_t nanMask = vcgt_u32(magnitude, vdup_n_u32(0x7F800000u));
+    const uint32x2_t result =
+        vorr_u32(lanes, vand_u32(nanMask, vdup_n_u32(0x00400000u)));
+    return vget_lane_u64(vreinterpret_u64_u32(result), 0);
+#else
     const uint32_t lo = PpcLoadPsqFloatBitsInline(static_cast<uint32_t>(value));
     const uint32_t hi = PpcLoadPsqFloatBitsInline(static_cast<uint32_t>(value >> 32));
     return (static_cast<uint64_t>(hi) << 32) | lo;
@@ -72,8 +78,17 @@ inline uint64_t PpcStorePairPsqFloatBitsPackedInline(uint64_t value)
         _mm_andnot_si128(subnormalMask, quieted));
     return static_cast<uint64_t>(_mm_cvtsi128_si64(result));
 #elif defined(__aarch64__)
-    // Equivalent to applying PpcStorePsqFloatBitsInline to each 32-bit lane;
-    // same reasoning as the load-side port above.
+    // Flush subnormals to signed zero and quiet sNaN, both lanes at once.
+    const uint32x2_t lanes = vreinterpret_u32_u64(vdup_n_u64(value));
+    const uint32x2_t magnitude = vand_u32(lanes, vdup_n_u32(0x7FFFFFFFu));
+    const uint32x2_t subnormalMask = vclt_u32(magnitude, vdup_n_u32(0x00800000u));
+    const uint32x2_t nanMask = vcgt_u32(magnitude, vdup_n_u32(0x7F800000u));
+    const uint32x2_t quieted =
+        vorr_u32(lanes, vand_u32(nanMask, vdup_n_u32(0x00400000u)));
+    const uint32x2_t signedZero = vand_u32(lanes, vdup_n_u32(0x80000000u));
+    const uint32x2_t result = vbsl_u32(subnormalMask, signedZero, quieted);
+    return vget_lane_u64(vreinterpret_u64_u32(result), 0);
+#else
     const uint32_t lo = PpcStorePsqFloatBitsInline(static_cast<uint32_t>(value));
     const uint32_t hi = PpcStorePsqFloatBitsInline(static_cast<uint32_t>(value >> 32));
     return (static_cast<uint64_t>(hi) << 32) | lo;
@@ -124,15 +139,15 @@ inline double PpcLoadPairPsqFloatFromHostInline(const uint8_t* host)
     return PpcM128ToPsInline(_mm_castsi128_ps(
         PpcLoadPairPsqFloatBitsLanesInline(PpcPsqSwapPairBytesInline(raw))));
 #elif defined(__aarch64__)
-    // The x86 path's full 8-byte pshufb reversal plus a same-endian load is,
-    // taken together, exactly a 64-bit byteswap of a plain little-endian load:
-    // it turns the on-disk [ps0 big-endian][ps1 big-endian] byte layout into a
-    // native uint64 with low 32 bits = ps1, high 32 bits = ps0 (this file's
-    // documented packed-double lane convention).
-    uint64_t raw = 0;
-    std::memcpy(&raw, host, sizeof(raw));
-    const uint64_t swapped = __builtin_bswap64(raw);
-    return PpcBitCastToDoubleInline(PpcLoadPairPsqFloatBitsPackedInline(swapped));
+    // Load, byte-swap and quiet sNaN entirely in the vector domain: vrev64 is the
+    // 64-bit byteswap, so the pair never round-trips through a GPR.
+    const uint32x2_t raw = vreinterpret_u32_u64(
+        vreinterpret_u64_u8(vrev64_u8(vld1_u8(host))));
+    const uint32x2_t magnitude = vand_u32(raw, vdup_n_u32(0x7FFFFFFFu));
+    const uint32x2_t nanMask = vcgt_u32(magnitude, vdup_n_u32(0x7F800000u));
+    const uint32x2_t result =
+        vorr_u32(raw, vand_u32(nanMask, vdup_n_u32(0x00400000u)));
+    return vget_lane_f64(vreinterpret_f64_u32(result), 0);
 #endif
 }
 
@@ -144,11 +159,17 @@ inline void PpcStorePairPsqFloatToHostInline(uint8_t* host, double value)
         _mm_castps_si128(PpcPsToM128Inline(value)));
     _mm_storel_epi64(reinterpret_cast<__m128i*>(host), PpcPsqSwapPairBytesInline(lanes));
 #elif defined(__aarch64__)
-    // Inverse of the load path above: bswap64 is its own inverse, so applying
-    // it to the quieted packed value reproduces the on-disk big-endian bytes.
-    const uint64_t quieted = PpcStorePairPsqFloatBitsPackedInline(PpcBitCastToU64Inline(value));
-    const uint64_t swapped = __builtin_bswap64(quieted);
-    std::memcpy(host, &swapped, sizeof(swapped));
+    // Inverse of the load path: flush subnormals, quiet sNaN, byte-swap and store
+    // without leaving the vector domain.
+    const uint32x2_t lanes = vreinterpret_u32_f64(vdup_n_f64(value));
+    const uint32x2_t magnitude = vand_u32(lanes, vdup_n_u32(0x7FFFFFFFu));
+    const uint32x2_t subnormalMask = vclt_u32(magnitude, vdup_n_u32(0x00800000u));
+    const uint32x2_t nanMask = vcgt_u32(magnitude, vdup_n_u32(0x7F800000u));
+    const uint32x2_t quieted =
+        vorr_u32(lanes, vand_u32(nanMask, vdup_n_u32(0x00400000u)));
+    const uint32x2_t signedZero = vand_u32(lanes, vdup_n_u32(0x80000000u));
+    const uint32x2_t result = vbsl_u32(subnormalMask, signedZero, quieted);
+    vst1_u8(host, vrev64_u8(vreinterpret_u8_u32(result)));
 #endif
 }
 
@@ -262,11 +283,15 @@ inline void PpcWritePairPsqInline(uint32_t addr, T first, T second)
 // The flat reservation makes every 32-bit guest address a host address; a pending-deferred
 // (EFB) page is PAGE_NOACCESS so the load faults through the vectored handler instead of
 // reading stale bytes, and unmapped pages commit on demand, same as MemoryInline::Flat* loads.
+// The reservation base is never zero and the sum cannot wrap a 64-bit pointer; saying so drops
+// the null test the callers would otherwise carry on every paired load.
 MKW_PPC_FORCE_INLINE const uint8_t* PpcTryGetPsqReadableHostInline(uint32_t addr)
 {
     if (GuestFlat::RequiresCheckedAccess()) [[unlikely]]
         return nullptr;
-    return MKW_FLAT_GUEST_BASE + addr;
+    const uint8_t* host = MKW_FLAT_GUEST_BASE + addr;
+    if (host == nullptr) MKW_PPC_UNREACHABLE();
+    return host;
 }
 
 // Same reduction for stores. Still refuses a 32-bit address wrap (one host access can't
@@ -274,16 +299,22 @@ MKW_PPC_FORCE_INLINE const uint8_t* PpcTryGetPsqReadableHostInline(uint32_t addr
 // stored value and a null result must preserve the cold GX FIFO dispatch path byte for byte.
 // The old 1 MiB page-cross refusal is gone since the whole 4 GiB is now contiguous; deferred,
 // executable, and unmapped pages still trap.
+MKW_PPC_FORCE_INLINE bool PpcPsqStoreNeedsSlowPathInline(uint32_t addr)
+{
+    // An 8-byte store needs the slow path when it wraps the 32-bit address space or when either
+    // end lies in the MMIO window 0xCC000000..0xCDFFFFFF, i.e. addr in 0xCBFFFFF9..0xCDFFFFFF.
+    return (addr - 0xCBFFFFF9u) < 0x02000007u || addr > UINT32_MAX - 7u;
+}
+
 MKW_PPC_FORCE_INLINE uint8_t* PpcTryGetPsqWritableHostInline(uint32_t addr)
 {
     if (GuestFlat::RequiresCheckedAccess()) [[unlikely]]
         return nullptr;
-    if (addr > UINT32_MAX - 7u) [[unlikely]]
+    if (PpcPsqStoreNeedsSlowPathInline(addr)) [[unlikely]]
         return nullptr;
-    if (MemoryInline::FlatWriteNeedsPolicy(addr) ||
-        MemoryInline::FlatWriteNeedsPolicy(addr + 7u)) [[unlikely]]
-        return nullptr;
-    return MKW_FLAT_GUEST_BASE + addr;
+    uint8_t* host = MKW_FLAT_GUEST_BASE + addr;
+    if (host == nullptr) MKW_PPC_UNREACHABLE();
+    return host;
 }
 
 inline double PpcLoadPairPsqFloatFastInline(uint32_t addr)

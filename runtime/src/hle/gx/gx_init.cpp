@@ -169,7 +169,7 @@ extern "C" void GX__BeginDisplayList_80172e00(uint32_t la, uint32_t s) {
     try {
         uint32_t gd = Memory::Read32(kGXDataPtrAddr);
         if (!gd) return;
-        if (Memory::Read32(gd + 0x5FCu)) GX__SetDirtyState_8016ee78();
+        if (Memory::Read32(gd + kGXDataDirtyStateOffset)) GX__SetDirtyState_8016ee78();
         if (Memory::Read8(gd + 0x5F9u)) std::memcpy(Memory::GetPointer(0x80390550, 0x600), Memory::GetPointer(gd, 0x600), 0x600);
         Memory::Write32(0x803904D4, la + s - 4u);
         Memory::Write32(0x803904EC, 0);

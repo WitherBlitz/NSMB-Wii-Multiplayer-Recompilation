@@ -5,4 +5,6 @@
 // does nothing and the translated, bit-exact reverb runs.
 namespace AxfxReverbNative {
 void Install();
+// Runs one reverb block from the ax-mix worker; false if the buffers are not plain RAM.
+bool RunWorker(uint32_t self, uint32_t buffers);
 } // namespace AxfxReverbNative

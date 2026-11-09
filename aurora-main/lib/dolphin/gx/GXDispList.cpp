@@ -43,6 +43,10 @@ u32 GXEndDisplayList() {
   }
 
   __gx->inDispList = 0;
+  // The list's commands were recorded into the buffer, not the live FIFO. The next setter has to
+  // send its state again instead of trusting the shadow the recording updated.
+  __gx->sentVcdValid = 0;
+  __gx->sentVatValid = 0;
 
   return bytesWritten;
 }
@@ -56,6 +60,12 @@ void GXCallDisplayList(const void* data, u32 nbytes) {
   // Flush pending primitives
   if (*reinterpret_cast<u32*>(&__gx->vNum) != 0) {
     __GXSendFlushPrim();
+  }
+
+  if (!aurora::gx::fifo::in_display_list()) {
+    // The list can change the vertex descriptors and formats behind the API.
+    __gx->sentVcdValid = 0;
+    __gx->sentVatValid = 0;
   }
 
   // Nested display-list calls add bytes instead of changing live renderer state.
@@ -88,6 +98,8 @@ void GXCallDisplayListLE(const void* data, u32 nbytes) {
   if (*reinterpret_cast<u32*>(&__gx->vNum) != 0) {
     __GXSendFlushPrim();
   }
+  __gx->sentVcdValid = 0;
+  __gx->sentVatValid = 0;
 
   // Decode little-endian lists separately after finishing the normal FIFO work.
   aurora::gx::fifo::drain();

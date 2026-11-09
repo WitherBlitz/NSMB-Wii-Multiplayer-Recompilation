@@ -33,6 +33,30 @@ inline thread_local bool g_mkwHostNiActive = false;
 inline constexpr double kMkwNiFlushThreshold = 0x1p-126;  // 0x3810000000000000
 inline thread_local double g_mkwNiFlushThreshold = 0.0;
 
+// The float helpers read the NI state once or twice per operation. On aarch64 the mirrored
+// thread-local is an out-of-line __aarch64_read_tp call there, so read the host FP control
+// register directly instead: FPCR is unprivileged and the mirror is defined to agree with it.
+// On x86 the mirror is a segment-relative load and stays cheaper than STMXCSR.
+MKW_PPC_FORCE_INLINE bool MkwHostNiActiveInline() noexcept
+{
+#if defined(__aarch64__)
+    uint64_t fpcr;
+    __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
+    return (fpcr & kMkwFpControlFlushToZeroBits) != 0;
+#else
+    return g_mkwHostNiActive;
+#endif
+}
+
+MKW_PPC_FORCE_INLINE double MkwNiFlushThresholdInline() noexcept
+{
+#if defined(__aarch64__)
+    return MkwHostNiActiveInline() ? kMkwNiFlushThreshold : 0.0;
+#else
+    return g_mkwNiFlushThreshold;
+#endif
+}
+
 // Host FP control register access (MXCSR on x86_64, FPCR on AArch64), abstracted so
 // MkwApplyHostNiMode/MkwRestoreHostMxcsr and CpuContextScope (ppc_isa_context.h) don't each need
 // their own per-arch branch.

@@ -300,6 +300,9 @@ struct KnownNativeCpuCall {
 template <uint32_t Target>
 struct KnownTypedNativeCpuCall {
     static constexpr bool kAvailable = false;
+    // True for natives that never see the CpuContext and cannot run guest code; the direct
+    // dispatcher calls those without the nonvolatile-register guard.
+    static constexpr bool kLeaf = false;
 };
 
 #include "native_cpu_calls.inc"
@@ -584,6 +587,11 @@ inline void InvokeDirectCpu(CpuContext* ctx) {
         return;
     }
 
+    if constexpr (KnownTypedNativeCpuCall<Target>::kLeaf) {
+        KnownTypedNativeCpuCall<Target>::Invoke(cpu);
+        return;
+    }
+
     if constexpr (KnownTypedNativeCpuCall<Target>::kAvailable) {
         PpcNonvolatileGprGuard gprGuard(cpu);
         if (TryGetCpuContext() != cpu) {
@@ -671,6 +679,21 @@ inline void InvokeIndirectCpu(uint32_t target, CpuContext* ctx) {
         return;
     }
     ReportMissingCpuTarget(target, cpu);
+}
+
+// Generated shards from the branch emit the context-bound names; route them through the merged
+// dispatch entry points.
+inline void InvokeIndirectCpuInContext(uint32_t target, CpuContext* ctx) {
+    InvokeIndirectCpu(target, ctx);
+}
+
+inline void InvokeIndirectJumpInContext(uint32_t target, CpuContext* ctx) {
+    InvokeIndirectJump(target, ctx);
+}
+
+template <uint32_t Target>
+inline void InvokeDirectCpuInContext(CpuContext* ctx) {
+    InvokeDirectCpu<Target>(ctx);
 }
 
 template <typename Signature>

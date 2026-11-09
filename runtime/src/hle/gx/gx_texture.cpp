@@ -480,6 +480,42 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
         return;
     }
     
+    // Bind-only path. A frame loads hundreds of textures, nearly all of them objects that went
+    // through the full path last frame and have not changed since; re-deriving and re-validating
+    // their metadata dominated those binds. When the slot says its last full load is still
+    // current, the guest struct is byte-identical to the one that load decoded and no pixel
+    // upload is pending, the full path would compute the same metadata, find nothing to rebuild
+    // or upload, and reach the bind below with it. Palette textures stay on the full path.
+    TexObjSlot* slot = FindTexObjSlot(oa);
+    if (slot != nullptr && slot->loadValidated && !slot->needsUpload && slot->hasGuestShadow &&
+        slot->host && slot->host->constructed && !IsPaletteTexFormat(slot->format)) {
+        uint64_t shadow[4];
+        if (ReadTexObjShadow(oa, shadow) && std::memcmp(shadow, slot->guestShadow, sizeof(shadow)) == 0) {
+            try {
+                BoundTexInfo newBound{};
+                static_cast<GxTextureBindingContract::SamplerState&>(newBound) = *slot;
+                newBound.objAddr = oa;
+                newBound.dataAddr = CanonicalizeGxMainRamAddress(slot->dataAddr);
+                const bool canSkipHostLoad = GxTextureBindingContract::CanSkipHostLoad(
+                    g_boundTexMaps[tid], newBound, false, false, false);
+                g_boundTexMaps[tid] = newBound;
+                if (!canSkipHostLoad) {
+                    GXLoadTexObj(slot->host->PublicPtr(), (GXTexMapID)tid);
+                }
+                try {
+                    uint32_t gd = Memory::Read32(kGXDataPtrAddr);
+                    if (gd) {
+                        Memory::Write32(gd + kGXDataDirtyStateOffset, Memory::Read32(gd + kGXDataDirtyStateOffset) | kGXDataDirtySuTexRegs);
+                        Memory::Write16(gd + kGXDataBpSentOffset, 0);
+                    }
+                } catch (...) {}
+            } catch (...) {
+                BindUnloadableTexturePlaceholder(tid);
+            }
+            return;
+        }
+    }
+
     // Check if we have metadata for this texture, or try to extract it from guest memory
     TexObjMeta meta;
     if (!TryGetOrExtractTexObjMeta(oa, meta)) {
@@ -637,6 +673,9 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
         if (!canSkipHostLoad) {
             GXLoadTexObj(obj, (GXTexMapID)tid);
         }
+        if (TexObjSlot* validated = FindTexObjSlot(oa)) {
+            validated->loadValidated = true;
+        }
     } catch (const std::exception& ex) {
         if (s_hostExceptionLogCount++ < 64) {
             RT_LOGF(RT_TAG_GX,
@@ -654,7 +693,7 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
         BindUnloadableTexturePlaceholder(tid);
         return;
     }
-    try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) { Memory::Write32(gd + 0x5FCu, Memory::Read32(gd + 0x5FCu) | 1u); Memory::Write16(gd + 2, 0); } } catch (...) {}
+    try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) { Memory::Write32(gd + kGXDataDirtyStateOffset, Memory::Read32(gd + kGXDataDirtyStateOffset) | kGXDataDirtySuTexRegs); Memory::Write16(gd + kGXDataBpSentOffset, 0); } } catch (...) {}
 }
 PPC_NATIVE_OVERRIDE_VOID(801c74c0, GX__LoadTexObj_80170f2c, (uint32_t oa, uint32_t tid), (oa, tid));
 
@@ -709,7 +748,7 @@ extern "C" void GX__InitTlutObj_80170f80(uint32_t oa, uint32_t da, uint32_t f, u
 }
 PPC_NATIVE_OVERRIDE_VOID(801c7520, GX__InitTlutObj_80170f80, (uint32_t oa, uint32_t da, uint32_t f, uint32_t e), (oa, da, f, e));
 
-extern "C" void GX__LoadTlut_80170fa8(uint32_t oa, uint32_t tl) { std::lock_guard<std::mutex> guard(g_tlutObjMutex); if (tl >= kMaxTluts) { RT_LOGF(RT_TAG_GX, "GXLoadTlut: invalid TLUT index %u (oa=0x%08X)\n", tl, oa); return; } auto metaIt = g_TlutObjMeta.find(oa); if (metaIt != g_TlutObjMeta.end() && metaIt->second.dirty) { if (ValidateTlutData(oa, metaIt->second)) { GXTlutObj* rebuild = CreateHostTlutObj(oa); GXInitTlutObj(rebuild, GuestToHostPtr(metaIt->second.dataAddr), (GXTlutFmt)metaIt->second.format, metaIt->second.entries); MarkHostTlutObjConstructed(oa); } metaIt->second.dirty = false; } GXTlutObj* obj = GetHostTlutObj(oa); GXLoadTlut(obj, (GXTlut)tl); try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) Memory::Write16(gd + 2, 0); } catch (...) {} }
+extern "C" void GX__LoadTlut_80170fa8(uint32_t oa, uint32_t tl) { std::lock_guard<std::mutex> guard(g_tlutObjMutex); if (tl >= kMaxTluts) { RT_LOGF(RT_TAG_GX, "GXLoadTlut: invalid TLUT index %u (oa=0x%08X)\n", tl, oa); return; } auto metaIt = g_TlutObjMeta.find(oa); if (metaIt != g_TlutObjMeta.end() && metaIt->second.dirty) { if (ValidateTlutData(oa, metaIt->second)) { GXTlutObj* rebuild = CreateHostTlutObj(oa); GXInitTlutObj(rebuild, GuestToHostPtr(metaIt->second.dataAddr), (GXTlutFmt)metaIt->second.format, metaIt->second.entries); MarkHostTlutObjConstructed(oa); } metaIt->second.dirty = false; } GXTlutObj* obj = GetHostTlutObj(oa); GXLoadTlut(obj, (GXTlut)tl); try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) Memory::Write16(gd + kGXDataBpSentOffset, 0); } catch (...) {} }
 PPC_NATIVE_OVERRIDE_VOID(801c7550, GX__LoadTlut_80170fa8, (uint32_t oa, uint32_t tl), (oa, tl));
 
 // ============================================================================

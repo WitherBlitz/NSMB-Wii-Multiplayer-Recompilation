@@ -1587,16 +1587,23 @@ struct SealedFrameContext {
 
 // Phase 1: everything that touches producer-shared renderer state. Needs g_rendererGpuMutex and
 // a FIFO already drained into the recorded pass list.
-void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
-  ZoneScopedN("Seal frame");
+// The command encoder is created as late as possible. CreateCommandEncoder can block for
+// several milliseconds while the GPU queue is deep, and creating it inside the seal delayed SEALED,
+// which the GX decode waits for. After SEALED it overlaps the decode instead.
+void create_seal_encoder(SealedFrameContext& ctx) {
   const auto encoderDescriptor = wgpu::CommandEncoderDescriptor{
       .label = "Redraw encoder",
   };
   ctx.encoder = g_device.CreateCommandEncoder(&encoderDescriptor);
+}
+
+void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
+  ZoneScopedN("Seal frame");
   // Probe-sized CPU-consumed copies read back asynchronously. Their downscale blits push uniforms,
   // so prepare them while the producer's staging buffers are still mapped.
   gfx::efb_ram::seal_async_downloads();
-  gfx::end_frame(ctx.encoder);
+  // Move the frame's CPU data aside; the staging copy into the GPU buffer runs after SEALED.
+  gfx::seal_staging_buffers();
   gfx::g_stats.presentedFrameCount = 0;
   gfx::g_stats.interpolatedFrameCount = 0;
   // Latched before the producer's next gfx::begin_frame() calls
@@ -1659,6 +1666,9 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
       .label = "Presentation slot command buffer",
   };
   const auto submitEncodedSlot = [&](wgpu::CommandEncoder& target, bool releaseMetalFXOutput = true) {
+    // The staging copy commands are already in this encoder; fill the buffer they read before it is
+    // finished. That puts the map wait after the draw recording instead of before it.
+    gfx::fill_staging_buffer();
     const auto buffer = target.Finish(&cmdBufDescriptor);
     std::lock_guard submitLock(g_queueSubmitMutex);
     g_queue.Submit(1, &buffer);
@@ -1876,12 +1886,12 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
     std::lock_guard gpuLock(g_rendererGpuMutex);
     seal_frame_locked(sealedFrame, ctx);
     sealed = WorkerClock::now();
-    // NSMBW: overlap the encode with the producer's next frame without interpolation too. Encoding
-    // and submitting in the SEALED phase made the producer's first drain of every frame (EGG's
-    // GXDrawDone) wait out the whole encode: a quarter of the game thread's time on a Pixel 3 XL.
-    // Android only: desktop GPUs encode well inside a frame, and there the serial order (0.1.1's)
-    // stays, since players felt 0.2.x's presentation as stutterier. NSMBW_SERIAL_ENCODE=1 or
-    // NSMBW_OVERLAP_ENCODE=1 picks one either way.
+    // Overlap order: seal and prepare under the mutex, publish SEALED, then encode, submit and
+    // present without it, so the GX decode and the producer's next frame run while this frame is
+    // encoded. Android overlaps by default: encoding inside the SEALED phase made the producer's
+    // first drain of every frame wait out the whole encode. Desktop keeps the serial order unless
+    // NSMBW_OVERLAP_ENCODE=1, since the presentation pacing there is smoother without the overlap.
+    // NSMBW_SERIAL_ENCODE=1 forces the serial order on Android.
 #ifdef __ANDROID__
     static const bool serialEncode = std::getenv("NSMBW_SERIAL_ENCODE") != nullptr;
 #else
@@ -1889,6 +1899,8 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
 #endif
     overlapEncode = ctx.interpolationActive || !serialEncode;
     if (!overlapEncode) {
+      create_seal_encoder(ctx);
+      gfx::emit_staging_buffers(ctx.encoder);
       presentationJobs = encode_sealed_frame(sealedFrame, ctx);
     }
     encoded = WorkerClock::now();
@@ -1944,7 +1956,10 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
 
   if (overlapEncode) {
     // Mutex-free: the producer drains and records the next frame in parallel, taking the renderer
-    // mutex per drain, and this phase never takes it.
+    // mutex per drain, and this phase never takes it. The encoder is created here, after SEALED, so
+    // its allocation stall overlaps the decode rather than delaying it.
+    create_seal_encoder(ctx);
+    gfx::emit_staging_buffers(ctx.encoder);
     presentationJobs = encode_sealed_frame(sealedFrame, ctx);
     publish_presentations(std::move(presentationJobs), ctx.interpolationActive);
     if (imguiNewFrameOwed) {
@@ -1980,6 +1995,8 @@ void end_frame_impl(bool pumpEvents, bool drainFifo) {
   {
     std::lock_guard gpuLock(g_rendererGpuMutex);
     seal_frame_locked(sealedFrame, ctx);
+    create_seal_encoder(ctx);
+    gfx::emit_staging_buffers(ctx.encoder);
     presentationJobs = encode_sealed_frame(sealedFrame, ctx);
   }
   publish_presentations(std::move(presentationJobs), ctx.interpolationActive);

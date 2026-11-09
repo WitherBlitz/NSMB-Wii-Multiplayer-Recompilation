@@ -242,8 +242,8 @@ public sealed class TranslatedBuildShardEmitterTests
             // Same shard, same winner in both profiles: call the definition in
             // this translation unit so the host optimizer can still inline it.
             Assert.Contains("MKW_STATIC_TRANSLATED_CALL(0x80002000u, func_80002000, ctx);", commonShard);
-            // A nonvolatile-FPR writer keeps the generic dynamically guarded call.
-            Assert.Contains("InvokeDirectCpu<0x80003000u>(ctx);", commonShard);
+            // A nonvolatile-FPR writer keeps the dynamically guarded call (context-bound form).
+            Assert.Contains("InvokeDirectCpuInContext<0x80003000u>(ctx);", commonShard);
             var baseSpecific = Directory.GetFiles(Path.Combine(output, "base_portable_sensitive"), "*.cpp")
                 .Select(File.ReadAllText)
                 .Aggregate(string.Concat);

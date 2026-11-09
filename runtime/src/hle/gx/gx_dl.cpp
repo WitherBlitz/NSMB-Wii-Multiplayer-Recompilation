@@ -386,6 +386,11 @@ static void RestoreGxVertexState(const HleGxVertexStateSnapshot& snapshot) {
     }
     g_hleGxState.vtxLayoutHash = snapshot.vtxLayoutHash;
     g_hleGxState.vtxLayoutHashDirty = snapshot.vtxLayoutHashDirty;
+    // The restored hash matches the restored rows, but HashScanLayoutState's per-row hashes still
+    // describe whatever was there before, so the next rebuild must rehash every restored row.
+    g_hleGxState.vtxLayoutStaleRows |=
+        static_cast<uint16_t>((snapshot.hasVtxDesc ? HleGxState::kVtxLayoutDescRow : 0u) |
+                              ((snapshot.vtxAttrFmtRows & kAllVtxAttrFmtRows) << 1));
     // The wholesale desc/attr-fmt overwrite above bypasses the per-field change
     // checks that normally bump this, so mirrors must be told to resync.
     ++g_hleGxState.vtxStateGeneration;
@@ -491,26 +496,114 @@ struct DlScanCacheRecord {
 struct DlScanCacheState {
     std::unordered_map<uint64_t, DlScanCacheRecord> entries{};
     size_t storedCommandBytes = 0;
+    // Direct-mapped front for `entries.find`: every call probes the map, and libstdc++'s
+    // prime-modulo bucket math is a hardware divide per bucket and chain step.
+    // Map nodes never move (rehash relinks, insert_or_assign assigns in place), so a cached
+    // record pointer stays valid until `entries.clear()`, which also clears this array.
+    // The slot also carries the fields every probe reads, so a hit on a register-only list never
+    // touches the large, cold record.
+    //
+    // Successor hint: by the next frame everything a call reads - this slot, the record, the
+    // list's own bytes - has left the cache. Each slot remembers which call followed it last
+    // time, so a hit can ask for that call's memory one whole call early. The hint is only ever
+    // used as a prefetch address, never read through, so a stale one costs a wasted fetch.
+    struct alignas(64) FrontSlot {
+        uint64_t key = 0;
+        DlScanCacheRecord* record = nullptr;
+        uint64_t writeGeneration = 0;
+        uint64_t contentDigest = 0;
+        uint64_t layoutHash = 0;
+        const DlScanCacheRecord* nextRecord = nullptr;
+        uint32_t listAddr = 0;
+        uint32_t nbytes = 0;
+        uint32_t nextListAddr = 0;
+        uint16_t nextSlot = 0;
+        bool mayContainDraw = false;
+        uint8_t nextListLines = 0;
+    };
+    static_assert(sizeof(FrontSlot) == 64);
+    static constexpr size_t kFrontSlots = 4096;
+    std::array<FrontSlot, kFrontSlots> front{};
+    // The slot the previous cached call resolved to, or null after a miss or a clear.
+    FrontSlot* previousHitSlot = nullptr;
 };
+
+namespace {
+constexpr int kLayoutRows = 9; // row 0 = vtxDesc, rows 1..8 = vtxAttrFmt[0..7]
+uint64_t s_layoutRowHash[kLayoutRows]{};
+
+constexpr uint64_t kFnvOffset = 1469598103934665603ull;
+constexpr uint64_t kFnvPrime = 1099511628211ull;
+} // namespace
+
+// The game changes the vertex layout between most display lists (every material sets its own VCD),
+// so the dirty flag rarely saves a recompute, and hashing all nine rows as one serial FNV chain
+// was measurable in the frame time. Each row keeps its own hash, and every writer marks the row it
+// changed, so a rebuild rehashes just those rows instead of the whole 234-field layout.
+static uint64_t LayoutRowHash(int row) {
+    uint64_t hash = kFnvOffset;
+    if (row == 0) {
+        for (int attr = 0; attr < 26; ++attr) {
+            hash ^= static_cast<uint64_t>(static_cast<uint32_t>(g_hleGxState.vtxDesc[attr]));
+            hash *= kFnvPrime;
+        }
+        return hash;
+    }
+    const int fmt = row - 1;
+    hash ^= static_cast<uint64_t>(fmt + 1);
+    const auto& attrs = g_hleGxState.vtxAttrFmt[fmt];
+    for (int attr = 0; attr < 26; ++attr) {
+        hash ^= static_cast<uint64_t>(static_cast<uint32_t>(attrs[attr].cnt));
+        hash *= kFnvPrime;
+        hash ^= static_cast<uint64_t>(static_cast<uint32_t>(attrs[attr].type));
+        hash *= kFnvPrime;
+        hash ^= static_cast<uint64_t>(attrs[attr].frac);
+        hash *= kFnvPrime;
+    }
+    return hash;
+}
+
+static uint64_t CombineLayoutRowHashes(const uint64_t (&rows)[kLayoutRows]) {
+    uint64_t hash = kFnvOffset;
+    for (uint64_t rowHash : rows) {
+        hash ^= rowHash;
+        hash *= kFnvPrime;
+        hash ^= rowHash >> 32;
+        hash *= kFnvPrime;
+    }
+    return hash;
+}
+
+// Set NSMBW_GX_DL_HASH_CHECK=1 to verify that the incremental per-row rebuild equals a full one.
+static bool VtxLayoutHashCheckEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("NSMBW_GX_DL_HASH_CHECK");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
 
 static uint64_t HashScanLayoutState() {
     if (!g_hleGxState.vtxLayoutHashDirty) {
         return g_hleGxState.vtxLayoutHash;
     }
-    uint64_t hash = 1469598103934665603ull;
-    auto mix = [&hash](uint32_t value) {
-        hash ^= static_cast<uint64_t>(value);
-        hash *= 1099511628211ull;
-    };
-    for (int attr = 0; attr < 26; ++attr) {
-        mix(static_cast<uint32_t>(g_hleGxState.vtxDesc[attr]));
-    }
+    const uint16_t stale = g_hleGxState.vtxLayoutStaleRows;
+    s_layoutRowHash[0] = (stale & HleGxState::kVtxLayoutDescRow) != 0 ? LayoutRowHash(0)
+                                                                     : s_layoutRowHash[0];
     for (int fmt = 0; fmt < 8; ++fmt) {
-        for (int attr = 0; attr < 26; ++attr) {
-            const auto& f = g_hleGxState.vtxAttrFmt[fmt][attr];
-            mix(static_cast<uint32_t>(f.cnt));
-            mix(static_cast<uint32_t>(f.type));
-            mix(static_cast<uint32_t>(f.frac));
+        if ((stale & HleGxState::VtxLayoutFmtRow(static_cast<uint32_t>(fmt))) != 0) {
+            s_layoutRowHash[fmt + 1] = LayoutRowHash(fmt + 1);
+        }
+    }
+    g_hleGxState.vtxLayoutStaleRows = 0;
+    const uint64_t hash = CombineLayoutRowHashes(s_layoutRowHash);
+    if (VtxLayoutHashCheckEnabled()) {
+        uint64_t allRows[kLayoutRows];
+        for (int row = 0; row < kLayoutRows; ++row) {
+            allRows[row] = LayoutRowHash(row);
+        }
+        if (CombineLayoutRowHashes(allRows) != hash) {
+            std::fprintf(stderr, "[gx-layout-check] incremental hash differs from full rebuild\n");
         }
     }
     g_hleGxState.vtxLayoutHash = hash;
@@ -527,13 +620,53 @@ static DlScanCacheState& DlScanCache() {
     return s_cache;
 }
 
+static DlScanCacheState::FrontSlot& DlScanCacheFrontSlot(DlScanCacheState& cache, uint64_t key) {
+    return cache.front[(key ^ (key >> 32)) & (DlScanCacheState::kFrontSlots - 1)];
+}
+
+static void FillDlScanCacheFrontSlot(DlScanCacheState::FrontSlot& slot, uint64_t key,
+                                     DlScanCacheRecord& record) {
+    if (slot.key != key) {
+        // A different list now owns this slot: its successor is not known yet.
+        slot.nextRecord = nullptr;
+        slot.nextListAddr = 0;
+        slot.nextSlot = 0;
+        slot.nextListLines = 0;
+    }
+    slot.key = key;
+    slot.record = &record;
+    slot.writeGeneration = record.writeGeneration;
+    slot.contentDigest = record.contentDigest;
+    slot.layoutHash = record.result.layoutHash;
+    slot.listAddr = record.result.listAddr;
+    slot.nbytes = record.result.nbytes;
+    slot.mayContainDraw = record.mayContainDraw;
+}
+
+static DlScanCacheState::FrontSlot* FindDlScanCacheSlot(DlScanCacheState& cache, uint64_t key) {
+    auto& slot = DlScanCacheFrontSlot(cache, key);
+    if (slot.record != nullptr && slot.key == key) {
+        return &slot;
+    }
+    const auto it = cache.entries.find(key);
+    if (it == cache.entries.end()) {
+        return nullptr;
+    }
+    FillDlScanCacheFrontSlot(slot, key, it->second);
+    return &slot;
+}
+
 static uint64_t DlContentDigest(const uint8_t* list, uint32_t nbytes) {
     return static_cast<uint64_t>(XXH3_64bits(list, static_cast<size_t>(nbytes)));
 }
 
 
 struct DlScanCacheProbe {
+    // The front slot the key resolved to (hit or stale), for the successor hint.
+    DlScanCacheState::FrontSlot* slot = nullptr;
     const DlScanCacheRecord* record = nullptr;
+    // Copy of record->mayContainDraw, valid whenever record is set.
+    bool mayContainDraw = false;
     uint64_t contentDigest = 0;
     bool digestValid = false;
     uint64_t writeGeneration = kDlWriteGenerationUntracked;
@@ -546,20 +679,21 @@ static DlScanCacheProbe ProbeDlScanCache(const uint8_t* list, uint32_t listAddr,
 
     auto& s_cache = DlScanCache();
     const uint64_t key = DlScanCacheKey(listAddr, nbytes, layoutHash);
-    const auto it = s_cache.entries.find(key);
-    if (it != s_cache.entries.end()) {
-        auto& record = it->second;
-        const auto& entry = record.result;
-        const bool identityMatches = entry.listAddr == CanonicalizeGxMainRamAddress(listAddr) &&
-                                     entry.nbytes == nbytes && entry.layoutHash == layoutHash;
+    if (DlScanCacheState::FrontSlot* slot = FindDlScanCacheSlot(s_cache, key)) {
+        probe.slot = slot;
+        const bool identityMatches = slot->listAddr == CanonicalizeGxMainRamAddress(listAddr) &&
+                                     slot->nbytes == nbytes && slot->layoutHash == layoutHash;
         if (identityMatches && probe.writeGeneration != kDlWriteGenerationUntracked &&
-            record.writeGeneration == probe.writeGeneration) {
+            slot->writeGeneration == probe.writeGeneration) {
             // Nothing has flushed a write over these bytes since the digest was
             // taken, so the stored digest still describes them. Skip XXH3.
-            probe.record = &record;
-            probe.contentDigest = record.contentDigest;
+            probe.record = slot->record;
+            probe.mayContainDraw = slot->mayContainDraw;
+            probe.contentDigest = slot->contentDigest;
             probe.digestValid = true;
         } else {
+            auto& record = *slot->record;
+            const auto& entry = record.result;
             probe.contentDigest = DlContentDigest(list, nbytes);
             probe.digestValid = true;
             if (identityMatches &&
@@ -568,11 +702,47 @@ static DlScanCacheProbe ProbeDlScanCache(const uint8_t* list, uint32_t listAddr,
                                                  probe.contentDigest)) {
                 // False alarm: the bump did not actually change this list
                 record.writeGeneration = probe.writeGeneration;
+                slot->writeGeneration = probe.writeGeneration;
                 probe.record = &record;
+                probe.mayContainDraw = record.mayContainDraw;
             }
         }
     }
     return probe;
+}
+
+// Links the previous cached call to this one and asks for the memory of the call that followed
+// this one last frame. See FrontSlot's successor hint.
+static inline void LinkAndPrefetchDlSuccessor(const DlScanCacheProbe& probe, uint32_t listAddr,
+                                              uint32_t nbytes) {
+    auto& cache = DlScanCache();
+    DlScanCacheState::FrontSlot* slot = probe.record != nullptr ? probe.slot : nullptr;
+    DlScanCacheState::FrontSlot* previous = cache.previousHitSlot;
+    cache.previousHitSlot = slot;
+    if (slot == nullptr) {
+        return;
+    }
+    if (previous != nullptr && previous != slot) {
+        // A register-only list is answered from its slot alone; its record stays cold.
+        previous->nextRecord = slot->mayContainDraw ? slot->record : nullptr;
+        previous->nextListAddr = listAddr;
+        previous->nextSlot = static_cast<uint16_t>(slot - cache.front.data());
+        previous->nextListLines =
+            static_cast<uint8_t>(std::min<uint32_t>(8u, (nbytes + 63u) / 64u));
+    }
+    if (slot->nextListLines == 0) {
+        return;  // no successor recorded yet
+    }
+    MKW_PREFETCH(&cache.front[slot->nextSlot]);
+    if (const char* record = reinterpret_cast<const char*>(slot->nextRecord)) {
+        for (size_t offset = 0; offset < sizeof(DlScanCacheRecord); offset += 64) {
+            MKW_PREFETCH(record + offset);
+        }
+    }
+    const uint8_t* nextList = MKW_FLAT_GUEST_BASE + slot->nextListAddr;
+    for (uint32_t line = 0; line < slot->nextListLines; ++line) {
+        MKW_PREFETCH(nextList + line * 64u);
+    }
 }
 
 static size_t DlScanCacheRecordBytes(const DlScanCacheRecord& record) {
@@ -594,6 +764,8 @@ static void StoreDlScanCache(uint32_t listAddr, uint32_t nbytes, uint64_t layout
     if ((!replacing && s_cache.entries.size() >= kDlScanCacheMaxEntries) ||
         s_cache.storedCommandBytes - replacedBytes + incomingBytes > kDlScanCacheMaxStoredBytes) {
         s_cache.entries.clear();
+        s_cache.front.fill({});
+        s_cache.previousHitSlot = nullptr;
         s_cache.storedCommandBytes = 0;
         replacing = false;
         replacedBytes = 0;
@@ -618,6 +790,7 @@ static void StoreDlScanCache(uint32_t listAddr, uint32_t nbytes, uint64_t layout
     if (replacing) {
         s_cache.storedCommandBytes -= replacedBytes;
     }
+    FillDlScanCacheFrontSlot(DlScanCacheFrontSlot(s_cache, key), key, it->second);
 }
 
 static void BuildScanVertexLayout(GXVtxFmt vtxfmt, std::array<ScanAttrStep, 26>& indexedSteps,
@@ -793,8 +966,12 @@ struct DlMayContainDrawVisitor {
 
     bool OnNop(uint8_t) { return true; }
     bool OnBpReg(const uint8_t*, uint32_t) { return true; }
-    // An array base/stride write means the list is setting up indexed geometry.
-    bool OnCpReg(const uint8_t*, uint8_t reg, uint32_t) { return !(reg >= 0xA0 && reg <= 0xBF); }
+    // Vertex descriptor/format and array writes (0x50, 0x60, 0x70-0xBF) change the layout the
+    // list's vertices are read with. Route them through the full scan so the HLE vertex state,
+    // and the applied-state generation, tracks them instead of leaving aurora changed behind it.
+    bool OnCpReg(const uint8_t*, uint8_t reg, uint32_t) {
+        return reg != 0x50 && reg != 0x60 && !(reg >= 0x70 && reg <= 0xBF);
+    }
     bool OnXfReg(const uint8_t*, uint32_t) { return true; }
     bool OnIndexedXf(const uint8_t*, uint8_t, uint32_t) { return true; }
     bool OnInvalidateVertexCache(uint8_t) { return true; }
@@ -1060,6 +1237,21 @@ static std::array<AppliedArrayState, GX_VA_MAX_ATTR> s_appliedArrays{};
 // memoized republish below can never observe a stale match.
 static bool s_appliedVtxStateMatchesHle = false;
 static uint32_t s_appliedVtxStateGeneration = 0;
+// Value of HleGxState::auroraVtxPublishEpoch when the mirror last republished the descriptor.
+// Any GXBegin publish in between means aurora now holds the expanded direct stream instead.
+static uint32_t s_appliedAuroraVtxEpoch = 0;
+
+// The mirror is an exact copy of HLE vertex state at the recorded generation.
+static bool AppliedVtxStateMatchesHle() {
+    return s_appliedVtxStateMatchesHle && s_appliedVtxDescValid && s_appliedVtxAttrFmtValid &&
+           s_appliedVtxStateGeneration == g_hleGxState.vtxStateGeneration;
+}
+
+// Same, and no begin path has republished aurora's descriptor since.
+static bool AppliedVtxDescStillLive() {
+    return AppliedVtxStateMatchesHle() &&
+           s_appliedAuroraVtxEpoch == g_hleGxState.auroraVtxPublishEpoch;
+}
 
 static void InvalidateAppliedAuroraState() {
     s_appliedVtxDescValid = false;
@@ -1073,8 +1265,7 @@ static void InvalidateAppliedAuroraState() {
 static void SyncAppliedVtxStateFromHleReal() {
     // skip the republish only when the mirror is already an exact copy of
     // HLE state
-    if (s_appliedVtxStateMatchesHle && s_appliedVtxDescValid && s_appliedVtxAttrFmtValid &&
-        s_appliedVtxStateGeneration == g_hleGxState.vtxStateGeneration) {
+    if (AppliedVtxStateMatchesHle()) {
         return;
     }
     // Both mirrors are dense arrays of the same trivially copyable element types
@@ -1119,6 +1310,9 @@ static bool AuroraVtxDescMatchesLive(GXAttr attr, GXAttrType expected) {
 
 
 static void ApplyAuroraVtxDesc() {
+    if (AppliedVtxDescStillLive()) {
+        return;
+    }
     const bool hadValidState = s_appliedVtxDescValid;
     if (!hadValidState) {
         s_appliedVtxStateMatchesHle = false;
@@ -1145,6 +1339,7 @@ static void ApplyAuroraVtxDesc() {
         }
     }
     s_appliedVtxDescValid = true;
+    s_appliedAuroraVtxEpoch = g_hleGxState.auroraVtxPublishEpoch;
 }
 
 // Size of one element of the guest array an indexed attribute reads from. An
@@ -1157,6 +1352,9 @@ static uint32_t GetIndexedAttrElementSizeBytes(GXAttr attr, const VtxAttrFmt& fm
 }
 
 static void ApplyAuroraVtxAttrFmt(GXVtxFmt fmt) {
+    if (AppliedVtxStateMatchesHle()) {
+        return;
+    }
     const bool hadValidState = s_appliedVtxAttrFmtValid;
     // Rows other than `fmt` keep their contents and every write below copies
     // g_hleGxState, so an already-matching mirror still matches. Only the rebuild
@@ -1164,16 +1362,25 @@ static void ApplyAuroraVtxAttrFmt(GXVtxFmt fmt) {
     if (!hadValidState) {
         s_appliedVtxStateMatchesHle = false;
     }
+    const auto& hleRow = g_hleGxState.vtxAttrFmt[fmt];
+    // This runs for every drawing display list and nearly always finds the row
+    // already published. A whole-row compare is exact: the copy at the end below
+    // keeps every attribute, including the ones the loop does not publish.
+    if (hadValidState &&
+        std::memcmp(s_appliedVtxAttrFmt[fmt], hleRow, sizeof(hleRow)) == 0) {
+        return;
+    }
     for (int attr = 0; attr < 26; ++attr) {
         if (attr == GX_VA_NBT) continue;
         if (IsMatrixIndexAttr(static_cast<GXAttr>(attr))) continue;
-        const auto& f = g_hleGxState.vtxAttrFmt[fmt][attr];
+        const auto& f = hleRow[attr];
         if (hadValidState && SameVtxAttrFmt(s_appliedVtxAttrFmt[fmt][attr], f)) {
             continue;
         }
         GXSetVtxAttrFmt(fmt, static_cast<GXAttr>(attr), f.cnt, f.type, f.frac);
         s_appliedVtxAttrFmt[fmt][attr] = f;
     }
+    std::memcpy(s_appliedVtxAttrFmt[fmt], hleRow, sizeof(hleRow));
     s_appliedVtxAttrFmtValid = true;
 }
 
@@ -1299,6 +1506,15 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
     try {
         const uint8_t* list = static_cast<const uint8_t*>(GuestToHostPtr(listAddr, nbytes));
         if (!list) return;
+        // The bytes are first read when the stream is copied to the GX worker, by which time they
+        // have usually left the cache since last frame. Ask for the first lines now.
+        MKW_PREFETCH(list);
+        MKW_PREFETCH(list + 64);
+        MKW_PREFETCH(list + 128);
+        MKW_PREFETCH(list + 192);
+        if (!IsDisplayListActive()) {
+            GxServiceDeferredTimingFromDisplayList();
+        }
 
         const bool allowScanCache = nbytes <= kDlScanCacheMaxEntryBytes;
         const uint64_t scanLayoutHash = allowScanCache ? HashScanLayoutState() : 0;
@@ -1309,6 +1525,14 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
             allowScanCache ? ProbeDlScanCache(list, listAddr, nbytes, scanLayoutHash)
                            : DlScanCacheProbe{};
         const DlScanCacheRecord* cached = probe.record;
+        if (allowScanCache) {
+            LinkAndPrefetchDlSuccessor(probe, listAddr, nbytes);
+            if (cached != nullptr && probe.mayContainDraw) {
+                // This call's own cold blocks: asked for before the work below reaches them.
+                MKW_PREFETCH(cached->cpWrites.data());
+                MKW_PREFETCH(cached->flattened.data());
+            }
+        }
 
         // The scan a cached record came from already walked the list for this,
         // so only a miss pays for DisplayListMayContainDraw.

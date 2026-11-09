@@ -14,6 +14,8 @@
 #include "axfx_reverb_native.h"
 
 #include "abi_bridge.h"
+#include "ax_dsp.h"
+#include "ax_internal.h"
 #include "det_clock.h"
 #include "memory.h"
 #include "runtime_log.h"
@@ -310,12 +312,34 @@ void UpdateBuffer(CpuContext* ctx) {
         Compare(b, ctx);
         return;
     }
+    static const bool worker = [] {
+        const char* value = std::getenv("NSMBW_REVERB_WORKER");
+        return value != nullptr &&
+               (std::strcmp(value, "on") == 0 || std::strcmp(value, "1") == 0);
+    }();
+    if (worker && AxDspHle::RunReverbJob(self, buffers)) {
+        return;
+    }
     Run(b);
 }
 
 const RawDispatchRecord kRecord{kUpdateBuffer, &UpdateBuffer, 0, false};
 
 } // namespace
+
+bool RunWorker(uint32_t self, uint32_t buffers) {
+    uint32_t in[3] = {};
+    if (!Memory::TryRead32(buffers, in[0]) || !Memory::TryRead32(buffers + 4u, in[1]) ||
+        !Memory::TryRead32(buffers + 8u, in[2])) {
+        return false;
+    }
+    Buffers b;
+    if (!Gather(self + 0x44u, in, b)) {
+        return false;
+    }
+    Run(b);
+    return true;
+}
 
 void Install() {
     if (DetClock::Enabled() || std::getenv("NSMBW_NO_COUCH_FASTPATHS") != nullptr) {

@@ -28,19 +28,64 @@
 
 namespace {
 
-constexpr uint32_t kZoomTargetMaxCommon = 0x80079060u;  // dBg_c::getZoomTargetMax_Common
 constexpr uint32_t kStageViewWidth = 0x8042A0ECu;       // mVideo::l_rayoutWidthF
+constexpr uint32_t kStageViewHeight = 0x8042A0F0u;      // mVideo::l_rayoutHeightF
 constexpr uint32_t kOne = 0x8042BD18u;                  // f32 constant the limits divide by the zoom
 constexpr uint32_t kHalf = 0x8042BD5Cu;                 // f32 constant the zoom correction halves with
 constexpr uint32_t kBgBias = 0x90000u;                  // dBg_c's scroll fields sit past this offset
 constexpr uint32_t kZoneLeft = 0x30u, kZoneRight = 0x34u, kZoom = 0x0Cu, kScrollMode = 0xFEu;
+constexpr uint32_t kScrollIndex = 0xFFu;
+constexpr uint32_t kLoopOffsetX = 0xFFFFFEA0u;          // base - 352
+constexpr uint32_t kLoopOffsetY = 0xFFFFFEA4u;          // base - 348
 constexpr float kGameViewWidth = 408.0f;
 
-float ZoomTargetMaxCommon(uint32_t bg) {
-    CpuContext* cpu = &GetPersistentCpuContext();
-    cpu->gpr[3] = bg;
-    InvokeIndirectCpu(kZoomTargetMaxCommon, cpu);
-    return static_cast<float>(cpu->fpr[1].d);
+// dBg_c's zoom tables, read from guest rodata so the float values stay exact.
+constexpr uint32_t kMaxMode1 = 0x802EF720u;  // 11 floats
+constexpr uint32_t kMaxMode2 = 0x802EF750u;  // 8 floats
+constexpr uint32_t kMinMode1 = 0x802EF658u;  // 11 floats
+constexpr uint32_t kMinMode3 = 0x802EF688u;  // 10 floats
+constexpr uint32_t kMinMode2 = 0x802EF6B0u;  // 8 floats
+
+bool IsMode1(uint8_t mode) {
+    return mode == 0 || mode == 1 || mode == 6 || mode == 7;
+}
+
+float ZoomTargetMinNative(uint32_t bg) {
+    const uint32_t base = bg + kBgBias;
+    const uint8_t mode = Memory::Read8(base + kScrollMode);
+    const uint32_t index = Memory::Read8(base + kScrollIndex) * 4u;
+    if (IsMode1(mode)) {
+        return Memory::ReadFloat32(kMinMode1 + index);
+    }
+    if (mode == 2) {
+        return Memory::ReadFloat32(kMinMode2 + index);
+    }
+    return Memory::ReadFloat32(kMinMode3 + index);
+}
+
+float ZoomTargetMaxNative(uint32_t bg) {
+    const uint32_t base = bg + kBgBias;
+    const uint8_t mode = Memory::Read8(base + kScrollMode);
+    const uint32_t index = Memory::Read8(base + kScrollIndex) * 4u;
+    float res;
+    if (IsMode1(mode)) {
+        res = Memory::ReadFloat32(kMaxMode1 + index);
+    } else if (mode == 2) {
+        res = Memory::ReadFloat32(kMaxMode2 + index);
+    } else {
+        res = ZoomTargetMinNative(bg);
+    }
+    const float width = Memory::ReadFloat32(kStageViewWidth);
+    const float offsetX = Memory::ReadFloat32(base + kLoopOffsetX);
+    if (res * width > offsetX) {
+        res = offsetX / width;
+    }
+    const float height = Memory::ReadFloat32(kStageViewHeight);
+    const float offsetY = Memory::ReadFloat32(base + kLoopOffsetY);
+    if (res * height > offsetY) {
+        res = offsetY / height;
+    }
+    return res;
 }
 
 // dBg_c::getLeftLimit (0x80078A70) / getRightLimit (0x80078C10), instruction for instruction.
@@ -52,7 +97,7 @@ float ZoneLimit(uint32_t bg, bool right) {
         return limit;
     }
     float zoom = Memory::ReadFloat32(base + kZoom);
-    float zoomMax = ZoomTargetMaxCommon(bg);
+    float zoomMax = ZoomTargetMaxNative(bg);
     const float one = Memory::ReadFloat32(kOne);
     // fcmpo + bge: the correction applies only when one / zoom is (ordered) below the maximum.
     if (!(one / zoom < zoomMax)) {
@@ -60,7 +105,32 @@ float ZoneLimit(uint32_t bg, bool right) {
     }
     const float width = Memory::ReadFloat32(kStageViewWidth);
     zoom = Memory::ReadFloat32(base + kZoom);
-    zoomMax = ZoomTargetMaxCommon(bg);
+    zoomMax = ZoomTargetMaxNative(bg);
+    const float half = Memory::ReadFloat32(kHalf);
+    const float atMax = half * (zoomMax * width);
+    const float atZoom = half * ((one / zoom) * width);
+    const float correction = atMax - atZoom;
+    return right ? limit - correction : limit + correction;
+}
+
+// dBg_c::getMaxLeftPos (0x800789A0) / getMaxRightPos (0x80078B40). Same zone
+// correction as getLeftLimit/getRightLimit, but the base value is the zone's
+// cached max position at bg+0x90000-412/-408. The zoom-max query is hoisted:
+// the translated code calls it twice with identical inputs.
+float ZoneMaxPosition(uint32_t bg, bool right) {
+    const uint32_t base = bg + kBgBias;
+    const uint8_t mode = Memory::Read8(base + kScrollMode);
+    float limit = Memory::ReadFloat32(base + (right ? 0xFFFFFE68u : 0xFFFFFE64u));
+    if (mode == 1 || mode == 4) {
+        return limit;
+    }
+    const float one = Memory::ReadFloat32(kOne);
+    const float zoom = Memory::ReadFloat32(base + kZoom);
+    const float zoomMax = ZoomTargetMaxNative(bg);
+    if (!(one / zoom < zoomMax)) {
+        return limit;
+    }
+    const float width = Memory::ReadFloat32(kStageViewWidth);
     const float half = Memory::ReadFloat32(kHalf);
     const float atMax = half * (zoomMax * width);
     const float atZoom = half * ((one / zoom) * width);
@@ -126,6 +196,32 @@ extern "C" float BgGetRightLimit_HLE_80078c10(uint32_t bg)
     return CameraLimit(bg, true);
 }
 PPC_NATIVE_OVERRIDE(80078C10, BgGetRightLimit_HLE_80078c10, float, (uint32_t bg), (bg));
+
+// dBg_c::getZoomTargetMin_Common / getZoomTargetMax_Common. The max clamp divides the
+// per-stage loop offsets by the view size; both read the same guest tables the originals use.
+extern "C" float BgGetZoomTargetMin_HLE_80078d00(uint32_t bg)
+{
+    return ZoomTargetMinNative(bg);
+}
+PPC_NATIVE_OVERRIDE(80078D00, BgGetZoomTargetMin_HLE_80078d00, float, (uint32_t bg), (bg));
+
+extern "C" float BgGetZoomTargetMax_HLE_80079060(uint32_t bg)
+{
+    return ZoomTargetMaxNative(bg);
+}
+PPC_NATIVE_OVERRIDE(80079060, BgGetZoomTargetMax_HLE_80079060, float, (uint32_t bg), (bg));
+
+extern "C" float BgGetMaxLeftPos_HLE_800789a0(uint32_t bg)
+{
+    return ZoneMaxPosition(bg, false);
+}
+PPC_NATIVE_OVERRIDE(800789A0, BgGetMaxLeftPos_HLE_800789a0, float, (uint32_t bg), (bg));
+
+extern "C" float BgGetMaxRightPos_HLE_80078b40(uint32_t bg)
+{
+    return ZoneMaxPosition(bg, true);
+}
+PPC_NATIVE_OVERRIDE(80078B40, BgGetMaxRightPos_HLE_80078b40, float, (uint32_t bg), (bg));
 
 // daPlBase_c::checkSideViewLemit (0x80055810), instruction for instruction, with the zone's own
 // limits rather than the centred camera's.
