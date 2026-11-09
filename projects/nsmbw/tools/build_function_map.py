@@ -4,17 +4,24 @@ Function starts = entry + direct-call targets + data pointers into code + code-m
 (lis/addi|ori) pointers into code + REL prolog/epilog/unresolved + exec-section starts.
 Names come from NSMBW-Decomp syms.txt and Newer's kamek_pal.x (both PAL v1), converted to
 E1 addresses with NSMBW-Updated's address-map.txt.
+
+    python build_function_map.py [<output MAP.txt>]
+
+Inputs are found next to this repository (game/, maps/, nsmbw-decomp/), or under NSMBW_ROOT.
+This map is E1's: gen_variant.py derives another version's MAP.txt from it and that version's code.
 """
 import json
+import os
 import re
 import struct
 import sys
 from pathlib import Path
 
-ROOT = Path(r"E:\NSMBWPort")
+REPO = Path(__file__).resolve().parents[3]
+ROOT = Path(os.environ["NSMBW_ROOT"]) if os.environ.get("NSMBW_ROOT") else REPO.parent
 GAME = ROOT / "game"
 BASE = 0x80000000
-OUT = ROOT / "wiicompiled" / "projects" / "nsmbw" / "MAP.txt"
+OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "projects" / "nsmbw" / "MAP.txt"
 
 flat = (GAME / "nsmbw_flat.bin").read_bytes()
 ranges = [l.split() for l in (GAME / "ranges.txt").read_text().splitlines()]

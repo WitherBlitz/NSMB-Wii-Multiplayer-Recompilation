@@ -181,6 +181,9 @@ void aurora_set_log_level(AuroraLogLevel level);
 void aurora_set_pause_on_focus_lost(bool value);
 void aurora_set_background_input(bool value);
 void aurora_set_display_mode(AuroraDisplayMode mode);
+// Dolphin-style replacement textures (<userPath>/texture_replacements) on or off while running, from the
+// next frame; turning them on indexes the folder again.
+void aurora_set_texture_replacements(bool enabled);
 AuroraDisplayMode aurora_get_display_mode();
 
 typedef enum {

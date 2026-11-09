@@ -1,4 +1,6 @@
 /generated/
+# A copy of Newer's translated tree, for building Newer for Linux while generated/ holds the base game
+/generated-newer/
 /Assets/
 /assets/
 /PulsarPacks/
@@ -27,8 +29,10 @@ Code.pul
 /build-*/
 /native-build/
 /native-build-newer/
+/native-build-newer-v2/
 /native-build-macos/
 /android-build/
+/android-build-newer/
 /local-products/
 /dist/
 /out/

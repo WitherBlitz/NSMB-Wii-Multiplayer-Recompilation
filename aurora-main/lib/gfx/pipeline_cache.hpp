@@ -23,6 +23,9 @@ void end_pipeline_frame();
 void set_skip_unready_pipelines(bool enabled) noexcept;
 bool skip_unready_pipelines() noexcept;
 uint32_t queued_pipeline_count() noexcept;
+bool prewarm_held() noexcept;
+void prewarm_release(uint32_t count) noexcept;
+void prewarm_progress(uint32_t& built, uint32_t& total) noexcept;
 
 template <typename Config>
 PipelineRef find_pipeline(ShaderType type, const Config& config, NewPipelineCallback&& cb);

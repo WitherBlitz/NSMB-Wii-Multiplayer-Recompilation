@@ -57,6 +57,19 @@ struct DrawParams {
     // Recolours the pane's vertex colours: rgb' = m * rgb, row-major (after the tint; a green button made orange).
     std::unordered_map<std::string, std::array<float, 9>> colorMatrix;
     std::unordered_map<std::string, std::pair<float, float>> paneOffset;  // added to the pane's translation
+    // Replace the pane's translation (before paneOffset) and its four vertex colours (TL, TR, BL, BR,
+    // 0xRRGGBBAA, before the tint): what an Animation sets.
+    std::unordered_map<std::string, std::pair<float, float>> paneTranslate;
+    std::unordered_map<std::string, std::array<uint32_t, 4>> vertexColors;
+    std::unordered_map<std::string, float> textScale;  // multiplies a text pane's font size
+    // Text panes show letters only: a mod's icons in place of letters (Newer's parentheses) are the
+    // Mario font's letters there, as the runtime's own text has them (Font::plain).
+    bool plainText = false;
+    // Text panes centred vertically put a capital's ink in the middle (Font::inkTop / inkBottom), and centred
+    // lines their letters' ink, not the cell and the advances.
+    bool centerInk = false;
+    // A window pane's frame is drawn only outside a rectangle inset this far (x, y) from the pane's sides.
+    std::unordered_map<std::string, std::pair<float, float>> frameClip;
 };
 
 class Layout {
@@ -83,6 +96,8 @@ public:
     bool StretchSlices(DrawParams& params, const std::string& left, const std::string& middle,
                        const std::string& right, float dw, float dh) const;
     std::vector<std::string> PaneNames() const;
+    // A pane's authored translation and scale.
+    bool PaneTransform(const std::string& paneName, float& tx, float& ty, float& sx, float& sy) const;
 
     struct Material;
     struct Pane;
@@ -96,6 +111,34 @@ private:
     std::unordered_map<std::string, const Pane*> m_byName;
     std::vector<std::unique_ptr<Material>> m_materials;
     std::vector<std::shared_ptr<Font>> m_fonts;
+};
+
+// One of a layout archive's animations (BRLAN), the way the game plays its menus: per pane, Hermite
+// keys for translation, rotation and scale (RLPA), the vertex colours and alpha (RLVC) and visibility
+// (RLVI). Apply writes the values at a frame into DrawParams; frames outside the keys hold the end values.
+class Animation {
+public:
+    Animation();
+    ~Animation();
+    Animation(const Animation&) = delete;
+    Animation& operator=(const Animation&) = delete;
+    // `brlanName` names the animation file, e.g. "pauseMenu_16_onButton.brlan" (a unique part is enough).
+    bool Load(const std::string& arcPath, const std::string& brlanName);
+    bool Loaded() const { return m_loaded; }
+    // The animation's length in frames (the game plays it from 0 to Frames()).
+    float Frames() const { return m_frames; }
+    bool Animates(const std::string& paneName) const;
+    // The values at `frame` for every pane it animates, `layout` giving what an animation leaves as
+    // authored. `only`: just these panes (and the panes a pane's name maps to, for a copy: from -> to).
+    void Apply(float frame, const Layout& layout, DrawParams& params,
+               const std::vector<std::pair<std::string, std::string>>& only = {}) const;
+
+    struct PaneAnim;
+
+private:
+    bool m_loaded = false;
+    float m_frames = 0;
+    std::vector<std::unique_ptr<PaneAnim>> m_panes;
 };
 
 // The game's text, measured and drawn with one of its fonts ("mj2d00_MessageFont_32_I4.brfnt",
@@ -112,5 +155,33 @@ void DrawText(ImDrawList* list, const View& view, const Font& font, const std::u
               float fontSize, uint32_t topColor, uint32_t bottomColor, float alpha, int originH = 1, int originV = 1);
 
 std::u16string Utf16(const std::string& utf8);
+
+// The disc's files as pixels, for images made on the CPU (runtime/src/key_caps.cpp).
+struct Pixels {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    std::vector<uint8_t> rgba;  // RGBA8, rows top down
+};
+// A file from the active game folder (base game or Newer), as the disc path names it.
+bool ReadGameFile(const std::string& dvdPath, std::vector<uint8_t>& out);
+// The file in a U8 archive whose path ends in `name`, e.g. "im_graButton_up_24_00.tpl".
+bool ArchiveFile(const std::vector<uint8_t>& arc, const std::string& name, std::vector<uint8_t>& out);
+bool DecodeTpl(const std::vector<uint8_t>& tpl, Pixels& out);
+// A BRFNT: its glyph cells (TGLP), widths (CWDH) and character map (CMAP), each sheet decoded, and
+// where the sheets' bytes are in the file (what the game hands the GPU).
+struct FontPixels {
+    uint32_t cellWidth = 0, cellHeight = 0, perRow = 0, perColumn = 0;
+    uint32_t sheetWidth = 0, sheetHeight = 0, sheetFormat = 0, sheetSize = 0, sheetData = 0;
+    int ascent = 0, height = 0, width = 0;
+    std::vector<Pixels> sheets;
+    struct Width {
+        int left = 0, glyphWidth = 0, charWidth = 0;
+    };
+    std::vector<Width> widths;                    // by glyph index
+    std::unordered_map<uint16_t, uint16_t> map;   // character -> glyph index
+    // The glyph's sheet and cell (top-left texel), false without one.
+    bool Cell(char16_t code, uint32_t& sheet, uint32_t& x, uint32_t& y, Width* width = nullptr) const;
+};
+bool DecodeFont(const std::vector<uint8_t>& brfnt, FontPixels& out);
 
 } // namespace GameLayout

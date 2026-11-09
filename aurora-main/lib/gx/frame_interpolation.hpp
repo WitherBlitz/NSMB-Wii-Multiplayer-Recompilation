@@ -6,10 +6,11 @@
 
 #include <atomic>
 
-// Frame interpolation: generates intermediate presentation frames between two consecutive 60 Hz
-// guest frames by re-staging each perspective draw's uniform block with interpolated transforms.
+// Frame interpolation: generates intermediate presentation frames between two consecutive guest
+// frames by re-staging each perspective draw's uniform block with interpolated transforms.
 namespace aurora::gx {
-constexpr uint32_t MaxInterpolatedFrames = 3;
+// NSMBW: 300 FPS from a 30 FPS source (Battery Saver draws every other frame) needs nine slots.
+constexpr uint32_t MaxInterpolatedFrames = 9;
 
 // Identifies a draw across frames. `combined` includes the geometry signature and is exact, while
 // `pipeline`/`texture` is the material-only fallback for meshes whose vertex data changes.
@@ -39,15 +40,23 @@ namespace detail {
 // Defined in frame_interpolation.cpp, exposed so the early-outs below stay inline: the shipped
 // build compiles shards without LTO, so a cross-TU call would land on every draw in the frame.
 extern std::atomic_uint32_t g_frameInterpolationFps;
+// The slot count latched for the frame being recorded (see begin_frame_interpolation).
+extern std::atomic_uint32_t g_activeInterpolationSamples;
 } // namespace detail
 
-// 0 when interpolation is disabled; otherwise the configured target (120/180/240).
+// 0 when interpolation is disabled; otherwise the configured target (60/120/180/240/300).
 inline uint32_t frame_interpolation_fps() noexcept {
   return detail::g_frameInterpolationFps.load(std::memory_order_acquire);
 }
 inline bool frame_interpolation_active() noexcept { return frame_interpolation_fps() != 0; }
+inline uint32_t active_interpolation_samples() noexcept {
+  return detail::g_activeInterpolationSamples.load(std::memory_order_acquire);
+}
 
 void set_frame_interpolation_fps(uint32_t targetFps) noexcept;
+// NSMBW: how many guest frames a second carry a picture: 60, or 30 with Battery Saver. Each one is
+// followed by target / source - 1 interpolated slots.
+void set_frame_interpolation_source_fps(uint32_t sourceFps) noexcept;
 
 // Feedback for the adaptive slot controller: whether the producer met its
 // retrace boundary for the frame that just presented.

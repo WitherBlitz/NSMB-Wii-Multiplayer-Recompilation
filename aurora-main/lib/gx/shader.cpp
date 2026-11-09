@@ -411,6 +411,56 @@ static std::string tev_op(GXTevOp op, GXTevBias bias, GXTevScale scale, std::str
   }
 }
 
+// Fast TEV (webgpu::g_fastTev): one regular stage in float math, within a byte's rounding of what the
+// integer path below works out, for a fraction of its per-pixel cost. Only for shaders whose every stage
+// clamps and compares nothing (tev_can_be_fast), so a wrapped or out-of-range value can't reach it
+// except from a register's starting value, which fast_tev_arg still wraps.
+static std::string tev_fast_op(GXTevOp op, GXTevBias bias, GXTevScale scale, std::string_view a, std::string_view b,
+                               std::string_view c, std::string_view d) {
+  const std::string_view biasText = bias == GX_TB_ADDHALF ? " + 128.0 / 255.0"sv
+                                    : bias == GX_TB_SUBHALF ? " - 128.0 / 255.0"sv
+                                                            : ""sv;
+  const std::string_view scaleText = scale == GX_CS_SCALE_2 ? " * 2.0"sv
+                                     : scale == GX_CS_SCALE_4 ? " * 4.0"sv
+                                     : scale == GX_CS_DIVIDE_2 ? " * 0.5"sv
+                                                               : ""sv;
+  return fmt::format("(({0}{1} {2} mix({3}, {4}, {5})){6})", d, biasText, op == GX_TEV_SUB ? '-' : '+', a, b, c,
+                     scaleText);
+}
+
+static bool tev_can_be_fast(const ShaderConfig& config) {
+  if (!webgpu::g_fastTev) {
+    return false;
+  }
+  const auto regular = [](GXTevOp op) { return op == GX_TEV_ADD || op == GX_TEV_SUB; };
+  for (u32 idx = 0; idx < config.tevStageCount; ++idx) {
+    const auto& stage = config.tevStages[idx];
+    if (!stage.colorOp.clamp || !stage.alphaOp.clamp || !regular(stage.colorOp.op) || !regular(stage.alphaOp.op)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// An A, B or C input for the fast path: only a register no earlier stage has written can be out of range.
+static std::string fast_tev_arg(std::string arg, const std::array<bool, 4>& colorWritten,
+                                const std::array<bool, 4>& alphaWritten, bool scalar) {
+  int reg = -1;
+  if (arg.find("prev") != std::string::npos) {
+    reg = 0;
+  } else if (const auto at = arg.find("tevreg"); at != std::string::npos) {
+    reg = arg[at + 6] - '0' + 1;
+  }
+  if (reg < 0) {
+    return arg;
+  }
+  const bool readsAlpha = scalar || arg.find(".a") != std::string::npos;
+  if ((readsAlpha ? alphaWritten : colorWritten)[reg]) {
+    return arg;
+  }
+  return scalar ? fmt::format("tev_overflow_f32({})", arg) : fmt::format("tev_overflow_vec3f({})", arg);
+}
+
 static std::string tev_color_op(GXTevOp op, GXTevBias bias, GXTevScale scale, bool clamp,
                                 std::string_view a, std::string_view b, std::string_view c, std::string_view d) {
   const auto overflow = [](std::string_view reg) { return fmt::format("tev_overflow_vec3f({})", reg); };
@@ -1105,8 +1155,33 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
   };
 
   static std::array regName{"prev"sv, "tevreg0"sv, "tevreg1"sv, "tevreg2"sv};
+  const bool fastTev = tev_can_be_fast(config);
+  std::array<bool, 4> colorWritten{};
+  std::array<bool, 4> alphaWritten{};
   for (u32 idx = 0; idx < config.tevStageCount; ++idx) {
     const auto& stage = config.tevStages[idx];
+    if (fastTev) {
+      const auto colorIn = [&](GXTevColorArg arg) {
+        return fast_tev_arg(color_arg_reg(arg, idx, config, stage), colorWritten, alphaWritten, false);
+      };
+      const auto alphaIn = [&](GXTevAlphaArg arg) {
+        return fast_tev_arg(alpha_arg_reg(arg, idx, config, stage), colorWritten, alphaWritten, true);
+      };
+      fragmentFn += fmt::format(
+          "\n    // TEV stage {0}\n    {1} = vec4f(clamp({2}, vec3f(0.0), vec3f(1.0)), {1}.a);", idx,
+          regName[stage.colorOp.outReg],
+          tev_fast_op(stage.colorOp.op, stage.colorOp.bias, stage.colorOp.scale, colorIn(stage.colorPass.a),
+                      colorIn(stage.colorPass.b), colorIn(stage.colorPass.c),
+                      color_arg_reg(stage.colorPass.d, idx, config, stage)));
+      fragmentFn += fmt::format(
+          "\n    {0}.a = clamp({1}, 0.0, 1.0);", regName[stage.alphaOp.outReg],
+          tev_fast_op(stage.alphaOp.op, stage.alphaOp.bias, stage.alphaOp.scale, alphaIn(stage.alphaPass.a),
+                      alphaIn(stage.alphaPass.b), alphaIn(stage.alphaPass.c),
+                      alpha_arg_reg(stage.alphaPass.d, idx, config, stage)));
+      colorWritten[stage.colorOp.outReg] = true;
+      alphaWritten[stage.alphaOp.outReg] = true;
+      continue;
+    }
     std::string colorA = color_arg_reg(stage.colorPass.a, idx, config, stage);
     std::string colorB = color_arg_reg(stage.colorPass.b, idx, config, stage);
     fragmentFn += fmt::format("\n    // TEV stage {}", idx);
@@ -1681,7 +1756,9 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
         "var tex{0}_samp: sampler;",
         i, i * 2, i * 2 + 1);
   }
-  fragmentFn += "\n    prev = tev_overflow_vec4f(prev);";
+  if (!fastTev) {
+    fragmentFn += "\n    prev = tev_overflow_vec4f(prev);";
+  }
   if (config.alphaCompare) {
     const auto comp0 = alpha_compare(config.alphaCompare.comp0, config.alphaCompare.ref0);
     const auto comp1 = alpha_compare(config.alphaCompare.comp1, config.alphaCompare.ref1);

@@ -1,4 +1,5 @@
 #include "frame_input.h"
+#include "gameplay_options.h"
 #include "det_hash.h"
 #include "timebase_contract.h"
 #include "det_clock.h"
@@ -45,6 +46,7 @@
 #endif
 
 #include <aurora/aurora.h>
+#include <aurora/gfx.h>
 
 // Forward declaration for OSWakeupThread - used to wake threads on VI retrace queue
 extern "C" void OSWakeupThread_HLE_801aaaa4(CpuContext* ctx);
@@ -646,6 +648,7 @@ void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool servic
     StartStallWatchdogOnce();
     LogGuestModulesOnce();
     LogSceneChanges();
+    GameplayOptions::OnRetrace();
 
     uint32_t preCb = 0;
     uint32_t postCb = 0;
@@ -1065,6 +1068,18 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         static std::once_flag firstVisibleFrame;
         if (!g_vi.black) {
             std::call_once(firstVisibleFrame, [] {
+#if defined(_WIN32)
+                // How long the window showed the cover: a slow start (shader backlog) shows here.
+                FILETIME created{}, exited{}, kernel{}, user{}, now{};
+                if (::GetProcessTimes(::GetCurrentProcess(), &created, &exited, &kernel, &user)) {
+                    ::GetSystemTimePreciseAsFileTime(&now);
+                    const auto ticks = [](const FILETIME& t) {
+                        return (static_cast<uint64_t>(t.dwHighDateTime) << 32) | t.dwLowDateTime;
+                    };
+                    RT_LOGF(RT_TAG_VI, "first visible guest frame presented %.0f ms after the process started\n",
+                            (ticks(now) - ticks(created)) / 10000.0);
+                }
+#endif
                 RT_LOGF(RT_TAG_VI, "first visible guest frame presented; lifting the startup cover\n");
                 settings_overlay::NotifyStrapInputAccepted();
             });
@@ -1101,12 +1116,17 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         const uint32_t retracesElapsed = retraceCount - s_lastPacedRetraceCount;
         paceThisFrame = retracesElapsed == 0;
         s_lastPacedRetraceCount = retraceCount;
+        // NSMBW: Battery Saver draws every other frame, so each picture healthily spans two retraces,
+        // and its interpolated slots (if any) spread over both.
+        settings_overlay::SyncFrameInterpolation();
+        const bool thirty = settings_overlay::BatterySaverActive();
+        const uint32_t retracesPerPicture = thirty ? 2u : 1u;
         // aurora_report_producer_paced needs a different signal than the pace-wait above: the guest
         // self-paces via VIWaitForRetrace, so one retrace per produced frame is the healthy locked-60
         // cadence, and zero only happens when production outruns VI. "Kept up" means <=1 retrace
         // elapsed; 2+ means a boundary was missed, so Aurora seals that frame without its interpolated
         // slots (a windowed backstop lowers the slot target only under sustained overload).
-        aurora_report_producer_paced(retracesElapsed <= 1);
+        aurora_report_producer_paced(retracesElapsed <= retracesPerPicture);
         // Stamp the sealed frame's presentation schedule so Aurora paces interpolated slots against
         // this same VI timeline. Anchor to the NEXT retrace boundary, not the period just produced,
         // since slots anchored to the current period would already be expired by seal time. Encoding
@@ -1119,7 +1139,10 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             anchorNanos = s_lastPresentAnchorNanos + intervalNanos;
         }
         s_lastPresentAnchorNanos = anchorNanos;
-        aurora_set_present_schedule(anchorNanos, intervalNanos);
+        // Only interpolated groups use the interval as their span; a lone native present keeps its
+        // one-period offset (aurora's slotPresentDeadline).
+        const bool spanTwo = thirty && aurora_get_frame_interpolation_fps() != 0;
+        aurora_set_present_schedule(anchorNanos, spanTwo ? intervalNanos * retracesPerPicture : intervalNanos);
     } else {
         // Retrace-context presents (VI black, boot) have no display period of
         // their own to subdivide; present as soon as the frame is ready. The
@@ -1139,6 +1162,8 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     }
     // Always on: a frame that took over 20 ms (a dropped frame at 60) goes to the log with where the
     // time went, so a report of drops on someone's machine comes with its cause. At most 30 a minute.
+    // Battery Saver presents every other frame, so there a drop is a frame over 37 ms.
+    const double slowFrameMs = settings_overlay::BatterySaverActive() ? 37.0 : 20.0;
     if (presentedXfb) {
         static Clock::time_point s_lastEnd{}, s_windowStart{};
         static int s_logged = 0;
@@ -1172,7 +1197,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                 s_windowStart = now;
                 s_logged = 0;
             }
-            if (frame > 20.0 && frame < 2000.0 && s_logged++ < 30) {
+            if (frame > slowFrameMs && frame < 2000.0 && s_logged++ < 30) {
                 uint32_t sceneWord = 0;
                 Memory::TryRead32(0x80428730u, sceneWord);
                 RT_LOGF(RT_TAG_VI,
@@ -1195,7 +1220,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             times.paceMs += ms(now - paceStart);
             times.worstMs = std::max(times.worstMs, frame);
             times.sumSq += frame * frame;
-            times.slow += frame > 20.0 ? 1 : 0;
+            times.slow += frame > slowFrameMs ? 1 : 0;
             ++times.frames;
         } else {
             times.windowStart = now;
@@ -1212,11 +1237,12 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             RT_LOGF(RT_TAG_VI,
                     "fps %.1f: game %.2f ms (gx %.2f ms, lock wait %.2f ms, %.0f draws, %.0f unmerged, %.1f copies, "
                     "%.1f new copy textures), end_frame %.2f ms, pace %.2f ms, worst frame %.1f ms, jitter %.2f ms, "
-                    "%d over 20 ms\n",
+                    "%d over %.0f ms\n",
                     n * 1000.0 / window, times.gameMs / n, gxNanos / 1e6 / n, lockNanos / 1e6 / n, draws / n,
                     unmerged / n,
                     copies / n, creates / n, times.endFrameMs / n, times.paceMs / n, times.worstMs,
-                    std::sqrt(std::max(0.0, times.sumSq / n - (window / n) * (window / n))), times.slow);
+                    std::sqrt(std::max(0.0, times.sumSq / n - (window / n) * (window / n))), times.slow,
+                    slowFrameMs);
             const uint32_t waits = g_idleWaits.exchange(0, std::memory_order_relaxed);
             const uint32_t retraceEnds = g_idleRetraceEnds.exchange(0, std::memory_order_relaxed);
             static uint32_t s_windowRetraceCount = 0;

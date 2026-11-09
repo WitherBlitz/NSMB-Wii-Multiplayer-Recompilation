@@ -76,17 +76,18 @@ extern "C" {
 #define GX_LOAD_AURORA_Z_SCALE_OFFSET 0x0042
 // GXSetScissorBoxOffset: s32 x, s32 y.
 #define GX_LOAD_AURORA_SCISSOR_OFFSET 0x0043
-// EFB texture copy: u64 dest (host pointer), u8 clear, u16 left, u16 top, u16 width, u16 height,
-// u16 dst width, u16 dst height, u8 format, u8 half scale. Captured when the producer queues it so
-// the copy can run on the GX thread in stream order instead of joining the FIFO at every copy.
-#define GX_LOAD_AURORA_TEX_COPY 0x0044
-
-// NSMBW: queues an EFB texture copy for the GX thread. `dest` is the guest texture's host pointer
-// (GuestToHostPtr), the identity GXLoadTexObj looks the copy up by. The destination object stays
-// GPU-side like GXCopyTex's; the guest sees its RAM bytes only when something reads them back.
-void AuroraQueueTextureCopy(uint64_t dest, uint32_t clear, uint32_t format, uint32_t halfScale,
-                            int32_t left, int32_t top, int32_t width, int32_t height,
-                            uint32_t dstWidth, uint32_t dstHeight);
+// NSMBW: AuroraSetDrawDrop: u8 1 = skip the primitives that follow (register loads still apply), 0 = draw.
+#define GX_LOAD_AURORA_DRAW_DROP 0x0044
+// NSMBW: texture copies (NSMBW_ASYNC_COPY), queued with the draws they copy, so the game thread no
+// longer waits for the GX thread at each one.
+// GXSetTexCopySrc / GXSetTexCopySrcRender: u16 left, top, width, height, u8 render-space flag.
+#define GX_LOAD_AURORA_TEX_COPY_SRC 0x0050
+// GXSetTexCopyDst: u16 width, height, u32 format, u8 mipmap.
+#define GX_LOAD_AURORA_TEX_COPY_DST 0x0051
+// GXSetCopyClamp: u8 clamp.
+#define GX_LOAD_AURORA_COPY_CLAMP 0x0052
+// GXCopyTex: u64 destination, u8 clear.
+#define GX_LOAD_AURORA_COPY_TEX 0x0053
 
 
 /*
@@ -126,6 +127,15 @@ void AuroraSetViewportPolicy(AuroraViewportPolicy policy);
 void AuroraSetWidePerspectiveAspect(float aspect);
 // NSMBW: copies that patch part of a texture (animated tiles: spinning coins...) on or off.
 void AuroraSetTexturePatches(bool enabled);
+// NSMBW: host pixels drawn in place of one guest texture while set: any static texture `width` x
+// `height` in GX format `format` (no mipmaps) whose bytes are exactly `source` (sourceSize bytes,
+// compared by digest wherever the game keeps them) samples `rgba` (rgbaWidth x rgbaHeight RGBA8,
+// any size) instead. Render-only: the game's memory is never written. Up to 8 slots; setting a slot
+// again replaces it, `rgba` null clears it. The picture font's button icons drawn as the player's keys
+// (runtime/src/key_caps.cpp).
+void AuroraSetTextureOverride(uint32_t slot, const void* source, uint32_t sourceSize, uint32_t width,
+                              uint32_t height, uint32_t format, const void* rgba, uint32_t rgbaWidth,
+                              uint32_t rgbaHeight);
 // NSMBW: GX decoding time, renderer-lock wait and draw count since the last call (profiling).
 void AuroraTakeGxStats(uint64_t* processNanos, uint64_t* lockNanos, uint64_t* draws);
 // Draws since the last call that did not merge into the previous one (counted under NSMBW_LOG_FPS).
@@ -134,6 +144,9 @@ uint64_t AuroraTakeUnmergedDraws(void);
 // and End, which both drain first: lets the runtime check that a piece of guest drawing produced
 // exactly the same commands as the last time it ran.
 void AuroraBeginCommandDigest(void);
+// NSMBW: whether this GPU's driver can choke on light textures kept from an earlier frame, so the
+// runtime should watch for it (runtime/src/hle/gx/light_texture_cache.cpp).
+int AuroraLightTextureReuseWatched(void);
 uint64_t AuroraEndCommandDigest(void);
 // NSMBW: aurora's vertex descriptor (vcdLo, vcdHi), format `fmt`'s attribute table (vatA/B/C) and
 // normal type, as last set through the GX API.
@@ -141,6 +154,13 @@ void AuroraGetVtxFormatRegs(uint32_t fmt, uint32_t out[6]);
 // NSMBW: with the GX thread (NSMBW_GX_THREAD=1), waits until it has decoded everything queued, so
 // memory a queued command points at may be reused. A no-op otherwise.
 void AuroraGxSync(void);
+// NSMBW: whether texture copies and their setters are queued for the GX thread (NSMBW_ASYNC_COPY)
+// rather than done on the calling thread after waiting for it.
+int AuroraAsyncCopies(void);
+// NSMBW: from here on, in stream order, skip (true) or draw (false) the primitives decoded; every other
+// command still applies, so the decoded GX state keeps in step with the game's. Host-only: nothing the
+// game can read changes (runtime/src/hle/gx/depth_blur.cpp).
+void AuroraSetDrawDrop(bool drop);
 // Time spent processing GX commands since start (NSMBW_LOG_FPS only; else 0).
 uint64_t AuroraGxProcessNanosTotal(void);
 // NSMBW: GXCopyTex calls and the new GPU textures they needed, since the last call (profiling).

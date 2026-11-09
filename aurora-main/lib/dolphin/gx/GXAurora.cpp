@@ -34,6 +34,18 @@ void GXPushDebugGroup(const char* label) {
 
 void GXPopDebugGroup() { GX_WRITE_AURORA(GX_LOAD_AURORA_DEBUG_GROUP_POP); }
 
+void AuroraSetDrawDrop(bool drop) {
+  if (aurora::gx::fifo::in_display_list()) return;  // only ever around a call, never recorded into a list
+  GX_WRITE_AURORA(GX_LOAD_AURORA_DRAW_DROP);
+  GX_WRITE_U8(drop ? 1 : 0);
+}
+
+void AuroraSetTextureOverride(uint32_t slot, const void* source, uint32_t sourceSize, uint32_t width,
+                              uint32_t height, uint32_t format, const void* rgba, uint32_t rgbaWidth,
+                              uint32_t rgbaHeight) {
+  aurora::gx::set_texture_override(slot, source, sourceSize, width, height, format, rgba, rgbaWidth, rgbaHeight);
+}
+
 void GXInsertDebugMarker(const char* label) {
   GX_WRITE_AURORA(GX_LOAD_AURORA_DEBUG_MARKER_INSERT);
   GXWriteString(label);
@@ -178,6 +190,9 @@ void GXRestoreViewportScissorRender() {
 }
 
 void GXSetTexCopySrcRender(u16 left, u16 top, u16 wd, u16 ht) {
+  if (aurora::gx::queue_tex_copy_src(left, top, wd, ht, true)) {
+    return;
+  }
   aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
   aurora::gx::g_gxState.texCopySrc = {left, top, wd, ht};
   aurora::gx::g_gxState.texCopySrcRenderSpace = true;

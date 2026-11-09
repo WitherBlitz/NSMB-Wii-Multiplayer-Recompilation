@@ -42,7 +42,9 @@ final class LogExport {
 
     /** Writes the zip to `destination`; returns how many sessions went in. */
     static int write(Context context, Uri destination, String appVersion) throws IOException {
-        final File logs = new File(AppFiles.dataDir(context), "Logs");
+        // The game picked on the start menu: Newer keeps its logs and settings in its own folder.
+        final File product = AppFiles.productDir(context, AppFiles.newerActive(context));
+        final File logs = new File(product, "Logs");
         File[] sessions = logs.listFiles(File::isDirectory);
         if (sessions == null) sessions = new File[0];
         Arrays.sort(sessions, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
@@ -51,12 +53,18 @@ final class LogExport {
              ZipOutputStream zip = new ZipOutputStream(raw)) {
             if (raw == null) throw new IOException("could not open the chosen file");
             putText(zip, "device.txt", deviceSummary(appVersion, count));
-            putFile(zip, "Config.toml", new File(AppFiles.dataDir(context), "Config.toml"));
+            putFile(zip, "Config.toml", new File(product, "Config.toml"), MAX_FILE_BYTES);
+            boolean wholeDump = true;
             for (int i = 0; i < count; i++) {
                 final File[] files = sessions[i].listFiles(File::isFile);
                 if (files == null) continue;
                 for (File file : files) {
-                    putFile(zip, "Logs/" + sessions[i].getName() + "/" + file.getName(), file);
+                    // The newest crash's MEM1 snapshot goes in whole (24 MB, mostly zeros: it packs
+                    // small): its first part holds the game's code modules and their tables.
+                    final boolean whole = wholeDump && file.getName().equals("mem1.bin");
+                    putFile(zip, "Logs/" + sessions[i].getName() + "/" + file.getName(), file,
+                            whole ? Long.MAX_VALUE : MAX_FILE_BYTES);
+                    if (whole) wholeDump = false;
                 }
             }
         }
@@ -77,11 +85,11 @@ final class LogExport {
         zip.closeEntry();
     }
 
-    private static void putFile(ZipOutputStream zip, String name, File file) throws IOException {
+    private static void putFile(ZipOutputStream zip, String name, File file, long maxBytes) throws IOException {
         if (!file.isFile()) return;
         zip.putNextEntry(new ZipEntry(name));
         try (InputStream in = new FileInputStream(file)) {
-            final long skip = file.length() - MAX_FILE_BYTES;
+            final long skip = file.length() - maxBytes;
             if (skip > 0) {
                 zip.write(("[... first " + skip + " bytes left out ...]\n").getBytes(StandardCharsets.UTF_8));
                 long left = skip;

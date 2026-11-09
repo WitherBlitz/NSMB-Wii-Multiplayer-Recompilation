@@ -10,6 +10,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <filesystem>
 #include <limits>
@@ -77,6 +79,14 @@ constexpr size_t BuildPipelinesPerFrame = 1;
 static std::vector<std::thread> g_pipelineThreads;
 static bool g_pipelineThreadEnd = false;
 static size_t g_activeBackgroundPipelineWorkers = 0;
+// Background (cached-recipe) builds can be held until the embedder releases them a batch at a time
+// (aurora_prewarm_release), for drivers that compile every shader handed to them on their own threads
+// and hold the next present until the whole backlog is done (webgpu::g_holdPrewarmUntilShown): the
+// runtime shows a loading screen meanwhile and feeds them in as the driver catches up.
+// AURORA_PREWARM=hold / nohold forces it on or off. Guarded by g_pipelineMutex.
+static bool g_prewarmHeld = false;
+static uint32_t g_prewarmBudget = 0;
+static std::atomic<uint32_t> g_prewarmBuilt{0};
 static std::condition_variable g_pipelineCv;
 static absl::flat_hash_map<PipelineRef, CachedPipeline> g_pipelines;
 static std::deque<PendingPipeline> g_priorityPipelines;
@@ -1000,7 +1010,8 @@ static void pipeline_worker() {
       g_pipelineCv.wait(lock, [] {
         return !g_priorityPipelines.empty() ||
                (!g_backgroundPipelines.empty() &&
-                g_activeBackgroundPipelineWorkers < MaxBackgroundPipelineWorkers) ||
+                g_activeBackgroundPipelineWorkers < MaxBackgroundPipelineWorkers &&
+                (!g_prewarmHeld || g_prewarmBudget > 0)) ||
                g_pipelineThreadEnd;
       });
       if (g_pipelineThreadEnd) {
@@ -1012,10 +1023,14 @@ static void pipeline_worker() {
       source.pop_front();
       if (background) {
         ++g_activeBackgroundPipelineWorkers;
+        if (g_prewarmHeld) {
+          --g_prewarmBudget;
+        }
       }
     }
     compile_pending_pipeline(std::move(pending));
     if (background) {
+      g_prewarmBuilt.fetch_add(1, std::memory_order_relaxed);
       {
         std::lock_guard lock{g_pipelineMutex};
         --g_activeBackgroundPipelineWorkers;
@@ -1168,6 +1183,19 @@ void initialize_pipeline_cache() {
   g_pipelineFrameActive = false;
   g_pipelineThreadEnd = false;
   g_activeBackgroundPipelineWorkers = 0;
+  g_prewarmHeld = webgpu::g_holdPrewarmUntilShown;
+  if (const char* env = std::getenv("AURORA_PREWARM"); env != nullptr) {
+    if (std::strcmp(env, "hold") == 0) {
+      g_prewarmHeld = true;
+    } else if (std::strcmp(env, "nohold") == 0) {
+      g_prewarmHeld = false;
+    }
+  }
+  g_prewarmBudget = 0;
+  g_prewarmBuilt.store(0, std::memory_order_relaxed);
+  if (g_prewarmHeld) {
+    Log.info("Cached pipelines wait for the loading screen to release them");
+  }
 
   if (webgpu::g_backendType == wgpu::BackendType::OpenGL || webgpu::g_backendType == wgpu::BackendType::OpenGLES ||
       webgpu::g_backendType == wgpu::BackendType::WebGPU) {
@@ -1230,6 +1258,32 @@ void end_pipeline_frame() {
   if (!g_hasPipelineThread) {
     build_synchronous_pipelines_for_frame();
   }
+}
+
+bool prewarm_held() noexcept {
+  std::lock_guard lock{g_pipelineMutex};
+  return g_prewarmHeld;
+}
+
+void prewarm_release(uint32_t count) noexcept {
+  {
+    std::lock_guard lock{g_pipelineMutex};
+    if (!g_prewarmHeld) {
+      return;
+    }
+    if (count == UINT32_MAX) {
+      g_prewarmHeld = false;
+    } else {
+      g_prewarmBudget += count;
+    }
+  }
+  g_pipelineCv.notify_all();
+}
+
+void prewarm_progress(uint32_t& built, uint32_t& total) noexcept {
+  built = g_prewarmBuilt.load(std::memory_order_relaxed);
+  std::lock_guard lock{g_pipelineMutex};
+  total = std::max(g_prewarmCount, built);
 }
 
 void set_skip_unready_pipelines(bool enabled) noexcept {
@@ -1302,3 +1356,14 @@ void aurora_set_skip_unready_pipelines(const bool enabled) { aurora::gfx::set_sk
 bool aurora_get_skip_unready_pipelines() { return aurora::gfx::skip_unready_pipelines(); }
 
 uint32_t aurora_get_queued_pipeline_count() { return aurora::gfx::queued_pipeline_count(); }
+
+bool aurora_prewarm_held() { return aurora::gfx::prewarm_held(); }
+
+void aurora_prewarm_release(uint32_t count) { aurora::gfx::prewarm_release(count); }
+
+void aurora_get_prewarm_progress(uint32_t* built, uint32_t* total) {
+  uint32_t b = 0, t = 0;
+  aurora::gfx::prewarm_progress(b, t);
+  if (built != nullptr) *built = b;
+  if (total != nullptr) *total = t;
+}

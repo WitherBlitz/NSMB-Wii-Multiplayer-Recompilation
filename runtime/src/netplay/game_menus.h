@@ -33,9 +33,14 @@ uint32_t FileSelectObject();
 
 // Whether an object of this profile exists (0x2BB EVENT_OPENING_TITLE: the title screen is up).
 bool HasProfile(uint16_t profile);
+// The first object of this profile, 0 without one.
+uint32_t ProfileObject(uint16_t profile);
 
 // Every object profile in the tree, sorted (for finding which screen is up).
 std::vector<uint16_t> Profiles();
+// Every object in the tree (each fBase_c), for finding the layouts a screen is drawn from. Walks the
+// whole tree: call it on a tap, not every frame.
+std::vector<uint32_t> Objects();
 
 // dScene_c::m_nowScene (0x003 world map, 0x005 stage/title, 0x00A game setup, ...).
 uint16_t CurrentScene();

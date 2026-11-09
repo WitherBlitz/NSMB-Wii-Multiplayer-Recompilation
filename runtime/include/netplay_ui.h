@@ -3,6 +3,9 @@
 #include "wii_remote_input.h"
 
 #include <cstdint>
+#include <string>
+
+union SDL_Event;
 
 // The network-play menus, drawn with the game's own window and font graphics (netplay/game_layout.h):
 //   - a Couch / LAN button at the top right of the file select (Couch by default);
@@ -37,11 +40,18 @@ bool TapScreenUp();
 // True while the player is playing: in a course or on the world map, with no pause menu, settings
 // window or other menu up. The Android app shows its hidden on-screen remote again on a tap then.
 bool Playing();
+// Join's Direct Connection on desktop: while its address box is up it takes the typing (true: the
+// event was the box's). From settings_overlay's event loop.
+bool HandleSdlEvent(const SDL_Event& event);
+// Android: the address the app's Direct Connection dialog got (empty: cancelled).
+void DirectAddressEntered(const std::string& address);
+
 // The settings window changed the render scale, the aspect or the FPS counter since the last call:
 // the Android app copies them into its own settings, which it writes to Config.toml at every start.
 // touchControls and renderer are -1 when unchanged; renderer is an index into the Video tab's list
 // (Android: 0 automatic, 1 Vulkan, 2 OpenGL ES).
 bool TakeSettingsChange(float& renderScale, bool& showFps, int& aspect, bool& spinningCoins, bool& frameGraph,
-                        bool& vsync, int& frameGraphSize, int& touchControls, int& renderer);
+                        bool& vsync, int& frameGraphSize, int& touchControls, int& renderer, bool& depthBlur,
+                        bool& batterySaver, bool& textureReplacements);
 
 } // namespace NetplayUi

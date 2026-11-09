@@ -141,6 +141,41 @@ int main(int argc, char** argv) {
             }
         }
     }
+    // The fast paths' territory: doubles that hold floats (and the 25-bit operands of fmadds), and
+    // float sums steered onto or next to a halfway point between two floats.
+    for (long i = 0; i < perKind * 2; ++i) {
+        const int k = static_cast<int>(g_rng() % 5);
+        const double a = RandomFloat(k);
+        double b = RandomFloat(static_cast<int>(g_rng() % 5));
+        if (i & 1) {
+            b = FromBits<double>(BitsOf<double, uint64_t>(b) | ((g_rng() & 1) << 28));  // a 25th bit
+        }
+        const double c = (i & 2) ? static_cast<double>(RandomFloat(k)) : (i & 4) ? NearNegatedProduct(a, b) : RandomDouble(k);
+        const double hard = HardFma(a, b, c), soft = PpcSoftFma::Fma(a, b, c, flush);
+        ++cases;
+        if (!(std::isnan(hard) && std::isnan(soft)) && BitsOf<double, uint64_t>(hard) != BitsOf<double, uint64_t>(soft)) {
+            if (++failures <= 60) {
+                std::printf("double fma(%a, %a, %a): hardware %a, soft %a\n", a, b, c, hard, soft);
+            }
+        }
+        const float fa = RandomFloat(k), fb = RandomFloat(static_cast<int>(g_rng() % 5));
+        // c that puts a*b + c on (or a hair from) the halfway point between the floats around a*b.
+        const double p = static_cast<double>(fa) * static_cast<double>(fb);
+        const float nearest = static_cast<float>(p);
+        const float other = std::nextafter(nearest, (static_cast<double>(nearest) < p) ? INFINITY : -INFINITY);
+        const double half = (static_cast<double>(nearest) + static_cast<double>(other)) / 2.0;
+        float fc = static_cast<float>(half - p);
+        if (i & 8) {
+            fc = std::nextafter(fc, (i & 16) ? INFINITY : -INFINITY);
+        }
+        const float fhard = HardFmaf(fa, fb, fc), fsoft = PpcSoftFma::Fmaf(fa, fb, fc, flush);
+        ++cases;
+        if (!(std::isnan(fhard) && std::isnan(fsoft)) && BitsOf<float, uint32_t>(fhard) != BitsOf<float, uint32_t>(fsoft)) {
+            if (++failures <= 80) {
+                std::printf("float fmaf(%a, %a, %a): hardware %a, soft %a\n", fa, fb, fc, fhard, fsoft);
+            }
+        }
+    }
     std::printf("%ld cases, %ld mismatches\n", cases, failures);
     return failures == 0 ? 0 : 1;
 }

@@ -21,6 +21,12 @@ struct Descriptor {
     uint64_t versionFileSize = 0;
     // The game's save in the NAND (network play hands it to every player); mods rename it.
     std::string_view saveFile = "title/00010000/534d4e45/data/wiimj2d.sav";
+    // Settings, saves and caches go to a folder of their own (Documents\<this> on Windows, a
+    // subfolder of that name elsewhere) so a mod never takes the base game's game folder or saves.
+    std::string_view userDataFolder = {};
+    // Windows and Linux: the extracted game in a folder of this name beside the program is used by
+    // itself (game_folder.cpp), so a mod's own program, in the same folder, never takes the base game's.
+    std::string_view programGameFolder = "game";
 };
 
 // Each public executable links exactly one small provider definition. Keeping

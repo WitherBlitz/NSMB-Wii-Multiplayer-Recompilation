@@ -1394,6 +1394,10 @@ static bool begin_frame_impl(bool clearEfb, bool capacityResume = false) {
       s_pendingFrameValid ? (currentStagingBuffer + 1) % FrameSlotCount : currentStagingBuffer;
   // The frame's vertex/uniform/index data is recorded into CPU buffers and copied into the mapped
   // staging buffer at the seal (end_batch_impl), so recording never waits for the GPU.
+  if (clearEfb && !capacityResume) {
+    // Texture replacement switched on or off since the last frame (aurora_set_texture_replacements).
+    texture_replacement::apply_pending();
+  }
   g_drawCallCount = 0;
   g_mergedDrawCallCount = 0;
   if (clearEfb) {

@@ -69,6 +69,9 @@ constexpr const char* kAssetSuffix = "-windows-x64.zip";
 #else
 constexpr const char* kAssetSuffix = "-linux-x86_64.tar.gz";
 #endif
+// Each program of the installation (NSMBW, NewerSMBW and their compat builds) downloads into a
+// folder of its own, so one checking or updating never deletes what another is downloading; the
+// folder without a name is an earlier version's.
 constexpr const char* kDownloadFolder = "update-download";
 constexpr const char* kOldList = "update-old.txt";  // the files the last update set aside, to delete
 
@@ -263,6 +266,20 @@ fs::path FromUtf8(const std::string& text) {
 
 fs::path InstallRoot() {
     return RuntimeConfigFile::ExecutableDirectory().value_or(fs::current_path());
+}
+
+// This program's download folder: "update-download-<its name>" in the installation.
+fs::path DownloadFolder() {
+#if defined(_WIN32)
+    wchar_t self[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    const fs::path name = fs::path(self).stem();
+#else
+    char self[4096] = {};
+    const ssize_t length = readlink("/proc/self/exe", self, sizeof(self) - 1);
+    const fs::path name = fs::path(length > 0 ? std::string(self, static_cast<size_t>(length)) : std::string()).filename();
+#endif
+    return InstallRoot() / (std::string(kDownloadFolder) + "-" + Utf8(name));
 }
 
 // ---------------------------------------------------------------- downloads
@@ -475,7 +492,7 @@ std::string FileSha256(const fs::path& path) {
 
 // ---------------------------------------------------------------- the check
 void Check() {
-    const fs::path folder = InstallRoot() / kDownloadFolder;
+    const fs::path folder = DownloadFolder();
     std::error_code ec;
     fs::create_directories(folder, ec);
     const fs::path answer = folder / "latest.json";
@@ -536,18 +553,32 @@ void Check() {
 }
 
 // ---------------------------------------------------------------- installing
-// Removes the files the last update set aside (they were in use then) and its download folder.
+// Removes the files the last update set aside (they were in use then) and this program's download
+// folder. A file still in use (the other program, running since before the update) stays listed.
 void CleanUp() {
     const fs::path root = InstallRoot();
     std::error_code ec;
     std::ifstream list(root / kOldList);
+    std::vector<std::string> kept;
     for (std::string line; std::getline(list, line);) {
         if (!line.empty()) {
-            fs::remove(FromUtf8(line), ec);
+            const fs::path old = FromUtf8(line);
+            fs::remove(old, ec);
+            if (fs::exists(old, ec)) {
+                kept.push_back(line);
+            }
         }
     }
     list.close();
-    fs::remove(root / kOldList, ec);
+    if (kept.empty()) {
+        fs::remove(root / kOldList, ec);
+    } else {
+        std::ofstream rewrite(root / kOldList, std::ios::trunc);
+        for (const std::string& line : kept) {
+            rewrite << line << "\n";
+        }
+    }
+    fs::remove_all(DownloadFolder(), ec);
     fs::remove_all(root / kDownloadFolder, ec);
 }
 
@@ -569,7 +600,7 @@ bool SwapIn(const fs::path& unpacked, const fs::path& root, std::string& error) 
     }
     struct Moved {
         fs::path target;
-        bool hadOld;
+        fs::path old;  // where the file it replaced went; empty when there was none
     };
     std::vector<Moved> moved;
     std::ofstream oldList(root / kOldList, std::ios::app);
@@ -578,8 +609,8 @@ bool SwapIn(const fs::path& unpacked, const fs::path& root, std::string& error) 
         for (auto it = moved.rbegin(); it != moved.rend(); ++it) {
             std::error_code e;
             fs::remove(it->target, e);
-            if (it->hadOld) {
-                fs::rename(fs::path(it->target).concat(".old"), it->target, e);
+            if (!it->old.empty()) {
+                fs::rename(it->old, it->target, e);
             }
         }
     };
@@ -595,11 +626,20 @@ bool SwapIn(const fs::path& unpacked, const fs::path& root, std::string& error) 
     }
     for (const fs::path& file : files) {
         const fs::path target = root / file.lexically_relative(top);
-        const fs::path old = fs::path(target).concat(".old");
+        // A file set aside by an earlier update can still be in use, when the installation's other
+        // program has run since then: the next name is taken instead.
+        fs::path old = fs::path(target).concat(".old");
+        for (int n = 1; n < 10; ++n) {
+            std::error_code e;
+            fs::remove(old, e);
+            if (!fs::exists(old, e)) {
+                break;
+            }
+            old = fs::path(target).concat(".old" + std::to_string(n));
+        }
         fs::create_directories(target.parent_path(), ec);
         bool hadOld = false;
         if (fs::exists(target)) {
-            fs::remove(old, ec);
             fs::rename(target, old, ec);
             if (ec) {
                 error = "couldn't replace " + Utf8(target.filename()) + " (" + ec.message() + ")";
@@ -619,7 +659,7 @@ bool SwapIn(const fs::path& unpacked, const fs::path& root, std::string& error) 
             rollBack();
             return false;
         }
-        moved.push_back({target, hadOld});
+        moved.push_back({target, hadOld ? old : fs::path()});
     }
     return true;
 }
@@ -653,6 +693,11 @@ bool SwapIn(const fs::path& unpacked, const fs::path& root, std::string& error) 
     char self[4096] = {};
     const ssize_t length = readlink("/proc/self/exe", self, sizeof(self) - 1);
     fs::path exe(length > 0 ? std::string(self, static_cast<size_t>(length)) : std::string());
+    // Linux follows the rename: SwapIn set this program aside as "<name>.old" (or .old<n>), and the
+    // new one has its name.
+    if (const std::string name = exe.filename().string(); name.rfind(".old") != std::string::npos) {
+        exe.replace_filename(name.substr(0, name.rfind(".old")));
+    }
     if (exe.parent_path().filename() == "compat") {
         std::string name = exe.filename().string();
         if (name.size() > 7 && name.compare(name.size() - 7, 7, "-compat") == 0) {
@@ -686,7 +731,7 @@ void InstallNow() {
         asset = g_asset;
     }
     const fs::path root = InstallRoot();
-    const fs::path folder = root / kDownloadFolder;
+    const fs::path folder = DownloadFolder();
     std::error_code ec;
     fs::remove_all(folder, ec);
     fs::create_directories(folder / "files", ec);

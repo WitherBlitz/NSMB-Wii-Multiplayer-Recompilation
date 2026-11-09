@@ -355,7 +355,7 @@ const std::vector<MemoryReservation>& MemoryReservations() {
 // afford a cross-TU call pair (no LTO in this build).
 
 uint32_t CurrentTranslatedExecutionAddress() noexcept {
-    return g_currentTranslatedExecutionAddress;
+    return g_guestThreadState.translatedExecutionAddress;
 }
 
 void RegisterExecutableRange(uint32_t start, uint32_t end, std::string name) {

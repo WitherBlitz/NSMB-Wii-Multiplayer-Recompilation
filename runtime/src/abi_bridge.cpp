@@ -30,8 +30,7 @@ static_assert(offsetof(CpuContext, hid2) == 448);
 static_assert(offsetof(CpuContext, srr0) == 452);
 static_assert(offsetof(CpuContext, srr1) == 456);
 static_assert(offsetof(CpuContext, msr) == 460);
-static_assert(offsetof(CpuContext, dispatchMemo) == 464);
-static_assert(sizeof(CpuContext) == 472);
+static_assert(sizeof(CpuContext) == 464);
 
 namespace {
 std::vector<TranslatedFunctionInfo>& Registry() {
@@ -270,9 +269,6 @@ void RegisterStaticIndirectDispatchTable(const StaticIndirectDispatchTable* tabl
         std::abort();
     }
     registered = table;
-    // Mirror into the header-visible atomic under the same lock, so the
-    // inlined miss path and this owning static can never disagree.
-    g_publishedStaticIndirectDispatchTable.store(table, std::memory_order_release);
 }
 
 void RegisterBulkTranslatedFunctions(const BulkTranslatedFunctionRecord* records, size_t count) {
@@ -361,6 +357,7 @@ void TranslatedFunctionRegistry::Finalize() {
             auto& addressEntries = AddressEntries();
             addressEntries.clear();
             addressEntries.rehash(0);
+            BuildFastRawTableLocked();
             RegistryFrozen().store(true, std::memory_order_release);
             lookupPublished_.store(true, std::memory_order_release);
         }
@@ -389,19 +386,67 @@ const TranslatedFunctionInfo* TranslatedFunctionRegistry::FindByAddressPtrSlow(u
     return nullptr;
 }
 
-const RawDispatchRecord* TranslatedFunctionRegistry::FindRawByAddressPtrSlow(uint32_t address) {
-    if (!RegistryFrozen().load(std::memory_order_acquire)) {
-        return nullptr;
+namespace {
+FastRawDispatchTable g_fastRawTable;
+
+// Puts `record` in the indirect-call table, replacing what that address had.
+void PutFastRaw(FastRawDispatchTable& table, const RawDispatchRecord& record) {
+    if (record.address == 0) {
+        return;
     }
-    if (const auto* generated = FindStaticIndirectDispatchEntry(GeneratedIndirectDispatchTable(), address)) {
-        return generated;
+    uint32_t index = ((record.address >> 2) * 2654435761u) >> table.shift;
+    while (table.slots[index].address != 0 && table.slots[index].address != record.address) {
+        index = (index + 1) & table.mask;
     }
-    const auto& entries = DynamicRawDispatchEntries();
-    const auto it = std::lower_bound(entries.begin(), entries.end(), address,
-        [](const RawDispatchRecord& entry, uint32_t target) {
-            return entry.address < target;
-        });
-    return it != entries.end() && it->address == address ? &*it : nullptr;
+    FastRawDispatchSlot& slot = table.slots[index];
+    slot.fprMaskAndFlags = (record.nonvolatileFprWriteMask & kPpcAllNonvolatileFprMask) |
+                           (record.preserveNonvolatileGprs ? kFastRawPreserveGprsFlag : 0u);
+    slot.entry = record.entry;
+    slot.address = record.address;
+}
+} // namespace
+
+void TranslatedFunctionRegistry::BuildFastRawTableLocked() {
+    // What the old memo-miss path resolved, address by address: the generated table first, then
+    // the dynamically registered records (natives; never at a generated address, see
+    // ValidateGeneratedIndirectDispatchLocked), then the runtime redirects over both.
+    const auto* generated = GeneratedIndirectDispatchTable();
+    const auto& dynamic = DynamicRawDispatchEntries();
+    const size_t count = (generated ? generated->entryCount : 0) + dynamic.size() + runtimeRedirectCount_;
+    // At most half full: a hit is about one probe, and a probe run rarely leaves its cache line.
+    uint32_t bits = 10;
+    while ((size_t{1} << bits) < count * 2) {
+        ++bits;
+    }
+    auto& table = g_fastRawTable;
+    table.slots = new FastRawDispatchSlot[size_t{1} << bits]();  // lives as long as the process
+    table.mask = (1u << bits) - 1u;
+    table.shift = 32u - bits;
+    for (size_t i = 0; generated && i < generated->entryCount; ++i) {
+        PutFastRaw(table, generated->entries[i]);
+    }
+    for (const auto& record : dynamic) {
+        if (!FindStaticIndirectDispatchEntry(generated, record.address)) {
+            PutFastRaw(table, record);
+        }
+    }
+    for (size_t i = 0; i < runtimeRedirectCount_; ++i) {
+        PutFastRaw(table, *runtimeRedirects_[i]);
+    }
+    fastRawTable_.store(&table, std::memory_order_release);
+    RT_LOG(RT_TAG_RUNTIME) << "indirect-call table: " << count << " records in " << (size_t{1} << bits)
+                           << " slots" << std::endl;
+}
+
+void TranslatedFunctionRegistry::SetRuntimeRedirect(const RawDispatchRecord* record) noexcept {
+    std::lock_guard<std::mutex> lock(RegistryMutex());
+    if (runtimeRedirectCount_ < kMaxRuntimeRedirects) {
+        runtimeRedirects_[runtimeRedirectCount_++] = record;
+        // Already finalized: the table has room (built at most half full), and no guest code runs yet.
+        if (fastRawTable_.load(std::memory_order_relaxed) != nullptr) {
+            PutFastRaw(g_fastRawTable, *record);
+        }
+    }
 }
 
 std::optional<TranslatedFunctionInfo> TranslatedFunctionRegistry::FindByHostAddress(uintptr_t hostAddr) {
@@ -466,25 +511,6 @@ std::optional<TranslatedFunctionInfo> TranslatedFunctionRegistry::FindNearestByA
 
 namespace {
 CpuContext g_persistentCpu{};
-
-// One memo per context that runs translated code: the guest host thread, the interrupt
-// contexts it builds, and the guest fibers. All fibers of one host thread could share, but a
-// per-context slot keeps the binding trivial and the pool is small enough to stay resident.
-constexpr size_t kMaxIndirectDispatchMemos = 32;
-IndirectDispatchMemo g_indirectDispatchMemos[kMaxIndirectDispatchMemos];
-std::atomic<uint32_t> g_boundIndirectDispatchMemos{0};
-}
-
-IndirectDispatchMemo* BindIndirectDispatchMemo(CpuContext* cpu) {
-    uint32_t index = g_boundIndirectDispatchMemos.load(std::memory_order_relaxed);
-    while (index < kMaxIndirectDispatchMemos &&
-           !g_boundIndirectDispatchMemos.compare_exchange_weak(index, index + 1,
-                                                              std::memory_order_relaxed)) {
-    }
-    IndirectDispatchMemo* memo =
-        index < kMaxIndirectDispatchMemos ? &g_indirectDispatchMemos[index] : nullptr;
-    cpu->dispatchMemo = memo;
-    return memo;
 }
 
 CpuContext& GetPersistentCpuContext() {

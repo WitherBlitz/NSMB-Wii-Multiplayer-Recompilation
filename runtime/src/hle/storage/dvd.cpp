@@ -9,6 +9,7 @@
 // layer's caches must be notified explicitly that these bytes changed.
 extern "C" void GxNotifyGuestRamDmaWrite(uint32_t addr, uint32_t size);
 #include "hle/storage/riivolution.h"
+#include "hle/storage/layout_patch.h"
 #include "ppc_runtime.h"
 #include "recomp_mod_loader.h"
 #include "runtime_config.h"
@@ -233,14 +234,21 @@ void StartReadCachePreload() {
     }
 #endif
 #if defined(_WIN32) || defined(__ANDROID__)
-    constexpr uint64_t kCacheLimitBytes = 1ull << 30;  // mods can be larger than the disc; stop at 1 GiB
+    // Mods can be larger than the disc: stop at 1 GiB, and on a phone at an eighth of its RAM (from
+    // 384 MiB, so the whole disc still fits). Newer's 843 MiB cached in full left a 4 GB Pixel 3 XL
+    // so little memory that Android killed the game; the files past the limit are read as they're needed.
+#if defined(__ANDROID__)
+    const uint64_t kCacheLimitBytes = std::min<uint64_t>(1ull << 30, ram / 8);
+#else
+    constexpr uint64_t kCacheLimitBytes = 1ull << 30;
+#endif
     std::vector<fs::path> paths;
     for (const DVDFileEntry& entry : g_fileEntries) {
         if (!entry.isDirectory && entry.size > 0) {
             paths.push_back(entry.hostPath);
         }
     }
-    std::thread([paths = std::move(paths)] {
+    std::thread([paths = std::move(paths), kCacheLimitBytes] {
 #if defined(_WIN32)
         ::SetThreadPriority(::GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
 #else
@@ -1055,6 +1063,37 @@ extern "C" void DVDInit_8015EA1C()
               << (g_fileEntries.size() - vanillaEntryCount) << " overlay registration(s) from "
               << overlays.size() << " root(s)" << std::endl;
 
+    for (const char* path : {"/US/EngUS/Layout/wiiStrap/wiiStrap.arc",
+                             "/US/EngUS/Layout/corseClear/corseClear.arc",
+                             "/US/EngUS/Layout/gameOver/gameOver.arc"}) {
+        const auto entry = g_pathToEntry.find(NormalizePath(DvdFstContract::CanonicalizePath(path)));
+        if (entry == g_pathToEntry.end()) {
+            continue;
+        }
+        const fs::path adapted =
+            LayoutPatch::AdaptLanguageArchive(path, g_fileEntries[static_cast<size_t>(entry->second)].hostPath);
+        std::error_code ec;
+        const auto size = adapted.empty() ? 0 : fs::file_size(adapted, ec);
+        if (!adapted.empty() && !ec && size > 0) {
+            RegisterFileEntry(path, adapted, static_cast<uint32_t>(size));
+        }
+    }
+
+    // NSMBW: the pause window's Settings button (layout_patch.h), patched into whichever archive the
+    // game would read now that the overlays are in.
+    for (const char* path : {"/Layout/pauseMenu/pauseMenu.arc", "/Layout/corseSelectMenu/corseSelectMenu.arc"}) {
+        const auto entry = g_pathToEntry.find(NormalizePath(DvdFstContract::CanonicalizePath(path)));
+        if (entry == g_pathToEntry.end()) {
+            continue;
+        }
+        const fs::path patched = LayoutPatch::Patch(path, g_fileEntries[static_cast<size_t>(entry->second)].hostPath);
+        std::error_code ec;
+        const auto size = patched.empty() ? 0 : fs::file_size(patched, ec);
+        if (!patched.empty() && !ec && size > 0) {
+            RegisterFileEntry(path, patched, static_cast<uint32_t>(size));
+        }
+    }
+
     StartReadCachePreload();
 
     // Load FST mapping so real files keep their physical disc extents.
@@ -1339,4 +1378,3 @@ PPC_NATIVE_OVERRIDE(801D0980, DVDCheckDevice_801643FC, int32_t, (), ());
 
 extern "C" int32_t DVDLowClearCoverInterrupt_80166964(uint32_t cb) { return 1; }
 PPC_NATIVE_OVERRIDE(801D3700, DVDLowClearCoverInterrupt_80166964, int32_t, (uint32_t cb), (cb));
-

@@ -1,8 +1,10 @@
 #include "det_clock.h"
 #include "display_settings.h"
 
+#include "hle_stubs.h"
 #include "memory.h"
 #include "runtime_log.h"
+#include "settings_overlay.h"
 
 #include <dolphin/gx/GXAurora.h>
 #include <dolphin/vi.h>
@@ -12,6 +14,7 @@
 #include <cstring>
 #include <string>
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 
 namespace DisplaySettings {
@@ -58,6 +61,7 @@ constexpr float kTileColumnsBase = 28.0f;
 
 constexpr float kLinesPerScale = 480.0f;
 constexpr float kRatio16x9 = 16.0f / 9.0f;
+constexpr float kRatio16x10 = 16.0f / 10.0f;
 
 std::mutex g_mutex;
 Settings g_current;
@@ -88,7 +92,7 @@ float RenderLines(float renderScale, int32_t aspect) {
     }
     const float w = static_cast<float>(g_surfaceWidth), h = static_cast<float>(g_surfaceHeight);
     const bool fillsSurface = aspect == kAspectFill && SurfaceWiderThan169();
-    const float pictureAspect = aspect == kAspect4x3 ? 4.0f / 3.0f : kRatio16x9;
+    const float pictureAspect = aspect == kAspect4x3 ? 4.0f / 3.0f : aspect == kAspect16x10 ? kRatio16x10 : kRatio16x9;
     return fillsSurface ? h : std::min(h, w / pictureAspect);
 }
 
@@ -97,6 +101,10 @@ void ApplyRenderer(const Settings& settings) {
     if (aspect == kAspect4x3) {
         AuroraSetViewportPolicy(AURORA_VIEWPORT_FIT);
         VILockAspectRatio(4, 3);
+    } else if (aspect == kAspect16x10) {
+        // A 16:10 picture, with bars only on a screen that isn't: the game draws a narrower view into it.
+        AuroraSetViewportPolicy(AURORA_VIEWPORT_FIT);
+        VILockAspectRatio(16, 10);
     } else if (aspect == kAspect16x9 || !SurfaceWiderThan169()) {
         // 16:9, or Fill on a surface no wider than 16:9 (the picture is never squashed).
         VIUnlockAspectRatio();
@@ -114,12 +122,17 @@ void ApplyRenderer(const Settings& settings) {
 
 // Fill: widen the game's 16:9 canvas to the surface (Hor+), keeping the game's own pixel aspect
 // (its 832 units stand for 16:9). Otherwise keep, or put back, the game's own width.
+std::atomic<float> g_wideAspect{0.0f};  // what aurora widens 16:9 cameras to, or 0
+
 void ApplyGameCanvas(int32_t aspect) {
     // 3D: cameras set up for 16:9 are widened to the screen (aurora's projection), the same view
     // height with more to the sides, instead of being stretched across it.
     const bool widened = aspect == kAspectFill && SurfaceWiderThan169();
-    AuroraSetWidePerspectiveAspect(
-        widened ? static_cast<float>(g_surfaceWidth) / static_cast<float>(g_surfaceHeight) : 0.0f);
+    g_wideAspect.store(aspect == kAspect16x10 ? kRatio16x10
+                       : widened              ? static_cast<float>(g_surfaceWidth) / static_cast<float>(g_surfaceHeight)
+                                              : 0.0f,
+                       std::memory_order_relaxed);
+    AuroraSetWidePerspectiveAspect(g_wideAspect.load(std::memory_order_relaxed));
     uint32_t root = 0;
     if (!Memory::TryRead32(kRootScreen, root) || root == 0) {
         return;  // EGG::Screen::Initialize has not run yet
@@ -137,6 +150,8 @@ void ApplyGameCanvas(int32_t aspect) {
     if (aspect == kAspectFill && SurfaceWiderThan169()) {
         const float surfaceAspect = static_cast<float>(g_surfaceWidth) / static_cast<float>(g_surfaceHeight);
         target = static_cast<uint16_t>(std::lround(g_gameWideWidth * surfaceAspect / kRatio16x9));
+    } else if (aspect == kAspect16x10) {
+        target = static_cast<uint16_t>(std::lround(g_gameWideWidth * kRatio16x10 / kRatio16x9));
     }
     if (target == width) {
         return;
@@ -323,3 +338,162 @@ bool SurfaceWide() {
 }
 
 } // namespace DisplaySettings
+
+// 0x800B32E0 CrapUpPositions(Point3d* out, const Point3d* in): a layout position (608 units across
+// 4:3, centred) to the 2D scenes' 3D space, the W x H top-left orthographic camera the Items screen,
+// player select and the like draw their models with (W = mVideo's 640 x 4/3 in widescreen). Aurora
+// widens that camera to the surface when Fill is wider than 16:9, which keeps the models' shape but
+// pulls them toward the middle; their layout cards don't move, so the models are spread out again by
+// the same factor here. Otherwise the game's own arithmetic, step for step.
+extern "C" void CrapUpPositions_800b32e0(uint32_t out, uint32_t in) {
+    constexpr uint32_t kVideo = 0x8042A480u;         // mVideo::m_video
+    constexpr uint32_t kAspectRatio = 0x80428750u;   // mVideo::l_AspectRatio (4:3 to 16:9)
+    constexpr uint32_t kHalf = 0x8042C578u, kLayoutWidth = 0x8042C588u;  // 0.5, 608
+    const uint32_t video = Memory::Read32(Memory::Read32(kVideo));
+    float width = static_cast<float>(Memory::Read16(video + 4u));
+    const float height = static_cast<float>(Memory::Read16(video + 6u));
+    if (DisplaySettings::GameWidescreen()) width *= Memory::ReadFloat32(kAspectRatio);
+    const float half = Memory::ReadFloat32(kHalf);
+    const float scale = width / Memory::ReadFloat32(kLayoutWidth);
+    const float x = Memory::ReadFloat32(in), y = Memory::ReadFloat32(in + 4u), z = Memory::ReadFloat32(in + 8u);
+    const float centreX = half * width, centreY = half * height;
+    float offset = -((centreX - (centreX + x)) * scale);
+    const float wide = DisplaySettings::g_wideAspect.load(std::memory_order_relaxed);
+    if (wide > 0.0f && height > 0.0f) {
+        const float cameraAspect = width / height;  // aurora widens cameras from 1.68 to 1.88
+        if (cameraAspect > 1.68f && cameraAspect < 1.88f) offset *= wide / cameraAspect;
+    }
+    Memory::WriteFloat32(out + 8u, z);
+    Memory::WriteFloat32(out + 4u, centreY + y);
+    Memory::WriteFloat32(out, centreX + offset);
+}
+PPC_NATIVE_OVERRIDE_VOID(800B32E0, CrapUpPositions_800b32e0, (uint32_t out, uint32_t in), (out, in));
+
+// 0x800E4E40 dSys_c::execute: the game's frame, ported call for call from the translated function,
+// so Battery Saver can leave the drawing out of every other frame. The game keeps its 60 steps a
+// second: everything from m2d::reset on (and m3d::calcMaterial, dPad::beginPad_BR, m3d::reset before
+// it) runs every frame, and only the draw lists (painter, the fader's draw) are left out. What that
+// leaves out only draws: painter is the m2d list (d2d::draw), the 2D and 3D the frame's fManager_c draw
+// pass entered, and it is reset after endRender either way; particles (dLastActor_c::execute), layout
+// animations (m2d::Simple_c::calc), the depth blur's shimmer (dCaptureMng_c::execute) and the faders
+// and wipes (dFader_c::calc; their draw only enters a layout) all advance in the logic half.
+// beginRender and endRender still run: EGG::AsyncDisplay's next beginFrame copies and swaps the XFB
+// as after any frame (left out, it turned the VI black on the XFB it never filled). That copy would show
+// an empty picture, so hle/gx/gx_copy.cpp drops it (TakeUndrawnFrame) and the VI keeps the last one.
+namespace {
+
+// The game's globals, below r13 (SMNE01 rev 1).
+constexpr uint32_t kSdaGraph = 22312;       // dGraph_c::ms_Instance
+constexpr uint32_t kSdaGameKey = 22320;     // dGameKey_c::m_instance
+constexpr uint32_t kSdaDvdErr = 21480;      // dDvdErr_c::m_pInstance
+constexpr uint32_t kSdaHbm = 21452;         // dHbm::Manage_c's instance
+constexpr uint32_t kSdaReset = 21460;       // dReset::Manage_c's instance
+constexpr uint32_t kSdaDylinkPhase = 21984; // dSys_c's myDylinkInitPhase (sPhase_c)
+constexpr uint32_t kSdaExeFrame = 21268;    // cCounter_c::m_exeFrame
+constexpr uint32_t kSdaGameFrame = 21272;   // cCounter_c::m_gameFrame
+constexpr uint32_t kDvdErrOccurred = 0x04u; // dDvdErr_c: isErrorOccured's byte
+// dHbm::Manage_c's state: 0 before Load, 1 the game running, 3 opening (this frame's Calculate runs
+// MenuInit, which captures this frame's picture as the menu's background), 2 open.
+constexpr uint32_t kHbmState = 0x1D0u;
+constexpr uint32_t kHbmOpen = 2u;
+constexpr uint32_t kResetModeProc = 0x08u;  // dReset::Manage_c::mModeProc, 0 = NORMAL
+constexpr uint32_t kPhaseDone = 2u;         // sPhase_c::DONE
+
+// A bl from dSys_c::execute: the callee returns to `returnAddress` (its saved LR).
+template <uint32_t Target>
+void Call(CpuContext* ctx, uint32_t returnAddress) {
+    ctx->lr = returnAddress;
+    InvokeDirectCpu<Target>(ctx);
+}
+
+// Battery Saver: whether this frame goes undrawn. Every other frame while the game simply runs: never
+// with the HOME Menu opening or open, a disc error showing or a reset under way, nor in LAN play.
+bool UndrawnFrame(uint32_t r13, bool dvdErr) {
+    static bool s_drewLast = true;
+    const bool undrawn = s_drewLast && settings_overlay::BatterySaverActive() && !dvdErr &&
+                         Memory::Read32(Memory::Read32(r13 - kSdaHbm) + kHbmState) < kHbmOpen &&
+                         Memory::Read32(Memory::Read32(r13 - kSdaReset) + kResetModeProc) == 0;
+    s_drewLast = !undrawn;
+    return undrawn;
+}
+
+void SysExecute_800e4e40(CpuContext* ctx) {
+    const uint32_t r13 = ctx->gpr[13];
+    const auto instance = [r13](uint32_t sda) { return Memory::Read32(r13 - sda); };
+    const auto counterAdd = [r13](uint32_t sda) { Memory::Write32(r13 - sda, Memory::Read32(r13 - sda) + 1); };
+    // Its 16-byte frame, the caller's LR where the game saves it.
+    const uint32_t sp = ctx->gpr[1];
+    const uint32_t lr = ctx->lr;
+    Memory::Write32(sp - 16, sp);
+    Memory::Write32(sp + 4, lr);
+    ctx->gpr[1] = sp - 16;
+
+    const bool dvdErr = Memory::Read8(instance(kSdaDvdErr) + kDvdErrOccurred) != 0;
+    bool inHbm = Memory::Read32(instance(kSdaHbm) + kHbmState) == kHbmOpen;
+    Call<0x800E46E0u>(ctx, 0x800E4E78u);  // dSys_c::beginFrame
+    Call<0x80164D50u>(ctx, 0x800E4E7Cu);  // m3d::calcMaterial
+    Call<0x800D0610u>(ctx, 0x800E4E80u);  // dPad::beginPad_BR
+    Call<0x80164EC0u>(ctx, 0x800E4E84u);  // m3d::reset
+    const bool undrawn = UndrawnFrame(r13, dvdErr);
+    Call<0x800E4660u>(ctx, 0x800E4E88u);  // dSys_c::beginRender
+    if (!inHbm && !dvdErr && !undrawn) {
+        ctx->gpr[3] = instance(kSdaGraph);
+        Call<0x800B64E0u>(ctx, 0x800E4EA0u);  // dGraph_c::painter
+        Call<0x800B0B20u>(ctx, 0x800E4EA4u);  // dFader_c::draw
+    }
+    ctx->gpr[3] = instance(kSdaHbm);
+    Call<0x80109730u>(ctx, 0x800E4EACu);  // dHbm::Manage_c::DrawMenu
+    ctx->gpr[3] = instance(kSdaReset);
+    Call<0x80108130u>(ctx, 0x800E4EB4u);  // dReset::Manage_c::Draw
+    ctx->gpr[3] = instance(kSdaDvdErr);
+    Call<0x80107460u>(ctx, 0x800E4EBCu);  // dDvdErr_c::draw
+    ctx->gpr[3] = instance(kSdaHbm);
+    Call<0x801097F0u>(ctx, 0x800E4EC4u);  // dHbm::Manage_c::DrawIcon
+    Call<0x800E4680u>(ctx, 0x800E4EC8u);  // dSys_c::endRender
+    if (undrawn) {
+        settings_overlay::MarkUndrawnFrame();
+    }
+    if (!inHbm) {
+        Call<0x80163170u>(ctx, 0x800E4ED4u);  // m2d::reset
+        Call<0x80164E70u>(ctx, 0x800E4ED8u);  // m3d::clear
+    }
+    ctx->gpr[3] = instance(kSdaDvdErr);
+    Call<0x801076B0u>(ctx, 0x800E4EE0u);  // dDvdErr_c::execute
+    const bool dvdErrNew = Memory::Read8(instance(kSdaDvdErr) + kDvdErrOccurred) != 0;
+    if (dvdErrNew && !dvdErr) {
+        ctx->gpr[3] = 1;
+        Call<0x801BE2F0u>(ctx, 0x800E4F04u);  // VIEnableDimming(TRUE)
+    }
+    ctx->gpr[3] = instance(kSdaHbm);
+    Call<0x80109660u>(ctx, 0x800E4F0Cu);  // dHbm::Manage_c::Calculate
+    ctx->gpr[3] = instance(kSdaReset);
+    Call<0x801080F0u>(ctx, 0x800E4F14u);  // dReset::Manage_c::Calculate
+    inHbm = Memory::Read32(instance(kSdaHbm) + kHbmState) == kHbmOpen;
+    Call<0x800DC480u>(ctx, 0x800E4F2Cu);  // dRemoconMng_c::execute
+    Call<0x80102140u>(ctx, 0x800E4F30u);  // dScStage_c::play
+    ctx->gpr[3] = instance(kSdaGameKey);
+    Call<0x800B5AB0u>(ctx, 0x800E4F38u);  // dGameKey_c::read
+    Call<0x8006A130u>(ctx, 0x800E4F3Cu);  // dAudio::updateBgmInfo
+    if (!inHbm && !dvdErrNew) {
+        ctx->gpr[3] = r13 - kSdaDylinkPhase;
+        ctx->gpr[4] = 0;
+        Call<0x8015F620u>(ctx, 0x800E4F58u);  // sPhase_c::callMethod(nullptr)
+        if (ctx->gpr[3] == kPhaseDone) {
+            Call<0x800E1DE0u>(ctx, 0x800E4F64u);  // dScene_c::createNextScene
+            Call<0x80162E10u>(ctx, 0x800E4F68u);  // fManager_c::mainLoop
+            counterAdd(kSdaExeFrame);
+        }
+        Call<0x800B0B00u>(ctx, 0x800E4F78u);  // dFader_c::calc
+    }
+    Call<0x800E4820u>(ctx, 0x800E4F7Cu);  // dSys_c::calcAudio
+    Call<0x800D08A0u>(ctx, 0x800E4F80u);  // dPad::endPad_BR
+    Call<0x800E4740u>(ctx, 0x800E4F84u);  // dSys_c::endFrame
+    counterAdd(kSdaGameFrame);
+
+    ctx->gpr[1] = sp;
+    ctx->lr = lr;
+}
+
+} // namespace
+
+PPC_NATIVE_OVERRIDE_VOID(800E4E40, SysExecute_800e4e40, (CpuContext* ctx), (ctx));

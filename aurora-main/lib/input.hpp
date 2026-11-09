@@ -66,6 +66,22 @@ void initialize() noexcept;
 void persist_controller_for_player(uint32_t player, const GameController* controller) noexcept;
 extern absl::flat_hash_map<Uint32, GameController> g_GameControllers;
 
+// The input thread (sdl_gamepad.cpp; Windows only, no-ops elsewhere). It runs SDL_UpdateJoysticks,
+// which can hold SDL's joystick lock for hundreds of milliseconds while it re-scans devices.
+void start_update_thread() noexcept;
+void stop_update_thread() noexcept;
+// Once per frame, before reading events: asks for an update and waits a few milliseconds for it,
+// never for a re-scan.
+void sync_update() noexcept;
+// For code that calls SDL's gamepad API directly (opening, closing): true when the input thread is
+// idle, which it then stays until unlock_gate(). Recursive.
+bool try_lock_gate() noexcept;
+void unlock_gate() noexcept;
+// The game opened its own reference to this gamepad (the input thread may drop its early one).
+void note_opened(SDL_JoystickID instance) noexcept;
+// Drops what aurora::sdl remembers about a gamepad the caller is about to close (gate held).
+void forget_gamepad(SDL_Gamepad* gamepad) noexcept;
+
 void set_mouse_scroll(float scrollX, float scrollY) noexcept;
 void get_mouse_scroll(float* scrollX, float* scrollY) noexcept;
 

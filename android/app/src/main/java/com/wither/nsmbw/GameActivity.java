@@ -29,6 +29,14 @@ public class GameActivity extends SDLActivity
 
     /** Player 1's on-screen remote and motion (runtime/src/android/android_bridge.cpp). */
     static native void nativeSetTouchState(int buttons, boolean shake, float tilt);
+    /** The Cheat button: whether this save is marked "Cheated" already, and giving the Power-Up. */
+    static native boolean nativeFileCheated();
+    static native void nativeGivePowerUp(int powerUp);
+    /** The game's Gameplay tab's Cheat Button. */
+    static native boolean nativeCheatButton();
+    static native void nativeSetCheatButton(boolean on);
+    /** Whether player 1's controller has motion sensors of its own. */
+    static native boolean nativeControllerMotion();
     /** The touch controls setting, for the game's Keybinds tab (which can switch it too). */
     static native void nativeSetTouchControls(boolean on);
 
@@ -51,11 +59,15 @@ public class GameActivity extends SDLActivity
     static native boolean nativeTapScreen();
     /** Whether the player is in a course or on the world map with no menu up. */
     static native boolean nativePlaying();
+    /** A line into the game's run log (console.log, which Download Logs includes). */
+    static native void nativeLog(String line);
+    /** Join's Direct Connection: the address typed into askDirectAddress's dialog. */
+    static native void nativeDirectAddress(String address);
     /** {render scale, show FPS, aspect} after the game's own settings window changed them, else null. */
     static native float[] nativeTakeSettings();
     /**
-     * The app left the screen (true) or came back (false). Leaving, the game writes a backup Quick Save
-     * of the progress so far (deleted again when the app comes back) and pauses; nativeGamePaused says
+     * The app left the screen (true) or came back (false). Leaving, the game saves the progress so far
+     * to the player's file as a backup and pauses; nativeGamePaused says
      * when it has (runtime/src/host_suspend.h). With the screen just turned off (backup false) it only
      * pauses: the game waits in memory, nothing runs or is written.
      */
@@ -87,6 +99,7 @@ public class GameActivity extends SDLActivity
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        Lang.load(this);
         settings = new AppSettings(this);
         bootWidescreen = settings.aspectMode() != AppSettings.ASPECT_4_3;
         try {
@@ -95,6 +108,7 @@ public class GameActivity extends SDLActivity
             // Read by runtime/src/platform/host_platform.cpp before anything else starts.
             Os.setenv("WIICOMPILED_RUNTIME_DIR", AppFiles.runtimeDir(this).getAbsolutePath(), true);
             Os.setenv("WIICOMPILED_DATA_DIR", AppFiles.dataDir(this).getAbsolutePath(), true);
+            GpuDrivers.applyToGame(this);
         } catch (Exception e) {
             Log.e(TAG, "could not prepare the game's files", e);
             Toast.makeText(this, "Could not prepare the game's files: " + e.getMessage(), Toast.LENGTH_LONG).show();
@@ -104,6 +118,8 @@ public class GameActivity extends SDLActivity
         if (nativeReady) {
             nativeSetDeviceName(deviceName());
         }
+        final android.content.Context app = getApplicationContext();
+        new android.os.Handler(getMainLooper()).postDelayed(() -> GpuDrivers.markProven(app), GpuDrivers.PROVEN_AFTER_MS);
         // LAN rooms are found with broadcasts, which many Wi-Fi drivers drop unless an app holds this.
         final WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         if (wifi != null) {
@@ -128,8 +144,13 @@ public class GameActivity extends SDLActivity
 
     // --- the file select's Update button --------------------------------------------------------
 
-    /** Once per start: a newer GitHub release shows the game's Update button. */
+    /** When the game last looked for a newer release (SystemClock.elapsedRealtime), or -1. */
+    private static long sLastUpdateCheck = -1;
+
+    /** At start, and on coming back to the app at most once every five minutes: a newer GitHub release shows
+     *  the game's Update button. */
     private void checkForUpdate() {
+        sLastUpdateCheck = android.os.SystemClock.elapsedRealtime();
         new Thread(() -> {
             try {
                 final Updater.Release release = Updater.latest();
@@ -161,15 +182,15 @@ public class GameActivity extends SDLActivity
             }
             if (!Updater.canInstall(this)) {
                 new AlertDialog.Builder(this)
-                        .setTitle("NSMBW " + release.version + " is available")
-                        .setMessage("To install updates, let NSMBW install apps: turn on Allow from this source "
-                                + "on the next screen, then come back to the game.")
-                        .setPositiveButton("Open Settings", (d, w) -> {
+                        .setTitle(Lang.f("NSMBW %s is available", release.version))
+                        .setMessage(Lang.t("To install updates, let NSMBW install apps: turn on Allow from this "
+                                + "source on the next screen, then come back to the game."))
+                        .setPositiveButton(Lang.t("Open Settings"), (d, w) -> {
                             updateWaitsForPermission = true;
                             startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                                     android.net.Uri.parse("package:" + getPackageName())));
                         })
-                        .setNegativeButton("Not Now",
+                        .setNegativeButton(Lang.t("Not Now"),
                                 (d, w) -> nativeUpdateStatus(UPDATE_AVAILABLE, release.version, -1f, ""))
                         .setCancelable(false)
                         .show();
@@ -233,32 +254,40 @@ public class GameActivity extends SDLActivity
         return new String[] {"main"};
     }
 
+    /**
+     * Newer Super Mario Bros. Wii runs its own build of the same library, the downloaded module
+     * (NewerModule), in place of libmain.so. Each start is a new process, so only one is ever loaded.
+     */
+    @Override
+    public void loadLibraries() {
+        if (AppFiles.newerActive(this)) {
+            System.load(NewerModule.libraryToLoad(this));
+        } else {
+            super.loadLibraries();
+        }
+    }
+
+    @Override
+    protected String getMainSharedObject() {
+        return AppFiles.newerActive(this) ? NewerModule.library(this).getAbsolutePath() : super.getMainSharedObject();
+    }
+
     // The game's menus take taps and the remote hides while they are up; it comes back a moment
     // after they go, so it doesn't blink while one menu screen hands over to the next.
     private final android.os.Handler menuPoll = new android.os.Handler(android.os.Looper.getMainLooper());
     private long lastTapScreen;
+    private boolean lastCheatButton;
     private final Runnable pollMenu = new Runnable() {
         @Override
         public void run() {
             final long now = android.os.SystemClock.uptimeMillis();
             if (nativeReady) {
-                // The game's settings window: keep its choices, the config is rewritten at each start.
-                final float[] changed = nativeTakeSettings();
-                if (changed != null) {
-                    settings.setResolutionScale(changed[0]);
-                    if (changed.length > 2) settings.setAspectMode(Math.round(changed[2]));
-                    if (changed.length > 3) settings.setSpinningCoins(changed[3] > 0.5f);
-                    if (changed.length > 4) settings.setPerformanceMonitor(changed[4] > 0.5f);
-                    if (changed.length > 5) settings.setVSync(changed[5] > 0.5f);
-                    if (changed.length > 6) settings.setFrameGraphSize(Math.round(changed[6]));
-                    if (changed.length > 7 && changed[7] >= 0f) {
-                        settings.setTouchControls(changed[7] > 0.5f);  // the Keybinds tab's checkbox
-                        applyControlSettings();
-                    }
-                    final int renderer = changed.length > 8 ? Math.round(changed[8]) : -1;
-                    if (renderer >= 0 && renderer < AppSettings.RENDERERS.length) {
-                        settings.setGraphicsApi(AppSettings.RENDERERS[renderer]);  // the Video tab's Renderer
-                    }
+                keepGameSettings();
+                // The game's Gameplay tab's Cheat Button, when it changes (the start menu's: onResume).
+                final boolean cheat = nativeCheatButton();
+                if (cheat != lastCheatButton) {
+                    lastCheatButton = cheat;
+                    applyControlSettings();
                 }
             }
             if (nativeReady && nativeTapScreen()) {
@@ -270,6 +299,61 @@ public class GameActivity extends SDLActivity
             menuPoll.postDelayed(this, 100);
         }
     };
+
+    /** The game's settings window: keep its choices (the config is rewritten from them at each start). */
+    private void keepGameSettings() {
+        final float[] changed = nativeTakeSettings();
+        if (changed == null) return;
+        settings.setResolutionScale(changed[0]);
+        if (changed.length > 2) settings.setAspectMode(Math.round(changed[2]));
+        if (changed.length > 3) settings.setSpinningCoins(changed[3] > 0.5f);
+        if (changed.length > 4) settings.setPerformanceMonitor(changed[4] > 0.5f);
+        if (changed.length > 5) settings.setVSync(changed[5] > 0.5f);
+        if (changed.length > 6) settings.setFrameGraphSize(Math.round(changed[6]));
+        if (changed.length > 7 && changed[7] >= 0f) {
+            settings.setTouchControls(changed[7] > 0.5f);  // the Keybinds tab's checkbox
+            applyControlSettings();
+        }
+        final int renderer = changed.length > 8 ? Math.round(changed[8]) : -1;
+        if (renderer >= 0 && renderer < AppSettings.RENDERERS.length) {
+            settings.setGraphicsApi(AppSettings.RENDERERS[renderer]);  // the Video tab's Renderer
+        }
+        if (changed.length > 9) settings.setDepthBlur(changed[9] > 0.5f);  // the Video tab's Depth Blur
+        if (changed.length > 10) settings.setBatterySaver(changed[10] > 0.5f);  // ... and its Battery Saver
+        if (changed.length > 11) settings.setTextureReplacements(changed[11] > 0.5f);  // the Mods tab's HD Texture Pack
+        if (changed.length > 12) settings.setFrameInterpolationFps(Math.round(changed[12]));  // ... Frame Interpolation
+    }
+
+    /**
+     * The game's Mods tab downloads the HD Texture Pack (hd_texture_pack.cpp) on a thread of its own, which
+     * calls this: GETs url into the file at path, following redirects. Null, or why it failed.
+     */
+    String downloadForGame(String url, String path) {
+        java.net.HttpURLConnection connection = null;
+        try {
+            connection = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            connection.setConnectTimeout(15000);
+            connection.setReadTimeout(30000);
+            connection.setInstanceFollowRedirects(true);
+            connection.setRequestProperty("User-Agent", "NSMBW");
+            if (connection.getResponseCode() != java.net.HttpURLConnection.HTTP_OK) {
+                return "HTTP " + connection.getResponseCode();
+            }
+            try (java.io.InputStream in = connection.getInputStream();
+                 java.io.OutputStream out = new java.io.FileOutputStream(path)) {
+                final byte[] buffer = new byte[1 << 16];
+                for (int n; (n = in.read(buffer)) > 0; ) {
+                    out.write(buffer, 0, n);
+                }
+            }
+            return null;
+        } catch (Exception e) {
+            Log.w("NSMBW", "download " + url, e);
+            return String.valueOf(e);
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
 
     @Override
     public void onTap(float x, float y) {
@@ -290,6 +374,11 @@ public class GameActivity extends SDLActivity
         menuPoll.removeCallbacks(pollMenu);
         menuPoll.post(pollMenu);
         hideSystemBars();
+        // Android often keeps the game in memory, so reopening the app comes back here without a new start.
+        if (nativeReady && update == null && sLastUpdateCheck >= 0
+                && android.os.SystemClock.elapsedRealtime() - sLastUpdateCheck >= 5 * 60 * 1000) {
+            checkForUpdate();
+        }
         // Back from "Allow from this source": carry on with the update that was waiting for it.
         if (updateWaitsForPermission && update != null) {
             updateWaitsForPermission = false;
@@ -307,10 +396,10 @@ public class GameActivity extends SDLActivity
     @Override
     protected void onPause() {
         if (nativeReady) {
-            // Before SDL's pause stops the game thread: let the game write its backup Quick Save (in
+            // Before SDL's pause stops the game thread: let the game write its backup save (in
             // case Android ends the app while it is away) and pause itself. Bounded: a save that takes
             // longer is simply not published (the NAND only commits closed files).
-            // The screen turning off (sleep) only pauses: no backup Quick Save, the game waits in memory.
+            // The screen turning off (sleep) only pauses: no backup save, the game waits in memory.
             final android.os.PowerManager power = (android.os.PowerManager) getSystemService(POWER_SERVICE);
             final boolean screenOn = power == null || power.isInteractive();
             nativeSetBackground(true, screenOn);
@@ -324,6 +413,7 @@ public class GameActivity extends SDLActivity
             }
         }
         menuPoll.removeCallbacks(pollMenu);
+        if (nativeReady) keepGameSettings();  // a change since the last poll, before the app may be ended
         if (motion != null) motion.stop();
         if (touch != null) touch.release();
         super.onPause();
@@ -357,6 +447,7 @@ public class GameActivity extends SDLActivity
         if (input == null) return;
         input.registerInputDeviceListener(new android.hardware.input.InputManager.InputDeviceListener() {
             @Override public void onInputDeviceAdded(int id) {
+                logInputDevice(android.view.InputDevice.getDevice(id), "connected");
                 if (isController(android.view.InputDevice.getDevice(id))) touch.setControllerHidden(true);
             }
             @Override public void onInputDeviceRemoved(int id) {
@@ -365,6 +456,35 @@ public class GameActivity extends SDLActivity
             @Override public void onInputDeviceChanged(int id) {}
         }, new android.os.Handler(android.os.Looper.getMainLooper()));
         if (anyController()) touch.setControllerHidden(true);
+        // Once the game has its run log open: every input device, for reports like issue #24.
+        menuPoll.postDelayed(() -> {
+            for (int id : android.view.InputDevice.getDeviceIds()) {
+                logInputDevice(android.view.InputDevice.getDevice(id), "present");
+            }
+        }, 4000);
+    }
+
+    /** "input device present: Ipega 9087S, 2dc8:3016, sources 0x00000501, buttons A B" (not virtual ones). */
+    private void logInputDevice(android.view.InputDevice device, String what) {
+        if (device == null || device.isVirtual() || !nativeReady) return;
+        final boolean[] keys = device.hasKeys(android.view.KeyEvent.KEYCODE_BUTTON_A,
+                android.view.KeyEvent.KEYCODE_BUTTON_B, android.view.KeyEvent.KEYCODE_BUTTON_X,
+                android.view.KeyEvent.KEYCODE_BUTTON_Y, android.view.KeyEvent.KEYCODE_BUTTON_START);
+        final String[] names = {"A", "B", "X", "Y", "Start"};
+        final StringBuilder buttons = new StringBuilder();
+        for (int i = 0; i < keys.length; ++i) {
+            if (keys[i]) buttons.append(' ').append(names[i]);
+        }
+        final String line = String.format(java.util.Locale.ROOT,
+                "input device %s: %s, %04x:%04x, sources 0x%08x, keyboard type %d, buttons%s, stick %s",
+                what, device.getName(), device.getVendorId(), device.getProductId(), device.getSources(),
+                device.getKeyboardType(), buttons.length() > 0 ? buttons : " none",
+                device.getMotionRange(android.view.MotionEvent.AXIS_X) != null ? "yes" : "no");
+        try {
+            nativeLog(line);
+        } catch (UnsatisfiedLinkError e) {
+            Log.i(TAG, line);
+        }
     }
 
     /**
@@ -389,6 +509,27 @@ public class GameActivity extends SDLActivity
         return event.getDeviceId() >= 0
                 && ((sources & android.view.InputDevice.SOURCE_GAMEPAD) == android.view.InputDevice.SOURCE_GAMEPAD
                 || (sources & android.view.InputDevice.SOURCE_JOYSTICK) == android.view.InputDevice.SOURCE_JOYSTICK);
+    }
+
+    /**
+     * The Wii Remote's rumble on the phone (player 1 with no controller), from the game thread
+     * (android_bridge.cpp Vibrate). Off with the Vibration setting. 2 s at most; the game stops it.
+     */
+    @SuppressWarnings("deprecation")
+    void vibrateForGame(boolean on) {
+        if (!settings.haptics()) return;
+        final android.os.Vibrator vibrator = android.os.Build.VERSION.SDK_INT >= 31
+                ? ((android.os.VibratorManager) getSystemService(VIBRATOR_MANAGER_SERVICE)).getDefaultVibrator()
+                : (android.os.Vibrator) getSystemService(VIBRATOR_SERVICE);
+        if (vibrator == null || !vibrator.hasVibrator()) return;
+        if (on) {
+            // As a game's, not touch feedback: the phone's touch vibration setting doesn't mute it.
+            vibrator.vibrate(android.os.VibrationEffect.createOneShot(2000, 180),
+                    new android.media.AudioAttributes.Builder()
+                            .setUsage(android.media.AudioAttributes.USAGE_GAME).build());
+        } else {
+            vibrator.cancel();
+        }
     }
 
     @Override
@@ -422,9 +563,11 @@ public class GameActivity extends SDLActivity
     /** SDL takes the Back key as keyboard input before onBackPressed: the Back menu gets it first. */
     @Override
     public boolean dispatchKeyEvent(android.view.KeyEvent event) {
-        if (event.getAction() == android.view.KeyEvent.ACTION_DOWN && fromGamepad(event)
+        // Gamepad buttons from any real device (some controllers say they're a keyboard), the D-pad from
+        // a gamepad.
+        if (event.getAction() == android.view.KeyEvent.ACTION_DOWN && event.getDeviceId() >= 0
                 && (android.view.KeyEvent.isGamepadButton(event.getKeyCode())
-                || (event.getKeyCode() >= android.view.KeyEvent.KEYCODE_DPAD_UP
+                || (fromGamepad(event) && event.getKeyCode() >= android.view.KeyEvent.KEYCODE_DPAD_UP
                 && event.getKeyCode() <= android.view.KeyEvent.KEYCODE_DPAD_RIGHT))) {
             touch.setControllerHidden(true);
         }
@@ -527,7 +670,10 @@ public class GameActivity extends SDLActivity
     private void pushInput() {
         if (!nativeReady) return;
         try {
-            nativeSetTouchState(touchButtons, touchShake || motionShake, motionTilt);
+            // A controller with motion sensors of its own has the remote's motion: the phone's is for
+            // one without.
+            final boolean phoneShake = motionShake && !nativeControllerMotion();
+            nativeSetTouchState(touchButtons, touchShake || phoneShake, motionTilt);
         } catch (UnsatisfiedLinkError e) {
             nativeReady = false;
             Log.e(TAG, "touch input bridge missing from libmain.so", e);
@@ -543,6 +689,48 @@ public class GameActivity extends SDLActivity
         }
         touch.setOpacity(settings.touchOpacity());
         touch.setHaptics(settings.haptics());
+        touch.setLayout(TouchLayoutEditor.startingLayout(this, settings));
+        // LAN play keeps the game's own rules, so there's nothing for it to do there.
+        touch.setCheatButton("true".equals(AppFiles.gameSetting(this, "cheat_button"))
+                && !(nativeReady && nativeSessionActive()));
+    }
+
+    /** The Cheat button: the Power-Up picked in the settings. Using a cheat asks first, once a save. */
+    @Override
+    public void onCheat() {
+        if (!nativeReady) return;
+        final int powerUp = SettingsActivity.powerUpChoice(this);
+        if (nativeFileCheated()) {
+            nativeGivePowerUp(powerUp);
+            return;
+        }
+        touch.release();
+        new AlertDialog.Builder(this)
+                .setTitle(Lang.t("Are you sure?"))
+                .setMessage(Lang.t("This will mark your save as cheated."))
+                .setPositiveButton(Lang.t("Yes"), (dialog, which) -> nativeGivePowerUp(powerUp))
+                .setNegativeButton(Lang.t("No"), null)
+                .show();
+    }
+
+    /** The touch editor's Add or Delete of the Power-Up button. */
+    void cheatButtonChanged(boolean on) {
+        if (!nativeReady) return;
+        nativeSetCheatButton(on);
+        lastCheatButton = on;
+    }
+
+    /** The game's Controls tab's Edit Touch Layout (android_bridge.cpp, off the UI thread). */
+    void editTouchLayoutFromGame() {
+        runOnUiThread(this::editTouchControls);
+    }
+
+    /** The menu's Edit Touch Controls: the game waits (as with the screen off) while the remote is edited. */
+    private void editTouchControls() {
+        if (nativeReady) nativeSetBackground(true, false);
+        TouchLayoutEditor.open(this, touch, settings, () -> {
+            if (nativeReady) nativeSetBackground(false, false);
+        });
     }
 
     private void hideSystemBars() {
@@ -576,16 +764,60 @@ public class GameActivity extends SDLActivity
         final java.util.List<String> items = new java.util.ArrayList<>();
         items.add("Start Menu");
         if (inSession) items.add("Leave LAN Game");
+        if (settings.touchControls()) items.add("Edit Touch Controls");
         items.add("Quit Game");
+        final String[] labels = new String[items.size()];
+        for (int i = 0; i < labels.length; ++i) labels[i] = Lang.t(items.get(i));
         new AlertDialog.Builder(this)
-                .setTitle("New Super Mario Bros. Wii")
-                .setItems(items.toArray(new String[0]), (dialog, which) -> {
+                .setTitle(AppFiles.newerActive(this) ? "Newer Super Mario Bros. Wii" : "New Super Mario Bros. Wii")
+                .setItems(labels, (dialog, which) -> {
                     final String item = items.get(which);
                     if (item.equals("Start Menu")) openStartMenu(inSession);
                     else if (item.equals("Leave LAN Game")) leaveSession();
+                    else if (item.equals("Edit Touch Controls")) editTouchControls();
                     else finish();
                 })
-                .setNegativeButton("Back to the Game", null)
+                .setNegativeButton(Lang.t("Back to the Game"), null)
                 .show();
+    }
+
+    /**
+     * Join's Direct Connection (called from the game thread): asks for the host's IP:Port, which the
+     * host's room shows at its top. The game passes its own title and hint, in its language.
+     */
+    void askDirectAddress(String title, String hint) {
+        runOnUiThread(() -> {
+            if (touch != null) touch.release();
+            final android.widget.EditText field = new android.widget.EditText(this);
+            field.setSingleLine(true);
+            field.setHint("192.168.1.20:52130");
+            field.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+            // In landscape the keyboard would take the whole screen and hide the dialog; its Go connects.
+            field.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                    | android.view.inputmethod.EditorInfo.IME_ACTION_GO);
+            final android.widget.FrameLayout box = new android.widget.FrameLayout(this);
+            final int pad = (int) (20 * getResources().getDisplayMetrics().density);
+            box.setPadding(pad, pad / 2, pad, 0);
+            box.addView(field);
+            final AlertDialog dialog = new AlertDialog.Builder(this)
+                    .setTitle(title)
+                    .setMessage(hint)
+                    .setView(box)
+                    .setPositiveButton(Lang.t("Connect"), (d, w) -> nativeDirectAddress(field.getText().toString().trim()))
+                    .setNegativeButton(Lang.t("Cancel"), null)
+                    .create();
+            field.setOnEditorActionListener((v, action, event) -> {
+                // Go, or Enter on a hardware keyboard.
+                final boolean enter = event != null && event.getKeyCode() == android.view.KeyEvent.KEYCODE_ENTER
+                        && event.getAction() == android.view.KeyEvent.ACTION_DOWN;
+                if (action != android.view.inputmethod.EditorInfo.IME_ACTION_GO && !enter) return false;
+                nativeDirectAddress(field.getText().toString().trim());
+                dialog.dismiss();
+                return true;
+            });
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
+            dialog.show();
+            field.requestFocus();
+        });
     }
 }

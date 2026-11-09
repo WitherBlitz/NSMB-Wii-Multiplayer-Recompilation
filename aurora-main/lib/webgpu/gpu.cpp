@@ -75,6 +75,10 @@ static wgpu::AdapterInfo g_adapterInfo;
 static wgpu::SurfaceCapabilities g_surfaceCapabilities;
 bool g_bcTexturesSupported;
 bool g_safeVertexFetch = false;
+bool g_fastTev = false;
+bool g_watchLightTextureReuse = false;
+bool g_holdPrewarmUntilShown = false;
+bool g_mergeSamePrimitiveOnly = false;
 uint32_t g_shaderDebug = 0;
 static std::string g_adapterName;
 // Written by Dawn's device-loss callback and consumed at ordered frame boundaries. Keep the
@@ -95,6 +99,8 @@ static std::atomic_bool g_initialized{false};
 //   nobc       do not enable BC texture compression
 //   nomono     do not use one Vulkan pipeline cache for all pipelines
 //   safefetch / nosafefetch   force the GPU compatibility vertex fetch on or off
+//   fasttev / nofasttev       force the float-math TEV shaders on or off
+//   sameprimmerge / nosameprimmerge   force joining draws only of the same primitive type on or off
 //   notex      every texture samples as grey (is it geometry or texturing?)
 //   uvvis      texture samples show their coordinates instead
 //   dumpwgsl   write every generated shader to <cache>/wgsl
@@ -147,6 +153,51 @@ static bool contains_ignore_case(std::string_view haystack, std::string_view nee
 // Snapdragon laptops alike) miscompile aurora's vertex pulling on some driver versions - Adreno 840
 // always, some 6xx/7xx too - and every Android GPU runs a vendor driver that games rarely exercise
 // this way, so phones get the safe path whatever their GPU. Its cost is a bounds check per load.
+// Intel's D3D11 driver does the same (HD 4600, driver 20.19.15.5126: flat logos, smeared or missing
+// tiles, washed-out models, all from vertex attributes read wrong, while an NVIDIA GPU given the same
+// D3D11 shaders draws them correctly), and there the safe path is no slower.
+// Intel integrated GPUs from the HD 4600's era and performance class (Gen6 to Gen8, 2011-2015): Sandy
+// Bridge, Ivy Bridge, Bay Trail, Haswell, Broadwell and Cherry Trail/Braswell. Matched by PCI device ID,
+// with the adapter's name as a fallback. Skylake and newer (HD 5xx/6xx, UHD, Iris Plus/Xe, Arc) don't match.
+static bool is_old_intel_gpu(uint32_t deviceId, std::string_view device, std::string_view description) {
+  const uint32_t id = deviceId & 0xFFFF;
+  const uint32_t hi = id >> 8, lo = id & 0xFF;
+  if (hi == 0x01 && lo <= 0x6F) return true;           // Sandy Bridge 0x010x-0x012x, Ivy Bridge and Bay Trail 0x015x-0x016x
+  if ((id & 0xFFF0) == 0x0F30) return true;            // Bay Trail
+  if (hi == 0x04 || hi == 0x0C || hi == 0x0D) return true;  // Haswell desktop, SDV, Crystal Well
+  if (hi == 0x0A && lo <= 0x2F) return true;           // Haswell ULT (0x0A84 is Apollo Lake, Gen9)
+  if (hi == 0x16) return true;                         // Broadwell
+  if ((id & 0xFFF0) == 0x22B0) return true;            // Cherry Trail, Braswell
+  for (const std::string_view raw : {device, description}) {
+    std::string name;  // lower case, without (R)/(TM), single spaces
+    for (size_t i = 0; i < raw.size(); ++i) {
+      if (raw[i] == '(') {
+        const size_t close = raw.find(')', i);
+        if (close != std::string_view::npos) {
+          i = close;
+          continue;
+        }
+      }
+      const char c = static_cast<char>(std::tolower(static_cast<unsigned char>(raw[i])));
+      if (c == ' ' && (name.empty() || name.back() == ' ')) continue;
+      name += c;
+    }
+    while (!name.empty() && name.back() == ' ') name.pop_back();
+    const auto model = [&](std::string_view prefix, std::string_view firstDigits) {
+      if (name.size() != prefix.size() + 4 || name.compare(0, prefix.size(), prefix) != 0) return false;
+      const std::string_view digits = std::string_view(name).substr(prefix.size());
+      return firstDigits.find(digits[0]) != std::string_view::npos &&
+             std::all_of(digits.begin(), digits.end(), [](char c) { return c >= '0' && c <= '9'; });
+    };
+    if (name == "intel hd graphics" || name == "intel hd graphics family" ||
+        model("intel hd graphics ", "23456") || model("intel hd graphics p", "45") ||
+        model("intel iris graphics ", "56") || model("intel iris pro graphics ", "56")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static void choose_gpu_compat() {
   const auto text = [](const wgpu::StringView& value) {
     return value.IsUndefined() ? std::string_view{} : std::string_view{value};
@@ -162,6 +213,8 @@ static void choose_gpu_compat() {
                     contains_ignore_case(text(g_adapterInfo.description), "mali") ||
                     contains_ignore_case(text(g_adapterInfo.vendor), "arm") ||
                     g_adapterInfo.vendorID == 0x13B5;
+  const bool intelD3D11 = g_backendType == wgpu::BackendType::D3D11 &&
+                          (g_adapterInfo.vendorID == 0x8086 || contains_ignore_case(text(g_adapterInfo.vendor), "intel"));
 #if defined(__ANDROID__)
   constexpr bool mobile = true;
 #else
@@ -181,11 +234,29 @@ static void choose_gpu_compat() {
     g_safeVertexFetch = false;
     reason = "off (setting)";
   } else {
-    g_safeVertexFetch = qualcomm || (mobile && !mali);
+    g_safeVertexFetch = qualcomm || intelD3D11 || (mobile && !mali);
     reason = qualcomm ? "on (auto: Qualcomm Adreno)" :
+             intelD3D11 ? "on (auto: Intel on D3D11)" :
              mali ? "off (auto: ARM Mali; enable compatibility if broken)" :
              mobile ? "on (auto: unknown mobile GPU)" : "off (auto)";
   }
+  g_fastTev = gfx_flag("fasttev") || (intelD3D11 && !gfx_flag("nofasttev"));
+  g_watchLightTextureReuse = intelD3D11;
+  // HD 4600: with the 1816-pipeline seed the window stayed black for ~9 s at every start while the
+  // driver compiled ~4700 shaders on four threads; held, the runtime shows a loading screen and
+  // feeds them in batches.
+  g_holdPrewarmUntilShown = intelD3D11;
+  // HD 4600: a draw joined onto one of another primitive type (a triangle strip onto a triangle list,
+  // or the reverse) drew wrong there. With the light textures reused, World 8's map hit such joins:
+  // its terrain came out black at ~500 ms a frame (and World 2's solid yellow); kept apart, it is
+  // right at 60. Only Intel GPUs of that era get it (is_old_intel_gpu): on newer Intel, and on Adreno,
+  // where it was measured, it only costs time (Pixel 3 XL: GX 3.5 -> 5.1 ms a frame).
+  const bool oldIntelD3D11 =
+      intelD3D11 && is_old_intel_gpu(g_adapterInfo.deviceID, text(g_adapterInfo.device), text(g_adapterInfo.description));
+  g_mergeSamePrimitiveOnly = (oldIntelD3D11 && !gfx_flag("nosameprimmerge")) || gfx_flag("sameprimmerge");
+  Log.info("Draws joined only within one primitive type: {} (device {:04X}{})", g_mergeSamePrimitiveOnly ? "on" : "off",
+           g_adapterInfo.deviceID & 0xFFFF, oldIntelD3D11 ? ", Intel Gen6-8 on D3D11" : "");
+  Log.info("Fast TEV shaders {}", g_fastTev ? "on" : "off");
   g_shaderDebug = (gfx_flag("notex") ? ShaderDebugNoTextures : 0u) |
                   (gfx_flag("uvvis") ? ShaderDebugTexCoords : 0u) |
                   (gfx_flag("dumpwgsl") ? ShaderDebugDumpSource : 0u);

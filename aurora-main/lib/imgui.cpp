@@ -1,7 +1,9 @@
 #include "imgui.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cmath>
+#include <utility>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -11,6 +13,7 @@
 #include <SDL3/SDL_render.h>
 
 #include "fs_helper.hpp"
+#include "input.hpp"
 #include "internal.hpp"
 #include "webgpu/gpu.hpp"
 #include "window.hpp"
@@ -31,6 +34,82 @@ static bool g_frameDataBuilt = false;
 
 static std::vector<SDL_Texture*> g_sdlTextures;
 static std::vector<wgpu::Texture> g_wgpuTextures;
+
+#if defined(_WIN32)
+// ImGui_ImplSDL3_UpdateGamepads (GamepadMode_AutoFirst) for the first open gamepad, read only when the
+// input thread is idle; otherwise the last frame's state is fed again.
+static void feed_gamepad(ImGuiIO& io) noexcept {
+  struct Analog {
+    ImGuiKey key;
+    SDL_GamepadAxis axis;
+    float v0, v1;
+  };
+  static constexpr std::pair<ImGuiKey, SDL_GamepadButton> kButtons[] = {
+      {ImGuiKey_GamepadStart, SDL_GAMEPAD_BUTTON_START},
+      {ImGuiKey_GamepadBack, SDL_GAMEPAD_BUTTON_BACK},
+      {ImGuiKey_GamepadFaceLeft, SDL_GAMEPAD_BUTTON_WEST},
+      {ImGuiKey_GamepadFaceRight, SDL_GAMEPAD_BUTTON_EAST},
+      {ImGuiKey_GamepadFaceUp, SDL_GAMEPAD_BUTTON_NORTH},
+      {ImGuiKey_GamepadFaceDown, SDL_GAMEPAD_BUTTON_SOUTH},
+      {ImGuiKey_GamepadDpadLeft, SDL_GAMEPAD_BUTTON_DPAD_LEFT},
+      {ImGuiKey_GamepadDpadRight, SDL_GAMEPAD_BUTTON_DPAD_RIGHT},
+      {ImGuiKey_GamepadDpadUp, SDL_GAMEPAD_BUTTON_DPAD_UP},
+      {ImGuiKey_GamepadDpadDown, SDL_GAMEPAD_BUTTON_DPAD_DOWN},
+      {ImGuiKey_GamepadL1, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER},
+      {ImGuiKey_GamepadR1, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER},
+      {ImGuiKey_GamepadL3, SDL_GAMEPAD_BUTTON_LEFT_STICK},
+      {ImGuiKey_GamepadR3, SDL_GAMEPAD_BUTTON_RIGHT_STICK},
+  };
+  constexpr float kDeadZone = 8000.f;
+  static constexpr Analog kAnalog[] = {
+      {ImGuiKey_GamepadL2, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, 0.f, 32767.f},
+      {ImGuiKey_GamepadR2, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, 0.f, 32767.f},
+      {ImGuiKey_GamepadLStickLeft, SDL_GAMEPAD_AXIS_LEFTX, -kDeadZone, -32768.f},
+      {ImGuiKey_GamepadLStickRight, SDL_GAMEPAD_AXIS_LEFTX, kDeadZone, 32767.f},
+      {ImGuiKey_GamepadLStickUp, SDL_GAMEPAD_AXIS_LEFTY, -kDeadZone, -32768.f},
+      {ImGuiKey_GamepadLStickDown, SDL_GAMEPAD_AXIS_LEFTY, kDeadZone, 32767.f},
+      {ImGuiKey_GamepadRStickLeft, SDL_GAMEPAD_AXIS_RIGHTX, -kDeadZone, -32768.f},
+      {ImGuiKey_GamepadRStickRight, SDL_GAMEPAD_AXIS_RIGHTX, kDeadZone, 32767.f},
+      {ImGuiKey_GamepadRStickUp, SDL_GAMEPAD_AXIS_RIGHTY, -kDeadZone, -32768.f},
+      {ImGuiKey_GamepadRStickDown, SDL_GAMEPAD_AXIS_RIGHTY, kDeadZone, 32767.f},
+  };
+  static bool s_have = false;
+  static std::array<bool, std::size(kButtons)> s_buttons{};
+  static std::array<float, std::size(kAnalog)> s_analog{};
+  if (input::try_lock_gate()) {
+    // Closing a gamepad needs the gate too, so the one found here stays open while it is read.
+    SDL_Gamepad* gamepad = nullptr;
+    int count = 0;
+    if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
+      for (int i = 0; i < count && gamepad == nullptr; ++i) {
+        gamepad = SDL_GetGamepadFromID(ids[i]);
+      }
+      SDL_free(ids);
+    }
+    s_have = gamepad != nullptr;
+    if (s_have) {
+      for (size_t i = 0; i < std::size(kButtons); ++i) {
+        s_buttons[i] = SDL_GetGamepadButton(gamepad, kButtons[i].second);
+      }
+      for (size_t i = 0; i < std::size(kAnalog); ++i) {
+        const float v = (SDL_GetGamepadAxis(gamepad, kAnalog[i].axis) - kAnalog[i].v0) / (kAnalog[i].v1 - kAnalog[i].v0);
+        s_analog[i] = v < 0.f ? 0.f : v > 1.f ? 1.f : v;
+      }
+    }
+    input::unlock_gate();
+  }
+  if ((io.ConfigFlags & ImGuiConfigFlags_NavEnableGamepad) == 0 || !s_have) {
+    return;
+  }
+  io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+  for (size_t i = 0; i < std::size(kButtons); ++i) {
+    io.AddKeyEvent(kButtons[i].first, s_buttons[i]);
+  }
+  for (size_t i = 0; i < std::size(kAnalog); ++i) {
+    io.AddKeyAnalogEvent(kAnalog[i].key, s_analog[i] > 0.1f, s_analog[i]);
+  }
+}
+#endif
 
 void remove_legacy_ini_file(const char* basePath) noexcept {
   if (basePath == nullptr || *basePath == '\0') {
@@ -59,6 +138,11 @@ void initialize() noexcept {
   ZoneScoped;
   SDL_Renderer* renderer = window::get_sdl_renderer();
   ImGui_ImplSDL3_InitForSDLRenderer(window::get_sdl_window(), renderer);
+#if defined(_WIN32)
+  // The backend would open and read gamepads itself, waiting on SDL's joystick lock while the input
+  // thread re-scans devices; feed_gamepad() below gives it the same input without waiting.
+  ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, nullptr, 0);
+#endif
   g_useSdlRenderer = renderer != nullptr;
   if (g_useSdlRenderer) {
     ImGui_ImplSDLRenderer3_Init(renderer);
@@ -176,6 +260,9 @@ void new_frame(const AuroraWindowSize& size) noexcept {
     ImGui_ImplWGPU_NewFrame();
   }
   ImGui_ImplSDL3_NewFrame();
+#if defined(_WIN32)
+  feed_gamepad(ImGui::GetIO());
+#endif
 
   ImGuiIO& io = ImGui::GetIO();
   io.DisplayFramebufferScale = framebufferScale;

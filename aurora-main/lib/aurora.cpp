@@ -3,6 +3,7 @@
 #ifdef AURORA_ENABLE_GX
 #include "gfx/common.hpp"
 #include "gfx/efb_ram_copy.hpp"
+#include "gfx/texture_replacement.hpp"
 #include "gx/fifo.hpp"
 #include "gx/shader_info.hpp"
 #include "imgui.hpp"
@@ -1224,6 +1225,14 @@ void enqueue_presentations(std::vector<PresentationJob>&& jobs) {
   if (g_presenter.stop) {
     return;
   }
+  // A newer group scheduled at or before older queued slots supersedes them (the schedule dropping
+  // its lead, see encode_sealed_frame): presenting them first would push the new group late.
+  if (!jobs.empty() && jobs.front().presentAt != PresentClock::time_point{}) {
+    const auto first = jobs.front().presentAt;
+    std::erase_if(g_presenter.jobs, [first](const PresentationJob& queued) {
+      return queued.presentAt != PresentClock::time_point{} && queued.presentAt >= first;
+    });
+  }
   if (g_presenter.jobs.size() + jobs.size() > maximumQueuedJobs) {
     // Presentation is a real-time stream, not a lossless queue: waiting for room couples the guest
     // and audio clocks to a blocked Present(). Keep the newest group and drop obsolete images.
@@ -1731,12 +1740,20 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
 
   // A group that finished encoding past its anchor slides forward by whole display periods, never
   // per slot. The cursor keeps two groups off one anchor, which bursts then holds for a period.
+  // The cursor alone can only add lead: the producer hands over one group per display period, so a
+  // lead it took on (a slow encode slides a group by one or two periods) would otherwise last until
+  // the game itself dropped a frame, minutes later. Two periods of lead overflow the presenter queue
+  // and collapse 180 fps to 40 (#33). So once groups have been on time with half a period to spare
+  // for a while, the next one keeps its own anchor and replaces the older queued slots.
   static PresentClock::time_point s_lastGroupAnchor{};
+  static uint32_t s_onTimeGroups = 0;
+  constexpr uint32_t kLeadDecayGroups = 30;  // half a second of on-time groups
   if (ctx.interpolationActive && ctx.scheduleIntervalNanos != 0 && !presentationJobs.empty() &&
       presentationJobs.front().presentAt != PresentClock::time_point{}) {
     const std::chrono::nanoseconds interval{static_cast<int64_t>(ctx.scheduleIntervalNanos)};
     auto anchor = presentationJobs.front().presentAt;
     const auto now = PresentClock::now();
+    s_onTimeGroups = anchor - now >= interval / 2 ? s_onTimeGroups + 1 : 0;
     if (now > anchor) {
       const auto behind = std::chrono::duration_cast<std::chrono::nanoseconds>(now - anchor);
       const uint64_t periods =
@@ -1744,7 +1761,17 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
       anchor += std::chrono::nanoseconds{static_cast<int64_t>(periods * ctx.scheduleIntervalNanos)};
     }
     if (s_lastGroupAnchor != PresentClock::time_point{} && anchor <= s_lastGroupAnchor) {
-      anchor = s_lastGroupAnchor + interval;
+      if (s_onTimeGroups >= kLeadDecayGroups) {
+        // enqueue_presentations drops the queued slots this group supersedes.
+        static PresentClock::time_point s_lastDecayLog{};
+        if (now - s_lastDecayLog >= std::chrono::seconds(5)) {
+          s_lastDecayLog = now;
+          Log.info("Presentation back on its own boundary ({:.1f} ms of lead dropped)",
+                   std::chrono::duration<double, std::milli>(s_lastGroupAnchor + interval - anchor).count());
+        }
+      } else {
+        anchor = s_lastGroupAnchor + interval;
+      }
     }
     const auto shift =
         std::chrono::duration_cast<std::chrono::nanoseconds>(anchor - presentationJobs.front().presentAt);
@@ -1762,6 +1789,7 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
     // No schedule (interpolation off, boot/black presents): the grid is gone,
     // so the cursor must not constrain the next scheduled group.
     s_lastGroupAnchor = {};
+    s_onTimeGroups = 0;
   }
 
   if (pendingFrameCapture.has_value()) {
@@ -2138,6 +2166,13 @@ void aurora_set_frame_interpolation_fps(uint32_t targetFps) {
   (void)targetFps;
 #endif
 }
+void aurora_set_frame_interpolation_source_fps(uint32_t sourceFps) {
+#ifdef AURORA_ENABLE_GX
+  aurora::gx::set_frame_interpolation_source_fps(sourceFps);
+#else
+  (void)sourceFps;
+#endif
+}
 uint32_t aurora_get_frame_interpolation_fps() {
 #ifdef AURORA_ENABLE_GX
   return aurora::gx::frame_interpolation_fps();
@@ -2239,6 +2274,7 @@ void aurora_set_background_input(bool value) {
   aurora::window::set_background_input(value);
 }
 void aurora_set_display_mode(AuroraDisplayMode mode) { aurora::window::set_display_mode(mode); }
+void aurora_set_texture_replacements(bool enabled) { aurora::gfx::texture_replacement::request_enabled(enabled); }
 AuroraDisplayMode aurora_get_display_mode() { return aurora::window::get_display_mode(); }
 void aurora_set_metalfx_spatial(bool enabled) { aurora::g_metalfxRequested.store(enabled); }
 bool aurora_get_metalfx_spatial() { return aurora::g_metalfxRequested.load(); }

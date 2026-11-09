@@ -8,6 +8,8 @@
 #include <string_view>
 #include <vector>
 
+#include "guest_thread_state.h"
+
 struct CpuContext;
 
 namespace RecompMod {
@@ -21,24 +23,23 @@ struct MemoryReservation {
 };
 
 // Diagnostic-only, read by fatal reporters (unmapped access, executable-write, CPU dumps).
-// Defined here as `inline thread_local` with a constant initializer, not `extern thread_local`
-// in the .cpp: every indirect dispatch scopes this, so an out-of-line ctor/dtor would cost two
-// un-inlinable calls plus a register spill each for three instructions of work.
-inline thread_local uint32_t g_currentTranslatedExecutionAddress = 0;
-
+// The backing variable is g_guestThreadState.translatedExecutionAddress (guest_thread_state.h),
+// header-inline with a constant initializer: every indirect dispatch scopes this, so an
+// out-of-line ctor/dtor would cost two un-inlinable calls plus a register spill each for three
+// instructions of work.
 class ScopedTranslatedExecutionAddress {
 public:
     explicit ScopedTranslatedExecutionAddress(uint32_t address) noexcept
-        : previous_(g_currentTranslatedExecutionAddress) {
+        : previous_(g_guestThreadState.translatedExecutionAddress) {
         // Address 0 means "nothing new to report" - the enclosing scope's value
         // stays visible, and the unconditional restore below keeps nesting exact.
         if (address != 0) {
-            g_currentTranslatedExecutionAddress = address;
+            g_guestThreadState.translatedExecutionAddress = address;
         }
     }
 
     ~ScopedTranslatedExecutionAddress() noexcept {
-        g_currentTranslatedExecutionAddress = previous_;
+        g_guestThreadState.translatedExecutionAddress = previous_;
     }
 
     ScopedTranslatedExecutionAddress(const ScopedTranslatedExecutionAddress&) = delete;

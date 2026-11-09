@@ -37,7 +37,24 @@ final class AppFiles {
         return dir;
     }
 
-    static File gameDir(Context context) { return new File(dataDir(context), "game"); }
+    /**
+     * Newer Super Mario Bros. Wii keeps its settings, saves and game in a folder of its own, where its
+     * runtime looks (runtime_product.h userDataFolder), so it never touches New Super Mario Bros. Wii's.
+     */
+    static File productDir(Context context, boolean newer) {
+        return newer ? new File(dataDir(context), NEWER_FOLDER) : dataDir(context);
+    }
+
+    static final String NEWER_FOLDER = "NewerWiiSaveData";
+
+    /** Whether Play starts Newer: its tab is picked and its module is installed (NewerModule). */
+    static boolean newerActive(Context context) {
+        return new AppSettings(context).newerSelected() && NewerModule.installed(context);
+    }
+
+    static File gameDir(Context context) { return gameDir(context, newerActive(context)); }
+
+    static File gameDir(Context context, boolean newer) { return new File(productDir(context, newer), "game"); }
 
     static File runtimeDir(Context context) { return new File(context.getFilesDir(), "runtime"); }
 
@@ -46,18 +63,24 @@ final class AppFiles {
         return new File(dir, "sys/main.dol").isFile() && new File(dir, "files").isDirectory();
     }
 
-    static boolean hasGameData(Context context) { return isGameRoot(gameDir(context)); }
+    static boolean hasGameData(Context context, boolean newer) { return isGameRoot(gameDir(context, newer)); }
 
     /** Imported, and the one game and revision this port runs. */
     static boolean gameReady(Context context) {
-        return hasGameData(context) && gameProblem(gameDir(context)) == null;
+        final boolean newer = newerActive(context);
+        return hasGameData(context, newer) && gameProblem(gameDir(context, newer), newer) == null;
     }
 
+    /**
+     * What the player is told when an import, or the game imported before, lacks any of the files the
+     * game needs (GameFileList): instead of starting and stopping somewhere in the boot.
+     */
+    static final String INCOMPLETE = "The folder doesn't include all required files.";
+
     /** Why the extracted game at `root` can't be played, or null when it can. */
-    static String gameProblem(File root) {
+    static String gameProblem(File root, boolean newer) {
         if (!isGameRoot(root)) {
-            return Lang.t("That isn't an extracted game: it needs the files and sys folders Dolphin's "
-                    + "Extract Entire Disc makes.");
+            return Lang.t(INCOMPLETE);
         }
         final byte[] header = new byte[8];
         try (InputStream in = new FileInputStream(new File(root, "sys/boot.bin"))) {
@@ -65,18 +88,78 @@ final class AppFiles {
                 return Lang.t("Its sys/boot.bin is too short, so the game can't be identified.");
             }
         } catch (IOException e) {
-            return Lang.t("It has no sys/boot.bin, so the game can't be identified.");
+            return Lang.t(INCOMPLETE);
         }
-        return headerProblem(header);
+        String problem = headerProblem(header, newer);
+        if (problem == null && missingFile(root) != null) {
+            problem = Lang.t(INCOMPLETE);
+        }
+        // Newer's code is translated into its module, so only the version it came from runs
+        // (runtime/src/product/base_product.cpp names the same file and size).
+        if (problem == null && newer && new File(root, "files/NewerRes/DLCodeUS_1.bin").length() != NEWER_CODE_SIZE) {
+            return Lang.t("That is another version of Newer Super Mario Bros. Wii. This port runs v1.30 for the USA.");
+        }
+        return problem != null ? problem : moduleProblem(root);
     }
+
+    /** missingFile's answers, by folder and its sys/fst.bin's size and time: a folder is listed once. */
+    private static final java.util.Map<String, String> MISSING = new java.util.HashMap<>();
+
+    /** The first file the game needs that `root` doesn't have (GameFileList), or null when none. */
+    static synchronized String missingFile(File root) {
+        final File fst = new File(root, "sys/fst.bin");
+        final String key = root.getAbsolutePath() + ":" + fst.length() + ":" + fst.lastModified();
+        if (MISSING.containsKey(key)) {
+            return MISSING.get(key);
+        }
+        final java.util.List<String> missing = GameFileList.missing(root, Integer.MAX_VALUE);
+        final String first = missing.isEmpty() ? null : missing.get(0);
+        if (first != null) {
+            android.util.Log.w("NSMBW", "game folder " + root + ": " + missing.size()
+                    + " required file(s) missing, the first " + first);
+        }
+        MISSING.put(key, first);
+        return first;
+    }
+
+    /**
+     * The game's code modules were translated with the rest (runtime/src/game_folder.cpp checks the
+     * same): a modded or repacked disc image keeps its ID but links nothing and stops at the first
+     * scene. Each is the original's LZ file or, decompressed, the original's .rel; Newer's are the same.
+     */
+    private static final String[] MODULES = {"d_profileNP", "d_basesNP", "d_enemiesNP", "d_en_bossNP"};
+    private static final long[] MODULE_LZ_SIZES = {8791, 1190805, 779805, 229984};
+    private static final long[] MODULE_REL_SIZES = {24244, 3019336, 2137424, 605552};
+
+    private static String moduleProblem(File root) {
+        for (int i = 0; i < MODULES.length; ++i) {
+            final File lz = new File(root, "files/rels/" + MODULES[i] + ".rel.LZ");
+            final File rel = new File(root, "files/rels/" + MODULES[i] + ".rel");
+            if (lz.length() == MODULE_LZ_SIZES[i] || rel.length() == MODULE_REL_SIZES[i]) continue;
+            if (!lz.isFile() && !rel.isFile()) {
+                return Lang.f("It has no files/rels/%s.rel.LZ: this port needs the whole disc, as Dolphin's "
+                        + "Extract Entire Disc makes it.", MODULES[i]);
+            }
+            return Lang.f("Its files/rels/%s is changed: it isn't the original disc (a modded or repacked "
+                    + "image?). This port runs only the unchanged disc.", (lz.isFile() ? lz : rel).getName());
+        }
+        return null;
+    }
+
+    private static final long NEWER_CODE_SIZE = 463252;
 
     /**
      * The first 8 bytes of sys/boot.bin name the game (6 characters) and its revision (byte 7).
      * This port runs only the USA disc, revision 1: other revisions put the game's code elsewhere.
+     * Newer Super Mario Bros. Wii's disc is SMNE03.
      */
-    static String headerProblem(byte[] header) {
+    static String headerProblem(byte[] header, boolean newer) {
         final String id = new String(header, 0, 6, StandardCharsets.US_ASCII);
         final int revision = header[7] & 0xFF;
+        if (newer) {
+            return id.equals("SMNE03") ? null : Lang.f("That is %s, not Newer Super Mario Bros. Wii for the USA "
+                    + "(SMNE03).", id.trim());
+        }
         if (!id.equals("SMNE01")) {
             return Lang.f("That is %s, not New Super Mario Bros. Wii for the USA (SMNE01). "
                     + "This port runs only the USA disc, revision 1.", id.trim());
@@ -86,6 +169,69 @@ final class AppFiles {
                     + "revision 1 (Dolphin shows it under Properties > Info).", revision);
         }
         return null;
+    }
+
+    /**
+     * Each retail disc and its main.dol's SHA-256, as projects/nsmbw/variants/variants.toml pins them
+     * (runtime/src/game_folder.cpp has the same list). The Japanese disc (SMNJ01) has none pinned yet.
+     */
+    private static final String[][] RETAIL_DOLS = {
+        {"SMNE01", "6d755ec24c395fee600a856a85785e0e99c0b7ecb680d573a6cdd1aa6f7beee7"},  // USA rev 1
+        {"SMNP01", "51a2a8b0941e8fe3390404a9b2094e3c78246a999efa58fcc8a7c534c11d7b5b"},  // Europe rev 1
+    };
+    /** The last retailDisc answer, for that main.dol's path, size and time: hashed once per import. */
+    private static String retailKey;
+    private static boolean retailAnswer;
+
+    /**
+     * Whether the extracted game at `root` is the original, unchanged: a retail disc ID and the
+     * main.dol it came with. A modded disc (Newer and the like) isn't. Reads main.dol (about 4 MB):
+     * call it off the UI thread.
+     */
+    static synchronized boolean retailDisc(File root) {
+        final File dol = new File(root, "sys/main.dol");
+        final String key = dol.getAbsolutePath() + ":" + dol.length() + ":" + dol.lastModified();
+        if (key.equals(retailKey)) {
+            return retailAnswer;
+        }
+        boolean retail = false;
+        final byte[] header = new byte[6];
+        try (InputStream in = new FileInputStream(new File(root, "sys/boot.bin"))) {
+            if (readFully(in, header) == header.length) {
+                final String id = new String(header, 0, 6, StandardCharsets.US_ASCII);
+                for (String[] pinned : RETAIL_DOLS) {
+                    if (pinned[0].equals(id)) {
+                        retail = pinned[1].equals(sha256(dol));
+                    }
+                }
+            }
+        } catch (IOException e) {
+            retail = false;
+        }
+        retailKey = key;
+        retailAnswer = retail;
+        return retail;
+    }
+
+    private static String sha256(File file) throws IOException {
+        final java.security.MessageDigest digest;
+        try {
+            digest = java.security.MessageDigest.getInstance("SHA-256");
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IOException(e);
+        }
+        try (InputStream in = new FileInputStream(file)) {
+            final byte[] buffer = new byte[1 << 16];
+            int read;
+            while ((read = in.read(buffer)) > 0) {
+                digest.update(buffer, 0, read);
+            }
+        }
+        final StringBuilder hex = new StringBuilder();
+        for (byte b : digest.digest()) {
+            hex.append(String.format(Locale.ROOT, "%02x", b & 0xFF));
+        }
+        return hex.toString();
     }
 
     static int readFully(InputStream in, byte[] buffer) throws IOException {
@@ -121,24 +267,35 @@ final class AppFiles {
      * changes made while playing go through JNI as well and are saved here the next time.
      */
     static void writeConfig(Context context, AppSettings settings) throws IOException {
-        final File config = new File(dataDir(context), "Config.toml");
-        final String game = gameDir(context).getAbsolutePath().replace('\\', '/');
-        final String text = "# Written by the app before every start; change settings in the game menu.\n"
+        final boolean newer = newerActive(context);
+        final File config = new File(productDir(context, newer), "Config.toml");
+        final String game = gameDir(context, newer).getAbsolutePath().replace('\\', '/');
+        final File dir = config.getParentFile();
+        if (dir != null && !dir.isDirectory() && !dir.mkdirs()) throw new IOException("cannot create " + dir);
+        writeText(config, configText(settings, config, game) + keptSections(config));
+        // Newer's own Config.toml takes the language picked in the start menu (New Super Mario Bros. Wii's).
+        if (newer) setLanguage(config, gameLanguage(context));
+    }
+
+    private static String configText(AppSettings settings, File config, String game) {
+        return "# Written by the app before every start; change settings in the game menu.\n"
                 + "\n[video]\n"
                 + "aspect_mode = " + settings.aspectMode() + "\n"
                 + "gpu_compat = " + settings.gpuCompat() + "\n"
                 + "resolution_multiplier = " + String.format(Locale.ROOT, "%.2f", settings.resolutionScale()) + "\n"
-                + "frame_interpolation_fps = 0\n"
+                + "frame_interpolation_fps = " + settings.frameInterpolationFps() + "\n"
                 + "graphics_api = \"" + settings.graphicsApi() + "\"\n"
                 + "skip_unready_pipelines = true\n"
                 + "disable_copy_filter = true\n"
                 + "show_fps = false\n"
                 + "spinning_coins = " + settings.spinningCoins() + "\n"
+                + "disabled_post_processing_paths = " + (settings.depthBlur() ? 0 : 16) + "\n"
                 + "frame_graph = " + settings.performanceMonitor() + "\n"
                 + "vsync = " + settings.vsync() + "\n"
+                + "battery_saver = " + settings.batterySaver() + "\n"
                 + "frame_graph_size = " + settings.frameGraphSize() + "\n"
                 + "touch_controls = " + settings.touchControls() + "\n"
-                + "texture_replacements = false\n"
+                + "texture_replacements = " + settings.textureReplacements() + "\n"
                 + "texture_dumps = false\n"
                 + (hasTable(config, "audio") ? "" : "\n[audio]\n"
                 + "volume = 1.0\n"
@@ -149,7 +306,6 @@ final class AppFiles {
                 + "\n[discord]\nenabled = false\n"
                 + "\n[paths]\n"
                 + "dvd_root = '" + game + "'\n";
-        writeText(config, text + keptSections(config));
     }
 
     /** Tables of the old Config.toml the app doesn't write (the game's own: keyboard keybinds...). */
@@ -199,33 +355,91 @@ final class AppFiles {
         return eq > 0 && trimmed.substring(0, eq).trim().equals(key);
     }
 
-    /** The game's language, Config.toml's [game] language: "en" (the default), "es" or "fr". */
+    /**
+     * A language pack (runtime_config.h LanguagePackDir): Languages/<code> beside Config.toml, shaped
+     * like the disc's files/US/EngUS. The game puts it over the English text at boot.
+     */
+    static File languagePackDir(Context context, String code) {
+        return new File(new File(dataDir(context), "Languages"), code);
+    }
+
+    static boolean languagePackInstalled(Context context, String code) {
+        return new File(languagePackDir(context, code), "Message").isDirectory();
+    }
+
+    /** The game's language, Config.toml's [game] language: "en" (the default), "es", "fr" or "it". */
     static String gameLanguage(Context context) {
-        final File config = new File(dataDir(context), "Config.toml");
-        if (!config.isFile()) return "en";
+        final String code = readKey(new File(dataDir(context), "Config.toml"), "game", "language");
+        return code != null ? code : "en";
+    }
+
+    /** One value of Config.toml, quotes taken off, or null when it isn't there. */
+    private static String readKey(File config, String table, String key) {
+        if (!config.isFile()) return null;
         try {
-            boolean inGame = false;
+            boolean inTable = false;
             for (String line : java.nio.file.Files.readAllLines(config.toPath(), StandardCharsets.UTF_8)) {
                 final String trimmed = line.trim();
                 if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-                    inGame = trimmed.equals("[game]");
-                } else if (inGame && setsKey(trimmed, "language")) {
+                    inTable = trimmed.equals("[" + table + "]");
+                } else if (inTable && setsKey(trimmed, key)) {
                     return trimmed.substring(trimmed.indexOf('=') + 1).trim().replaceAll("^[\"']|[\"']$", "");
                 }
             }
         } catch (IOException e) {
             android.util.Log.w("NSMBW", "could not read Config.toml", e);
         }
-        return "en";
+        return null;
+    }
+
+    /**
+     * An [audio] volume of the game's Config.toml (volume, music_volume, sound_effects_volume: 0 to 1),
+     * which the game's Audio tab sets too; the Settings page's Audio tab reads and writes them here.
+     */
+    static float audioVolume(Context context, String key) {
+        final String value = readKey(new File(productDir(context, newerActive(context)), "Config.toml"), "audio", key);
+        try {
+            return value != null ? Math.max(0f, Math.min(1f, Float.parseFloat(value))) : 1f;
+        } catch (NumberFormatException e) {
+            return 1f;
+        }
+    }
+
+    static void setAudioVolume(Context context, String key, float volume) throws IOException {
+        final File config = new File(productDir(context, newerActive(context)), "Config.toml");
+        // The app's own [audio] defaults first (writeConfig adds them only when the table is missing).
+        if (!hasTable(config, "audio")) writeConfig(context, new AppSettings(context));
+        setKey(config, "audio", key, String.format(Locale.ROOT, "%.2f", volume));
+    }
+
+    /** A [game] setting of the Gameplay tab (no_time_limit, infinite_lives), as
+     *  the game has it: the game's own Gameplay tab writes the same keys while it runs. */
+    static String gameSetting(Context context, String key) {
+        return readKey(new File(productDir(context, newerActive(context)), "Config.toml"), "game", key);
+    }
+
+    /** Sets a [game] setting for New Super Mario Bros. Wii and, once it has its folder, Newer. */
+    static void setGameSetting(Context context, String key, String literal) throws IOException {
+        setKey(new File(dataDir(context), "Config.toml"), "game", key, literal);
+        final File newer = productDir(context, true);
+        if (newer.isDirectory()) setKey(new File(newer, "Config.toml"), "game", key, literal);
     }
 
     /** Sets [game] language in Config.toml, as the game's Language tab does; the game reads it at boot. */
     static void setGameLanguage(Context context, String code) throws IOException {
-        final File config = new File(dataDir(context), "Config.toml");
+        setLanguage(new File(dataDir(context), "Config.toml"), code);
+    }
+
+    private static void setLanguage(File config, String code) throws IOException {
+        setKey(config, "game", "language", "\"" + code + "\"");
+    }
+
+    /** Sets `key` in [table] of Config.toml to `literal` (TOML as written), keeping everything else. */
+    private static void setKey(File config, String table, String key, String literal) throws IOException {
         final java.util.List<String> lines = config.isFile()
                 ? new java.util.ArrayList<>(java.nio.file.Files.readAllLines(config.toPath(), StandardCharsets.UTF_8))
                 : new java.util.ArrayList<>();
-        final String entry = "language = \"" + code + "\"";
+        final String entry = key + " = " + literal;
         int start = -1, end = lines.size();
         for (int i = 0; i < lines.size(); ++i) {
             final String trimmed = lines.get(i).trim();
@@ -234,17 +448,17 @@ final class AppFiles {
                     end = i;
                     break;
                 }
-                if (trimmed.equals("[game]")) start = i;
+                if (trimmed.equals("[" + table + "]")) start = i;
             }
         }
         if (start < 0) {
             lines.add("");
-            lines.add("[game]");
+            lines.add("[" + table + "]");
             lines.add(entry);
         } else {
             int at = -1;
             for (int i = start + 1; i < end; ++i) {
-                if (setsKey(lines.get(i), "language")) at = i;
+                if (setsKey(lines.get(i), key)) at = i;
             }
             if (at >= 0) lines.set(at, entry);
             else lines.add(start + 1, entry);

@@ -60,6 +60,18 @@
             android:theme="@style/GameTheme"
             android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation" />
 
+        <!-- Settings: the game's settings window on the start menu (portrait or landscape). -->
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false" />
+
+        <!-- Edit Touch Controls from the start menu: the remote alone, landscape like the game. -->
+        <activity
+            android:name=".TouchEditorActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@style/GameTheme" />
+
         <!-- Starts the main process afresh after a game that ran in it. -->
         <activity
             android:name=".RestartActivity"

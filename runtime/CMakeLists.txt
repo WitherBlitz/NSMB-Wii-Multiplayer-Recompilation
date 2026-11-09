@@ -90,6 +90,18 @@ target_include_directories(mkw_pugixml PUBLIC third_party/pugixml)
 target_compile_features(mkw_pugixml PUBLIC cxx_std_17)
 set_target_properties(mkw_pugixml PROPERTIES UNITY_BUILD OFF)
 
+# The HD Texture Pack (src/hd_texture_pack.cpp) comes as a .7z: the LZMA SDK's public-domain C 7z
+# decoder, only its LZMA / LZMA2 path (third_party/lzma-sdk/README.md), compiled locally like pugixml.
+add_library(mkw_lzma STATIC
+    third_party/lzma-sdk/7zArcIn.c third_party/lzma-sdk/7zBuf.c third_party/lzma-sdk/7zCrc.c third_party/lzma-sdk/Bcj2.c
+    third_party/lzma-sdk/7zCrcOpt.c third_party/lzma-sdk/7zDec.c third_party/lzma-sdk/7zStream.c
+    third_party/lzma-sdk/CpuArch.c third_party/lzma-sdk/LzmaDec.c third_party/lzma-sdk/Lzma2Dec.c)
+add_library(mkw::lzma ALIAS mkw_lzma)
+target_include_directories(mkw_lzma PUBLIC third_party/lzma-sdk)
+target_compile_definitions(mkw_lzma PRIVATE Z7_NO_METHODS_FILTERS)
+target_compile_options(mkw_lzma PRIVATE -w)
+set_target_properties(mkw_lzma PROPERTIES UNITY_BUILD OFF)
+
 # POSIX x86-64 guest-fiber scheduling (runtime/src/host_context.cpp) needs a symmetric
 # stackful-coroutine primitive to stand in for Win32 Fibers. libco's co_switch() transfers
 # directly to any other created coroutine, matching SwitchToFiber's semantics exactly (unlike
@@ -215,6 +227,12 @@ set_source_files_properties(${MKW_PPC_SEMANTIC_RUNTIME_SOURCES} PROPERTIES
     COMPILE_OPTIONS "${MKW_TRANSLATED_PPC_FP_OPTIONS}")
 # The NSMBW sampling profiler includes <windows.h>; keep it out of the unity batches.
 set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/guest_profiler.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+# The game picker includes <windows.h> and the shell's headers (Windows), or Dear ImGui's SDL backends
+# (Linux); keep each out of the unity batches too.
+set_source_files_properties(
+    "${CMAKE_CURRENT_LIST_DIR}/src/game_picker_win32.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/game_picker_sdl.cpp"
+    PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 # Match the optimization policy of the translated callers as well as their FP policy.
 set_property(SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/ppc_quantized.cpp" APPEND PROPERTY
     COMPILE_OPTIONS -O2 -fno-slp-vectorize)
@@ -330,6 +348,9 @@ if(MKW_PROJECT_COMPILE_DEFINITIONS)
     add_compile_definitions(${MKW_PROJECT_COMPILE_DEFINITIONS})
 endif()
 
+# Bluetooth passthrough's libusb (Windows: aurora's; Linux: built here; elsewhere none).
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/BtPassthrough.cmake")
+
 # Runtime sources. CONFIGURE_DEPENDS costs one glob re-check per build (measured
 # at ~55 ms across the 100+ globs this build already re-verifies for SDL), and it
 # buys correctness: without it, a newly added src/*.cpp that is not referenced by
@@ -414,6 +435,20 @@ target_include_directories(mkw_runtime_config_tests PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/third_party/toml11")
 target_compile_features(mkw_runtime_config_tests PRIVATE cxx_std_20)
 add_test(NAME mkw_runtime_config_tests COMMAND mkw_runtime_config_tests)
+
+# Bluetooth passthrough's IOS module against a fake adapter and fake guest memory.
+add_executable(nsmbw_bt_bridge_tests
+    "${CMAKE_CURRENT_LIST_DIR}/tests/bt_bridge_tests.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/bt/bt_hci_bridge.cpp")
+target_include_directories(nsmbw_bt_bridge_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
+target_compile_features(nsmbw_bt_bridge_tests PRIVATE cxx_std_17)
+set_target_properties(nsmbw_bt_bridge_tests PROPERTIES UNITY_BUILD OFF)
+add_test(NAME nsmbw_bt_bridge_tests COMMAND nsmbw_bt_bridge_tests)
+
+add_executable(nsmbw_combo_engine_tests "${CMAKE_CURRENT_LIST_DIR}/tests/combo_engine_tests.cpp")
+target_include_directories(nsmbw_combo_engine_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
+target_compile_features(nsmbw_combo_engine_tests PRIVATE cxx_std_17)
+add_test(NAME nsmbw_combo_engine_tests COMMAND nsmbw_combo_engine_tests)
 
 add_executable(mkw_nand_save_tests "${CMAKE_CURRENT_LIST_DIR}/tests/nand_save_tests.cpp")
 target_include_directories(mkw_nand_save_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
@@ -525,6 +560,18 @@ if(MKW_BUILD_PRODUCTS)
         "${MKW_PROFILE_SENSITIVE_CALLER_COUNT} profile-sensitive callers; "
         "${MKW_RETRO_REWIND_FUNCTION_COUNT} Retro Rewind functions")
 
+    if(MKW_PLATFORM_ANDROID)
+        # Loads a GPU driver the user picked in place of the phone's own (src/android/gpu_driver.cpp).
+        # Never linked into the product: linkernsbypass, inside it, changes memory protections and reads
+        # the linker's code as soon as it loads, which only someone who picked a driver should run. It
+        # and the two hook libraries are files of their own, shipped as assets and opened on demand.
+        set(MKW_SAVED_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+        set(BUILD_SHARED_LIBS ON)
+        add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/third_party/libadrenotools"
+            "${CMAKE_BINARY_DIR}/libadrenotools" EXCLUDE_FROM_ALL)
+        set(BUILD_SHARED_LIBS ${MKW_SAVED_BUILD_SHARED_LIBS})
+    endif()
+
     set(MKW_RUNTIME_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}")
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/PublicProducts.cmake")
 else()
@@ -546,7 +593,7 @@ else()
         target_compile_definitions(mkw_macos_native_compile PRIVATE SDL_MAIN_HANDLED TARGET_PC)
         target_link_libraries(mkw_macos_native_compile PRIVATE
             aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx
-            mkw::pugixml mkw::toml11 mkw::cryptopp mkw::mbedtls)
+            mkw::pugixml mkw::lzma mkw::toml11 mkw::cryptopp mkw::mbedtls)
         if(MKW_PLATFORM_MACOS_X86_64)
             target_link_libraries(mkw_macos_native_compile PRIVATE mkw::libco)
             # Keep this compile-only audit on the same Haswell-era x86-64-v3

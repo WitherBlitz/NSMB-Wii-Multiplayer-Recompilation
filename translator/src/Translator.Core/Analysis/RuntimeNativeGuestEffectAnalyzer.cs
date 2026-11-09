@@ -23,11 +23,15 @@ public static class RuntimeNativeGuestEffectAnalyzer
     private static readonly Regex RegistrationRegex = GeneratedMarkers.NativeFunctionRegistrationPattern();
     private static readonly Regex FatalRegex = GeneratedMarkers.FatalStubPattern();
 
-    public static RuntimeNativeGuestEffectSet AnalyzeDirectory(string directory)
-        => AnalyzeSources(NativeSourceParsing.ReadDirectory(directory));
+    public static RuntimeNativeGuestEffectSet AnalyzeDirectory(string directory, RuntimeAddressMap? addressMap = null)
+        => AnalyzeSources(NativeSourceParsing.ReadDirectory(directory), addressMap);
 
+    /// <summary>
+    /// Contracts keyed by guest address; with <paramref name="addressMap"/> every address read from
+    /// the sources is first moved to the translated game version's address (see <see cref="RuntimeAddressMap"/>).
+    /// </summary>
     internal static RuntimeNativeGuestEffectSet AnalyzeSources(
-        IReadOnlyList<NativeSourceFile> sources)
+        IReadOnlyList<NativeSourceFile> sources, RuntimeAddressMap? addressMap = null)
     {
         var contracts = new Dictionary<uint, GuestAbiContract>();
         var precise = new HashSet<uint>();
@@ -39,7 +43,7 @@ public static class RuntimeNativeGuestEffectAnalyzer
             var stubAddresses = new HashSet<uint>();
             foreach (Match match in StubRegex.Matches(source))
             {
-                var address = ParseAddress(match.Groups["address"].Value);
+                var address = ParseAddress(match.Groups["address"].Value, addressMap, sourceFile.RelativePath);
                 stubAddresses.Add(address);
                 var symbol = match.Groups["symbol"].Value;
                 var tail = match.Groups["tail"].Value;
@@ -57,7 +61,7 @@ public static class RuntimeNativeGuestEffectAnalyzer
 
             foreach (Match match in RegistrationRegex.Matches(source))
             {
-                var address = ParseAddress(match.Groups["address"].Value);
+                var address = ParseAddress(match.Groups["address"].Value, addressMap, sourceFile.RelativePath);
                 if (stubAddresses.Contains(address))
                     continue;
                 var symbol = match.Groups["symbol"].Value;
@@ -73,7 +77,7 @@ public static class RuntimeNativeGuestEffectAnalyzer
             }
 
             foreach (Match match in FatalRegex.Matches(source))
-                Add(ParseAddress(match.Groups["address"].Value), CompleteContextContract(), false);
+                Add(ParseAddress(match.Groups["address"].Value, addressMap, sourceFile.RelativePath), CompleteContextContract(), false);
         }
 
         return new RuntimeNativeGuestEffectSet(contracts, precise, conservative);
@@ -363,6 +367,7 @@ public static class RuntimeNativeGuestEffectAnalyzer
         return -1;
     }
 
-    private static uint ParseAddress(string value) => GuestTargetParser.ParseHexAddress(value);
+    private static uint ParseAddress(string value, RuntimeAddressMap? addressMap, string sourceFile) =>
+        RuntimeNativeIndexBuilder.ParseAddress(value, addressMap, sourceFile);
 
 }

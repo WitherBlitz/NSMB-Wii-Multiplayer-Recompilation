@@ -64,11 +64,14 @@ Press **F10** while the game window has focus:
 - MetalFX spatial upscaling on supported macOS GPUs
 - Controller assignment for all four ports
 - Full per-controller button mapping, including the bumpers
+- Wii Remote tilt and shake bindings, configurable in the in-game Controller settings or with F10
 - Dolphin-syntax input expressions and GCPadNew.ini import
 - Controller vibration on/off
 - Volume, instant mute, and the music ducking toggle
 
 Everything you change is saved to `Config.toml` on the spot and restored next launch.
+Bind **Tilt left** to the left trigger (LT/L2) and **Tilt right** to the right trigger (RT/R2);
+trigger travel controls how much the remote tilts.
 
 **Dolphin-compatible input expressions.** 
 Each GameCube control can carry an expression in Dolphin's input syntax, with the same operators

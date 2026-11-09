@@ -25,6 +25,12 @@ inline uint64_t Bits(double x) {
     return i;
 }
 
+inline uint32_t Bits32(float x) {
+    uint32_t i;
+    std::memcpy(&i, &x, sizeof i);
+    return i;
+}
+
 inline int Clz128(u128 x) {
     const uint64_t hi = static_cast<uint64_t>(x >> 64), lo = static_cast<uint64_t>(x);
     return hi != 0 ? __builtin_clzll(hi) : lo != 0 ? 64 + __builtin_clzll(lo) : 128;
@@ -185,8 +191,79 @@ inline double DenormalAsZero(double x) {
     return std::fpclassify(x) == FP_SUBNORMAL ? std::copysign(0.0, x) : x;
 }
 
+// Fast paths. Most of the game's multiply-adds take single-precision values (paired singles, and
+// doubles loaded from floats), whose product a double holds exactly; the one rounding then happens
+// in the add, so plain multiply-then-add gives the fused result bit for bit. The exact unpacking
+// below is only needed when the product does not fit, or (for floats) when the double sum lands
+// exactly halfway between two floats, where rounding it again could go the wrong way.
+
+// a*b is exact in a double: both normal, their significant bits fit in 53, and the product's
+// exponent stays inside the double normal range (so neither flush-to-zero nor denormals-are-zero can
+// touch it).
+inline bool ProductIsExact(double a, double b) {
+    const uint64_t ia = Bits(a), ib = Bits(b);
+    const int ea = static_cast<int>((ia >> 52) & 0x7FF), eb = static_cast<int>((ib >> 52) & 0x7FF);
+    if (ea == 0 || eb == 0 || ea == 0x7FF || eb == 0x7FF) {
+        return false;  // zero, subnormal, infinite or NaN: the exact path's special cases
+    }
+    const int e = ea + eb - 2 * 1023;  // the product is in [2^e, 2^(e+2))
+    if (e < -1000 || e > 1000) {
+        return false;
+    }
+    constexpr uint64_t kLead = uint64_t{1} << 52;
+    const int bitsA = 53 - __builtin_ctzll((ia & (kLead - 1)) | kLead);
+    const int bitsB = 53 - __builtin_ctzll((ib & (kLead - 1)) | kLead);
+    return bitsA + bitsB <= 53;
+}
+
+// The slow (exact) paths, kept out of line so the fast paths inline into translated code.
+[[gnu::noinline]] inline double FmaExact(double a, double b, double c, bool flush);
+[[gnu::noinline]] inline float FmafExact(float a, float b, float c, bool flush);
+
 // fma(a, b, c) for doubles. `flush`: the x86 flush-to-zero and denormals-are-zero modes are on.
 inline double Fma(double a, double b, double c, bool flush = false) {
+#pragma clang fp contract(off)
+    if (ProductIsExact(a, b)) [[likely]] {
+        // a and b are normal, so denormals-are-zero leaves them alone; it and flush-to-zero act on c
+        // and on the sum exactly as the exact path models them (it is checked against the
+        // instruction in both modes). A NaN or infinite c comes out as the exact path gives it too.
+        return a * b + c;
+    }
+    if ((a == 0.0 || b == 0.0) && std::isfinite(a) && std::isfinite(b)) {
+        // A zero product (matrices are full of zeros): the exact path's own a * b + c. The FP mode
+        // treats a subnormal operand here just as the exact path's denormals-are-zero step does.
+        return a * b + c;
+    }
+    return FmaExact(a, b, c, flush);
+}
+
+// fmaf(a, b, c) for floats (each lane of the paired-single ps_madd family).
+inline float Fmaf(float a, float b, float c, bool flush = false) {
+#pragma clang fp contract(off)
+    // Normal nonzero finite a and b (flush only changes subnormals, which go the exact way).
+    const uint32_t ia = Bits32(a), ib = Bits32(b);
+    const uint32_t ea = (ia >> 23) & 0xFF, eb = (ib >> 23) & 0xFF;
+    const uint32_t ic = Bits32(c), ec = (ic >> 23) & 0xFF;
+    if (ea != 0 && eb != 0 && ea != 0xFF && eb != 0xFF && ec != 0xFF && (ec != 0 || (ic << 1) == 0)) [[likely]] {
+        // c normal or zero: the product of two floats is exact in a double, the sum rounds once.
+        const double s = static_cast<double>(a) * static_cast<double>(b) + static_cast<double>(c);
+        const uint64_t u = Bits(s);
+        // Rounding s to a float is right unless s is exactly halfway between two floats (then the
+        // part the first rounding dropped decides) or s is below the smallest normal float (where
+        // floats are spaced wider and halfway points sit elsewhere). Sums that fit (not halfway with
+        // a nonzero remainder) are unaffected either way, so these just take the exact path.
+        if ((u & 0x1FFFFFFFull) != 0x10000000ull && (u & 0x7FFFFFFFFFFFFFFFull) >= 0x3810000000000000ull) [[likely]] {
+            return static_cast<float>(s);
+        }
+    } else if ((a == 0.0f || b == 0.0f) && ea != 0xFF && eb != 0xFF) {
+        // A zero product (matrices are full of zeros): the exact path's own a * b + c. The FP mode
+        // treats a subnormal operand here just as the exact path's denormals-are-zero step does.
+        return a * b + c;
+    }
+    return FmafExact(a, b, c, flush);
+}
+
+inline double FmaExact(double a, double b, double c, bool flush) {
     if (flush) {
         a = DenormalAsZero(a);
         b = DenormalAsZero(b);
@@ -210,8 +287,7 @@ inline double Fma(double a, double b, double c, bool flush = false) {
     return r;
 }
 
-// fmaf(a, b, c) for floats (each lane of the paired-single ps_madd family).
-inline float Fmaf(float a, float b, float c, bool flush = false) {
+inline float FmafExact(float a, float b, float c, bool flush) {
     if (flush) {
         a = std::fpclassify(a) == FP_SUBNORMAL ? std::copysign(0.0f, a) : a;
         b = std::fpclassify(b) == FP_SUBNORMAL ? std::copysign(0.0f, b) : b;

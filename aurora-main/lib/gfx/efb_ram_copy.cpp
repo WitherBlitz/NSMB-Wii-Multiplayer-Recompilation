@@ -261,6 +261,12 @@ void schedule(void* dest, uint32_t width, uint32_t height, GXTexFmt format, Text
   }
 }
 
+bool writes_guest_ram(GXTexFmt format, uint32_t width, uint32_t height, uint32_t strideWidth) noexcept {
+  // schedule()'s async test, leaving out what can only make it say no (offscreen, slots in use).
+  const size_t encodedSize = encoded_size(format, width, height);
+  return encodedSize != 0 && encodedSize <= (strideWidth > width ? kAsyncPatchMaxBytes : kAsyncReadbackMaxBytes);
+}
+
 bool has_pending(void* dest) noexcept {
   if (dest == nullptr) return !g_pending.empty() || !g_downloads.empty();
   return std::any_of(g_pending.begin(), g_pending.end(),

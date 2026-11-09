@@ -59,6 +59,11 @@ AuroraWindowSize g_windowSize;
 std::vector<AuroraEvent> g_events;
 std::atomic_bool g_backgrounded = false;
 std::atomic_bool g_nativeResizePending = false;
+// A move, resize or display mode change this file asked for that SDL_SyncWindow has not waited
+// out yet. On X11 a sync with nothing pending still sleeps 10 ms whenever the window is not exactly
+// where SDL expects it (another monitor, the window manager's borders), so syncing on every pump
+// cost the producer thread 10 ms a frame.
+std::atomic_bool g_windowSyncPending = true;
 std::atomic<AuroraDisplayMode> g_displayMode{AURORA_DISPLAY_MODE_WINDOWED};
 #if defined(SDL_PLATFORM_ANDROID)
 std::atomic_bool g_surfaceReady = false;
@@ -359,20 +364,59 @@ void process_event(SDL_Event& event) {
 }
 } // namespace
 
+namespace {
+bool is_gamepad_device_event(const SDL_Event& event) {
+  return event.type == SDL_EVENT_GAMEPAD_ADDED || event.type == SDL_EVENT_GAMEPAD_REMOVED ||
+         event.type == SDL_EVENT_GAMEPAD_REMAPPED;
+}
+
+// Gamepad arrivals and removals open and close SDL gamepads, which waits for the input thread while
+// it re-scans devices; they wait here instead, in order, and are handled once it is idle.
+std::vector<SDL_Event> g_pendingGamepadEvents;
+
+void process_event_or_hold(SDL_Event& event) {
+  if (!is_gamepad_device_event(event)) {
+    process_event(event);
+    return;
+  }
+  if (g_pendingGamepadEvents.empty() && input::try_lock_gate()) {
+    process_event(event);
+    input::unlock_gate();
+  } else {
+    g_pendingGamepadEvents.push_back(event);
+  }
+}
+
+void process_pending_gamepad_events() {
+  if (g_pendingGamepadEvents.empty() || !input::try_lock_gate()) {
+    return;
+  }
+  std::vector<SDL_Event> pending;
+  pending.swap(g_pendingGamepadEvents);
+  for (SDL_Event& event : pending) {
+    process_event(event);
+  }
+  input::unlock_gate();
+}
+} // namespace
+
 const AuroraEvent* poll_events() {
   g_events.clear();
   SDL_Event event;
   // Clear out the previous scroll values to prevent ghost input
   input::set_mouse_scroll(0, 0);
+  // Controllers are read once per frame, as when SDL_PumpEvents updated them on this thread.
+  input::sync_update();
+  process_pending_gamepad_events();
   if (is_paused()) {
     if (SDL_WaitEvent(&event)) {
-      process_event(event);
+      process_event_or_hold(event);
     } else {
       Log.warn("SDL_WaitEvent failed: {}", SDL_GetError());
     }
   }
   while (SDL_PollEvent(&event)) {
-    process_event(event);
+    process_event_or_hold(event);
   }
   g_events.push_back(AuroraEvent{
       .type = AURORA_NONE,
@@ -644,7 +688,7 @@ bool is_presentable() noexcept {
 }
 
 void pump_events() noexcept {
-  if (g_window != nullptr) {
+  if (g_window != nullptr && g_windowSyncPending.exchange(false, std::memory_order_acq_rel)) {
     SDL_SyncWindow(g_window);
   }
   SDL_PumpEvents();
@@ -777,6 +821,7 @@ void set_display_mode(AuroraDisplayMode mode) {
   }
   g_displayMode.store(mode, std::memory_order_release);
   g_nativeResizePending.store(true, std::memory_order_release);
+  g_windowSyncPending.store(true, std::memory_order_release);
   TRY_WARN(push_custom_event(CustomEvent::FutureResize), "Failed to queue fullscreen resize event: {}",
            SDL_GetError());
 }
@@ -786,15 +831,18 @@ AuroraDisplayMode get_display_mode() { return g_displayMode.load(std::memory_ord
 void set_window_size(uint32_t width, uint32_t height) {
   TRY_WARN(SDL_RestoreWindow(g_window), "Failed to un-maximize window: {}", SDL_GetError());
   TRY_WARN(SDL_SetWindowSize(g_window, width, height), "Failed to set window size: {}", SDL_GetError());
+  g_windowSyncPending.store(true, std::memory_order_release);
 }
 
 void set_window_position(uint32_t x, uint32_t y) {
   TRY_WARN(SDL_SetWindowPosition(g_window, x, y), "Failed to set window position: {}", SDL_GetError());
+  g_windowSyncPending.store(true, std::memory_order_release);
 }
 
 void center_window() {
   TRY_WARN(SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED),
            "Failed to center window: {}", SDL_GetError());
+  g_windowSyncPending.store(true, std::memory_order_release);
 }
 
 void sync_frame_buffer_size() noexcept {

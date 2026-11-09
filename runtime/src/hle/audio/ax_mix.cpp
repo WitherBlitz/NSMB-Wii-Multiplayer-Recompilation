@@ -5,6 +5,7 @@
 #include "abi_bridge.h"
 #include "audio_backend.h"
 #include "ax_mix_kernels.h"
+#include "ax_voice_tags.h"
 #include "axfx_delay_native.h"
 #include "axfx_reverb_native.h"
 #include "guest_profiler.h"
@@ -396,6 +397,19 @@ private:
             PushMail(kDspSync);
         }
 
+        // This frame's volumes, and (only while one of them is under 100%) which slider each voice
+        // follows, found here on the guest thread while the mix is idle: it reads the game's sound
+        // objects (AxVoiceTags), which the worker must not.
+        m_frameMusicVolume = MusicAttenuation::MusicVolume();
+        m_frameEffectsVolume = MusicAttenuation::SoundEffectsVolume();
+        m_frameMenuVolume = MusicAttenuation::UiVolume();
+        if (m_frameMusicVolume != 1.0f || m_frameEffectsVolume != 1.0f || m_frameMenuVolume != 1.0f) {
+            AxVoiceTags::Refresh(m_voiceTags);
+            m_voiceTagsValid = true;
+        } else {
+            m_voiceTagsValid = false;
+        }
+
         const bool deferred = m_mixWorkerEnabled && EnsureMixWorker();
         m_deferredAux = deferred;
         m_auxInCount = 0;
@@ -632,14 +646,17 @@ private:
     }
 
     void SetupProcessing(uint32_t initAddr) {
-        // A frame starts here: the music share of the main buses starts empty, and is kept at
-        // all only while Music and Sound Effects differ from 100%.
-        m_musicVolume = MusicAttenuation::MusicVolume();
-        m_effectsVolume = MusicAttenuation::SoundEffectsVolume();
-        m_splitMix = m_musicVolume != 1.0f || m_effectsVolume != 1.0f;
+        // A frame starts here: the music and menu shares of the main buses start empty, and are
+        // kept at all only while Music, Sound Effects or Menu Sounds differ from 100%.
+        m_musicVolume = m_frameMusicVolume;
+        m_effectsVolume = m_frameEffectsVolume;
+        m_menuVolume = m_frameMenuVolume;
+        m_splitMix = m_voiceTagsValid;
         if (m_splitMix) {
             m_musicL.fill(0);
             m_musicR.fill(0);
+            m_menuL.fill(0);
+            m_menuR.fill(0);
         }
         const AXBuffers buffers = MixBuffers();
         for (size_t i = 0; i < buffers.size(); ++i) {
@@ -717,6 +734,10 @@ private:
         while (pbAddr && guard++ < 256) {
             AXPBWii pb{};
             ReadPB(pbAddr, pb);
+            if (m_splitMix) {
+                const int voice = AxVoiceTags::VoiceIndex(pbAddr);
+                m_voiceKind = voice >= 0 ? m_voiceTags[static_cast<size_t>(voice)] : AxVoiceTags::kUnknown;
+            }
             AXBuffers buffers = MixBuffers();
             const AXMixControl control = ConvertMixerControl(Hilo(pb.mixer_control_hi, pb.mixer_control_lo));
             if (oldAxLayout && (pb.updates.num_updates[0] | pb.updates.num_updates[1] | pb.updates.num_updates[2]) != 0) {
@@ -1057,6 +1078,8 @@ private:
             if (m_splitMix) {
                 m_musicL[i] = static_cast<int>((static_cast<int64_t>(m_musicL[i]) * coef) >> 15);
                 m_musicR[i] = static_cast<int>((static_cast<int64_t>(m_musicR[i]) * coef) >> 15);
+                m_menuL[i] = static_cast<int>((static_cast<int64_t>(m_menuL[i]) * coef) >> 15);
+                m_menuR[i] = static_cast<int>((static_cast<int64_t>(m_menuR[i]) * coef) >> 15);
             }
         }
     }
@@ -1089,26 +1112,32 @@ private:
             }
             MixAdd(out, samples.data(), count, vd, dpop, (control & rampBit) != 0);
         };
-        // A music voice (a stream: NSMBW's music is all streamed) mixes its main left and right
-        // into a zeroed block first, then adds that to the bus and to the music share. MixAdd adds
-        // each clamped sample to what is there, so the bus ends up exactly as without the split.
-        auto mixMain = [&](uint32_t bit, uint32_t rampBit, int* out, int* music, VolumeData& vd, int16_t& dpop) {
-            if (!m_splitMix || pb.is_stream != 1 || (control & bit) == 0) {
+        // A music voice (one on the music sound players, AxVoiceTags; and any stream, NSMBW's music being
+        // all streamed) or a menu sound mixes its main left and right into a zeroed block first, then
+        // adds that to the bus and to the music or menu share. MixAdd adds each clamped sample to what
+        // is there, so the bus ends up exactly as without the split.
+        const bool menuVoice = m_splitMix && m_voiceKind == AxVoiceTags::kMenu;
+        const bool musicVoice =
+            m_splitMix && !menuVoice && (m_voiceKind == AxVoiceTags::kMusic || pb.is_stream == 1);
+        auto mixMain = [&](uint32_t bit, uint32_t rampBit, int* out, int* music, int* menu, VolumeData& vd,
+                           int16_t& dpop) {
+            if ((!musicVoice && !menuVoice) || (control & bit) == 0) {
                 mix(bit, rampBit, out, vd, dpop);
                 return;
             }
+            int* share = menuVoice ? menu : music;
             std::array<int, kAxSamplesPerFrame> voice{};
             MixAdd(voice.data(), samples.data(), count, vd, dpop, (control & rampBit) != 0);
             for (uint32_t i = 0; i < count; ++i) {
                 out[i] += voice[i];
-                music[i] += voice[i];
+                share[i] += voice[i];
             }
         };
         const size_t busOffset = static_cast<size_t>(buffers[kBusMainL] - m_bus[kBusMainL].data());
-        mixMain(MIX_MAIN_L, MIX_MAIN_L_RAMP, buffers[kBusMainL], m_musicL.data() + busOffset, pb.mixer.main_left,
-                pb.dpop.main_left);
-        mixMain(MIX_MAIN_R, MIX_MAIN_R_RAMP, buffers[kBusMainR], m_musicR.data() + busOffset, pb.mixer.main_right,
-                pb.dpop.main_right);
+        mixMain(MIX_MAIN_L, MIX_MAIN_L_RAMP, buffers[kBusMainL], m_musicL.data() + busOffset,
+                m_menuL.data() + busOffset, pb.mixer.main_left, pb.dpop.main_left);
+        mixMain(MIX_MAIN_R, MIX_MAIN_R_RAMP, buffers[kBusMainR], m_musicR.data() + busOffset,
+                m_menuR.data() + busOffset, pb.mixer.main_right, pb.dpop.main_right);
         mix(MIX_MAIN_S, MIX_MAIN_S_RAMP, buffers[kBusMainS], pb.mixer.main_surround, pb.dpop.main_surround);
         mix(MIX_AUXA_L, MIX_AUXA_L_RAMP, buffers[kBusAuxAL], pb.mixer.auxA_left, pb.dpop.auxA_left);
         mix(MIX_AUXA_R, MIX_AUXA_R_RAMP, buffers[kBusAuxAR], pb.mixer.auxA_right, pb.dpop.auxA_right);
@@ -1121,6 +1150,12 @@ private:
         mix(MIX_AUXC_S, MIX_AUXC_S_RAMP, buffers[kBusAuxCS], pb.mixer.auxC_surround, pb.dpop.auxC_surround);
 
         if (pb.remote) {
+            // #18: whether any sound reaches the Wii Remotes' buses at all.
+            static std::atomic<bool> s_remoteLogged{false};
+            if (!s_remoteLogged.exchange(true, std::memory_order_relaxed)) {
+                RT_LOGF(RT_TAG_AUDIO, "a voice is mixed to the Wii Remote speakers (control 0x%04X)\n",
+                        pb.remote_mixer_control);
+            }
             if (newFilter && pb.remote_iir.on) {
                 if (pb.remote_iir.on == 2) {
                     BiquadFilter(samples.data(), count, pb.remote_iir.biquad);
@@ -1391,9 +1426,9 @@ private:
         }
     }
 
-    // What the speakers play of this frame: the music share at the Music volume and the rest
-    // (effects, and the aux returns, which carry the effects' reverb) at the Sound Effects
-    // volume. The frame the game sees is written as before; the speaker frame is kept here, with
+    // What the speakers play of this frame: the music share at the Music volume, the menu share at
+    // the Menu Sounds volume and the rest (effects, and the aux returns, which carry the effects'
+    // reverb, menu sounds' included) at the Sound Effects volume. The frame the game sees is written as before; the speaker frame is kept here, with
     // a copy of that guest frame, for PushAudioBlock to play instead.
     void RecordSpeakerFrame(uint32_t lrAddr, const std::array<uint16_t, kAxSamplesPerFrame>& ramp) {
         SpeakerFrame& frame = m_speakerFrames[m_nextSpeakerFrame];
@@ -1401,11 +1436,14 @@ private:
         frame.addr = lrAddr;
         std::array<float, kAxSamplesPerFrame> remote{};
         MixHostRemotes(remote);
-        const auto speaker = [&](int bus, int music, uint16_t gain, float remoteSample) {
+        const auto speaker = [&](int bus, int music, int menu, uint16_t gain, float remoteSample) {
             const int64_t all = (static_cast<int64_t>(bus) * gain) >> 15;
             const int64_t musicPart = (static_cast<int64_t>(music) * gain) >> 15;
+            const int64_t menuPart = (static_cast<int64_t>(menu) * gain) >> 15;
             const float mixed = static_cast<float>(musicPart) * m_musicVolume +
-                                (static_cast<float>(all - musicPart) + remoteSample * gain / 32768.0f) * m_effectsVolume;
+                                static_cast<float>(menuPart) * m_menuVolume +
+                                (static_cast<float>(all - musicPart - menuPart) + remoteSample * gain / 32768.0f) *
+                                    m_effectsVolume;
             return ClampS16(static_cast<int64_t>(mixed));
         };
         for (uint32_t i = 0; i < kAxSamplesPerFrame; ++i) {
@@ -1415,21 +1453,25 @@ private:
             BigEndian::Write16(frame.guest.data() + i * 4, static_cast<uint16_t>(right));
             BigEndian::Write16(frame.guest.data() + i * 4 + 2, static_cast<uint16_t>(left));
             BigEndian::Write16(frame.speaker.data() + i * 4,
-                               static_cast<uint16_t>(speaker(m_bus[kBusMainR][i], m_musicR[i], ramp[i], remote[i])));
+                               static_cast<uint16_t>(speaker(m_bus[kBusMainR][i], m_musicR[i], m_menuR[i], ramp[i],
+                                                             remote[i])));
             BigEndian::Write16(frame.speaker.data() + i * 4 + 2,
-                               static_cast<uint16_t>(speaker(m_bus[kBusMainL][i], m_musicL[i], ramp[i], remote[i])));
+                               static_cast<uint16_t>(speaker(m_bus[kBusMainL][i], m_musicL[i], m_menuL[i], ramp[i],
+                                                             remote[i])));
         }
         frame.valid = true;
         m_musicL.fill(0);
         m_musicR.fill(0);
+        m_menuL.fill(0);
+        m_menuR.fill(0);
     }
 
 public:
     // The speaker version of the AI block at [addr, addr + bytes): each frame the mix recorded and
     // the guest memory there still holds exactly. A frame it can't match (played later than the
-    // recorded frames reach, after a hitch) is the guest's own frame at the lower of the Music and
-    // Sound Effects volumes, a short dip, where playing the whole block unscaled put the music
-    // back at 100% for a moment.
+    // recorded frames reach, after a hitch) is the guest's own frame at the lowest of the Music,
+    // Sound Effects and Menu Sounds volumes, a short dip, where playing the whole block unscaled put
+    // the music back at 100% for a moment.
     const uint8_t* SpeakerBlock(uint32_t addr, uint32_t bytes) {
         constexpr uint32_t kFrameBytes = kAxSamplesPerFrame * 4;
         if (bytes == 0 || bytes % kFrameBytes != 0 || bytes > m_speakerBlock.size()) {
@@ -1453,7 +1495,7 @@ public:
                 std::memcpy(m_speakerBlock.data() + offset, found->speaker.data(), kFrameBytes);
                 continue;
             }
-            const float scale = std::min(m_musicVolume, m_effectsVolume);
+            const float scale = std::min({m_musicVolume, m_effectsVolume, m_menuVolume});
             for (uint32_t i = 0; i < kFrameBytes; i += 2) {
                 const auto sample = static_cast<int16_t>(BigEndian::Read16(guest + i));
                 BigEndian::Write16(m_speakerBlock.data() + offset + i,
@@ -1723,8 +1765,16 @@ private:
     bool m_splitMix = false;
     float m_musicVolume = 1.0f;
     float m_effectsVolume = 1.0f;
+    float m_menuVolume = 1.0f;
     std::array<int, kAxSamplesPerFrame> m_musicL{};
     std::array<int, kAxSamplesPerFrame> m_musicR{};
+    std::array<int, kAxSamplesPerFrame> m_menuL{};
+    std::array<int, kAxSamplesPerFrame> m_menuR{};
+    // Set on the guest thread with the mix idle (DispatchCommandList), read by the mix.
+    float m_frameMusicVolume = 1.0f, m_frameEffectsVolume = 1.0f, m_frameMenuVolume = 1.0f;
+    AxVoiceTags::Tags m_voiceTags{};
+    bool m_voiceTagsValid = false;
+    uint8_t m_voiceKind = AxVoiceTags::kUnknown;  // the voice ProcessPBList is mixing
     // About 200 ms of AX frames: the AI can play a block well after it was mixed when a frame hitches.
     std::array<SpeakerFrame, 64> m_speakerFrames{};
     size_t m_nextSpeakerFrame = 0;

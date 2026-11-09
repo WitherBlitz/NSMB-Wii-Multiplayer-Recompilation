@@ -1,5 +1,6 @@
 #pragma once
 #include "ppc_isa_fpenv.h"
+#include "../guest_thread_state.h"
 
 #include <cmath>
 #include <cstdint>
@@ -23,8 +24,6 @@ union PPC_FPR {
 #endif
     } paired;
 };
-
-struct IndirectDispatchMemo;
 
 // PowerPC CPU Context
 struct CpuContext {
@@ -53,21 +52,14 @@ struct CpuContext {
     uint32_t srr0;      // Save/Restore Register 0
     uint32_t srr1;      // Save/Restore Register 1
     uint32_t msr;       // Machine State Register
-
-    // Per-context indirect-dispatch memo. The dispatcher already holds this context, so the
-    // bctrl path reaches its cache without thread-local storage, which a shared library on
-    // arm64 Android resolves through __tls_get_addr.
-    IndirectDispatchMemo* dispatchMemo = nullptr;
 };
-
-inline thread_local CpuContext* g_currentCpuContext = nullptr;
 
 class CpuContextScope {
 public:
     explicit CpuContextScope(CpuContext* ctx)
-        : previous_(g_currentCpuContext)
+        : previous_(g_guestThreadState.currentCpuContext)
     {
-        g_currentCpuContext = ctx;
+        g_guestThreadState.currentCpuContext = ctx;
 
         savedMxcsr_ = MkwGetHostFpControl();
         if (ctx != nullptr)
@@ -76,7 +68,7 @@ public:
 
     ~CpuContextScope()
     {
-        g_currentCpuContext = previous_;
+        g_guestThreadState.currentCpuContext = previous_;
         if (previous_ != nullptr)
             MkwApplyHostNiMode(previous_->fpscr);
         else
@@ -93,7 +85,7 @@ private:
 
 inline CpuContext* TryGetCpuContext() noexcept
 {
-    return g_currentCpuContext;
+    return g_guestThreadState.currentCpuContext;
 }
 
 inline CpuContext* CurrentCpuContext()

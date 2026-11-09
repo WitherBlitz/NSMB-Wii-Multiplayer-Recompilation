@@ -59,7 +59,9 @@ SHA-256 hashes for the WiiConnect24 bootstrap tree:
 | `runtime/assets/wii/shared2/wc24/mbox/wc24send.mbx` | `C248DC031CE09F7BE1E55956B6F173E79D6A47D913C22A16593C4687325692B7` |
 
 Dolphin was also used extensively as a behavioural reference during development of this project's
-hardware and IOS high-level implementations.
+hardware and IOS high-level implementations. Bluetooth passthrough (`runtime/src/bt/`) follows the
+design of Dolphin's `BTReal` / `LibUSBBluetoothAdapter` (its fake replies, the Read Buffer Size
+rewrite, the QoS request and the sync button events); its code was written for this project.
 
 ### Dolphin Emulator Riivolution code - GPL-2.0-or-later
 
@@ -110,6 +112,33 @@ fallback - though this project's x86_64-only target only ever compiles amd64.c) 
 Source: <https://github.com/higan-emu/libco>. Full license text:
 `runtime/third_party/libco/LICENSE`.
 
+### libadrenotools and liblinkernsbypass - BSD-2-Clause
+
+Copyright Billy Laws.
+On Android, these load a GPU driver the user picked in place of the phone's own
+(`runtime/src/android/gpu_driver.cpp`). Vendored without their `tools` folder in
+`runtime/third_party/libadrenotools` from commit `8fae8ce254dfc1344527e05301e43f37dea2df80`, with
+liblinkernsbypass from commit `aa3975893d83ef1bc84c321ec60c65fbf1287887`.
+Source: <https://github.com/bylaws/libadrenotools>. Full license text:
+`runtime/third_party/libadrenotools/LICENSE` and `lib/linkernsbypass/LICENSE` beside it.
+
+### LZMA SDK 26.06 - public domain
+
+Written and placed in the public domain by Igor Pavlov.
+The Settings window's Mods tab unpacks the HD Texture Pack's `.7z` archive with the SDK's C 7z
+decoder (`runtime/src/hd_texture_pack.cpp`). Only the files the decoder needs are vendored, unchanged,
+in `runtime/third_party/lzma-sdk`. Source: <https://www.7-zip.org/sdk.html>. License note:
+`runtime/third_party/lzma-sdk/README.md`.
+
+### NSMBW address map (NSMBW-Updated) - MIT
+
+Copyright (c) 2021 RoadrunnerWMC; originally by Ninji and CLF78.
+The address map between New Super Mario Bros. Wii's versions, which the build tools use to support
+discs other than the USA one. Vendored as `projects/nsmbw/variants/address-map.txt` from
+`code/address-map.txt` at commit `9973178607c652ad880959ceee29fa8e32a80a48`.
+Source: <https://github.com/NSMBW-Community/NSMBW-Updated>. Full license text:
+`projects/nsmbw/variants/LICENSE-address-map.txt`.
+
 ---
 
 ## Fetched at build time and redistributed in release builds
@@ -128,7 +157,7 @@ trees themselves (fetched by `Launcher/Prepare-Dependencies.ps1`) so end-user bu
 | Tint (part of Dawn) | with Dawn | BSD-3-Clause | <https://dawn.googlesource.com/dawn> |
 | DirectXShaderCompiler (`dxcompiler.dll`) | with Dawn | NCSA / University of Illinois Open Source | <https://github.com/microsoft/DirectXShaderCompiler> |
 | SDL | 3.4.4 | zlib | <https://github.com/libsdl-org/SDL> |
-| libusb (linked into SDL on Windows) | 1.0.30 | LGPL-2.1-or-later | <https://github.com/libusb/libusb> |
+| libusb (linked into SDL on Windows; Bluetooth passthrough on Windows and Linux) | 1.0.30 | LGPL-2.1-or-later | <https://github.com/libusb/libusb> |
 | Abseil | LTS 20240722.0 | Apache-2.0 | <https://github.com/abseil/abseil-cpp> |
 | Dear ImGui | 1.91.9b-docking | MIT | <https://github.com/ocornut/imgui> |
 | {fmt} | 11.1.4 | MIT | <https://github.com/fmtlib/fmt> |

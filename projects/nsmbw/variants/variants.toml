@@ -1,0 +1,33 @@
+# The game versions the port can be built for, read by projects/nsmbw/tools/variants.py.
+#
+# E1 (USA rev 1) is the canonical address space: the runtime and the tools are written against E1
+# addresses, and gen_variant.py maps them to each other version through NSMBW-Updated's
+# address-map.txt (block `address_map_block`), the version's overrides.tsv and values it computes
+# from the version's own binaries (SDA bases, entry point, REL bases, the p1_character stub area).
+# Newer Super Mario Bros. Wii is a mod on E1 (SMNE03 on a SMNE01 rev 1 base) and is not a variant.
+#
+# game_dir: where unpack_game.py --variant <v> writes the variant's main.dol and RELs, next to the
+# repository. main_dol_sha256: the clean main.dol on the disc. fst_size: the disc's FST in bytes
+# (boot.bin 0x428 x 4); the game's MEM1 arena ends below it (runtime: system_bridge.cpp).
+
+[E1]
+game_id = "SMNE01"
+revision = 1
+region = "E"
+display_name = "New Super Mario Bros. Wii (USA rev 1)"
+address_map_block = "E1"
+main_dol_sha256 = "6d755ec24c395fee600a856a85785e0e99c0b7ecb680d573a6cdd1aa6f7beee7"
+fst_size = 0x8B2C
+game_dir = "game"
+
+[P1]
+game_id = "SMNP01"
+revision = 1
+region = "P"
+display_name = "New Super Mario Bros. Wii (Europe rev 1)"
+address_map_block = "P1"
+# From the user's dump on TRI-BEAST (Dolphin extract, 2026-11-05). Pending Dolphin's
+# Properties > Verify on that disc image before it is relied on.
+main_dol_sha256 = "51a2a8b0941e8fe3390404a9b2094e3c78246a999efa58fcc8a7c534c11d7b5b"
+fst_size = 0x8F68
+game_dir = "game-P1"

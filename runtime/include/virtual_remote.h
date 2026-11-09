@@ -20,7 +20,8 @@
 //
 // Gamepads (aurora's default GameCube mapping): left stick or D-pad moves, south button jumps,
 // east and west run, north is A, Start is +, Back or left trigger is -, right shoulder or right
-// trigger shakes, right stick tilts.
+// trigger shakes, right stick tilts by default. F10 > Controller settings can bind tilt left/right to
+// another input, such as LT/L2 and RT/R2.
 namespace VirtualRemote {
 
 // True when `chan` should report a connected Wii Remote driven by a keyboard or gamepad.
@@ -33,7 +34,15 @@ bool Sample(uint32_t chan, WiiRemoteInput::KpadSample& sample);
 enum TouchButton : uint32_t {
     kTouchLeft = 0x001, kTouchRight = 0x002, kTouchUp = 0x004, kTouchDown = 0x008,
     kTouchOne = 0x010, kTouchTwo = 0x020, kTouchA = 0x040, kTouchPlus = 0x080, kTouchMinus = 0x100,
+    kTouchB = 0x200, kTouchHome = 0x400,
 };
 void SetTouchState(uint32_t touchButtons, bool shake, float tilt);
+
+// Re-reads tilt_left, tilt_right and shake from the config (F10 > Controller settings calls it after a change).
+void ReloadRemoteBindings();
+
+// Player 1's controller has motion sensors of its own, which then drive the remote's motion in place
+// of the phone's. The phone's are for a controller without them, or none at all.
+bool ControllerMotion();
 
 } // namespace VirtualRemote

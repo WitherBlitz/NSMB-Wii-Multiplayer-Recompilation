@@ -82,16 +82,19 @@ target_compile_definitions(mkw_runtime_common PRIVATE
     _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION)
 target_link_libraries(mkw_runtime_common PRIVATE
     aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx)
-target_link_libraries(mkw_runtime_common PRIVATE mkw_platform mkw::pugixml mkw::toml11 mkw::cryptopp mkw::mbedtls)
+target_link_libraries(mkw_runtime_common PRIVATE mkw_platform mkw::pugixml mkw::lzma mkw::toml11 mkw::cryptopp mkw::mbedtls)
+nsmbw_bt_passthrough_configure_runtime(mkw_runtime_common)
 if(MKW_PLATFORM_WINDOWS)
-    # ole32/uuid: the first-start game folder picker (game_folder.cpp).
-    target_link_libraries(mkw_runtime_common PRIVATE shell32 windowsapp ole32 uuid)
+    # ole32/uuid/comctl32: the first-start game picker (game_picker_win32.cpp).
+    target_link_libraries(mkw_runtime_common PRIVATE shell32 windowsapp ole32 uuid comctl32)
 elseif(MKW_PLATFORM_LINUX)
     # ${CMAKE_DL_LIBS} for music_attenuation.cpp's dlopen of libdbus-1 (MPRIS
     # media monitoring).
     target_link_libraries(mkw_runtime_common PRIVATE mkw::libco ${CMAKE_DL_LIBS})
 elseif(MKW_PLATFORM_ANDROID)
     target_link_libraries(mkw_runtime_common PRIVATE android log ${CMAKE_DL_LIBS})
+    target_include_directories(mkw_runtime_common PRIVATE
+        "${MKW_RUNTIME_SOURCE_DIR}/third_party/libadrenotools/include")
 endif()
 
 if(MKW_PLATFORM_MACOS)
@@ -205,10 +208,11 @@ function(mkw_configure_product target)
     # include the same fat translated headers; bound them by the same pool.
     mkw_bound_translated_compiles(${target})
     target_link_libraries(${target} PRIVATE
-        mkw_platform mkw_base_shared mkw::pugixml mkw::toml11 mkw::cryptopp mkw::mbedtls)
+        mkw_platform mkw_base_shared mkw::pugixml mkw::lzma mkw::toml11 mkw::cryptopp mkw::mbedtls)
 
     target_link_libraries(${target} PRIVATE
         aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx)
+    nsmbw_bt_passthrough_link_product(${target})
     if(MKW_PLATFORM_MACOS)
         target_link_libraries(${target} PRIVATE
             "${MKW_IOKIT_FRAMEWORK}" "${MKW_COREFOUNDATION_FRAMEWORK}" "${MKW_COREAUDIO_FRAMEWORK}")
@@ -231,7 +235,7 @@ function(mkw_configure_product target)
 
     if(MKW_PLATFORM_WINDOWS)
         target_link_libraries(${target} PRIVATE
-            dbghelp user32 winmm ws2_32 iphlpapi secur32 crypt32 windowsapp winhttp)
+            dbghelp user32 winmm ws2_32 iphlpapi secur32 crypt32 windowsapp winhttp comctl32)
 
         set_target_properties(${target} PROPERTIES WIN32_EXECUTABLE TRUE)
     elseif(MKW_PLATFORM_LINUX OR MKW_PLATFORM_MACOS_X86_64)
@@ -251,6 +255,15 @@ function(mkw_configure_product target)
         # devices that use them.
         target_link_libraries(${target} PRIVATE android log ${CMAKE_DL_LIBS})
         target_link_options(${target} PRIVATE "LINKER:-z,max-page-size=16384" "LINKER:--no-undefined")
+        # Calls between the library's own functions bind inside it: as a shared library with default
+        # visibility, every call from one translated function to another (and to the runtime) went
+        # through a PLT stub and a GOT load, 5.8% of the game thread's samples on a slow Android device.
+        # Nothing interposes on libmain's functions; the JNI entry points stay exported.
+        target_link_options(${target} PRIVATE "LINKER:-Bsymbolic-functions")
+        # A picked GPU driver: Dawn's dlopen of libvulkan.so lands in src/android/gpu_driver.cpp, which
+        # opens libadrenotools.so only then. Built here, staged as assets by stage-android.ps1.
+        target_link_options(${target} PRIVATE "LINKER:--wrap=dlopen" "LINKER:--wrap=dlclose")
+        add_dependencies(${target} adrenotools main_hook hook_impl)
         set_target_properties(${target} PROPERTIES OUTPUT_NAME main)
     endif()
     if(MKW_PLATFORM_WINDOWS)
@@ -329,15 +342,29 @@ target_precompile_headers(WiiCompiled PRIVATE
     "${MKW_RUNTIME_SOURCE_DIR}/include/mkw_pch.h")
 if(MKW_PLATFORM_WINDOWS)
     # The app icon (projects/nsmbw/tools/make_icons.ps1): Explorer, the taskbar and, through SDL's
-    # default of the executable's first icon, the game window.
+    # default of the executable's first icon, the game window. The manifest (1 24) gives the
+    # first-start game picker Common Controls 6 and per-monitor DPI awareness from the start.
     enable_language(RC)
     file(TO_CMAKE_PATH "${MKW_RUNTIME_SOURCE_DIR}/assets/icon/nsmbw.ico" MKW_APP_ICON)
-    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc" "1 ICON \"${MKW_APP_ICON}\"\n")
+    file(TO_CMAKE_PATH "${MKW_RUNTIME_SOURCE_DIR}/assets/windows/NSMBW.manifest" MKW_APP_MANIFEST)
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc"
+        "1 ICON \"${MKW_APP_ICON}\"\n1 24 \"${MKW_APP_MANIFEST}\"\n")
+    set_property(SOURCE "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc" APPEND PROPERTY
+        OBJECT_DEPENDS "${MKW_APP_ICON}" "${MKW_APP_MANIFEST}")
     target_sources(WiiCompiled PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc")
 endif()
 if(TARGET mkw_base_sensitive)
     target_sources(WiiCompiled PRIVATE $<TARGET_OBJECTS:mkw_base_sensitive>)
 endif()
+
+# Dev only, not part of any build by default: extracts a disc image the way the game's Open ISO
+# does (wii_disc.cpp), to compare with Dolphin's Extract Entire Disc.
+add_executable(WiiDiscExtract EXCLUDE_FROM_ALL
+    "${MKW_RUNTIME_SOURCE_DIR}/../projects/nsmbw/tools/WiiDiscExtract.cpp"
+    "${MKW_RUNTIME_SOURCE_DIR}/src/wii_disc.cpp")
+target_include_directories(WiiDiscExtract PRIVATE "${MKW_RUNTIME_SOURCE_DIR}/include")
+target_compile_features(WiiDiscExtract PRIVATE cxx_std_20)
+target_link_libraries(WiiDiscExtract PRIVATE mkw::cryptopp)
 
 if(MKW_HAVE_RETRO_REWIND)
     add_executable(RetroRewind "${MKW_RETRO_REWIND_PRODUCT_SOURCE}" ${MKW_RETRO_REGISTRATION_SOURCES})

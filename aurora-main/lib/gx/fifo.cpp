@@ -4,8 +4,10 @@
 #include "../internal.hpp"
 #include "../webgpu/gpu.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -15,6 +17,15 @@
 #include <vector>
 
 #include "tracy/Tracy.hpp"
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#elif defined(__linux__)
+#include <pthread.h>
+#endif
 
 namespace aurora::gx::fifo {
 static Module Log("aurora::gx::fifo");
@@ -120,6 +131,17 @@ GxThread& gx_thread() {
   static GxThread* t = [] {
     auto* state = new GxThread();
     state->thread = std::thread([state] {
+      // Named for profilers (NSMBW_PROFILE_THREAD=GXThread). SetThreadDescription is looked up,
+      // as Windows 10 1607 brought it.
+#if defined(_WIN32)
+      using SetDescription = HRESULT(WINAPI*)(HANDLE, PCWSTR);
+      if (const auto set = reinterpret_cast<SetDescription>(reinterpret_cast<void*>(
+              GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription")))) {
+        set(GetCurrentThread(), L"GXThread");
+      }
+#elif defined(__linux__)
+      pthread_setname_np(pthread_self(), "GXThread");
+#endif
       for (;;) {
         std::vector<uint8_t> job;
         {
@@ -171,20 +193,55 @@ void hand_off() {
 }
 } // namespace
 
-bool threaded() {
+namespace {
+bool threaded_for(wgpu::BackendType backend) {
   // On by default when there's a core to spare for it; NSMBW_GX_THREAD=0 or 1 forces it.
+  // Two hardware threads count: on a two-core Celeron N2840 (Bay Trail) the game thread ran 8-15%
+  // faster in courses and on the world map with it, and menus up to 30%, though there it shares its
+  // core with the frame worker and the audio mix.
   static const bool wanted = [] {
     const char* value = std::getenv("NSMBW_GX_THREAD");
     if (value != nullptr && value[0] != '\0') {
       return value[0] == '1';
     }
-    return std::thread::hardware_concurrency() >= 4;
+    return std::thread::hardware_concurrency() >= 2;
   }();
   // Never on OpenGL (ES): its context belongs to one thread, so that renderer runs single-threaded.
   // Off until the renderer is up, too; turning on later is safe, as nothing is left queued then.
-  const auto backend = webgpu::g_backendType;
   return wanted && backend != wgpu::BackendType::Undefined && backend != wgpu::BackendType::Null &&
          backend != wgpu::BackendType::OpenGL && backend != wgpu::BackendType::OpenGLES;
+}
+
+// The answer for the backend it was last worked out for: (backend << 1) | on. Asked several times per
+// draw (the vertex-format setters), so the usual case is one compare; a backend change (a renderer
+// re-created after a lost device) works it out again.
+std::atomic<uint32_t> s_threadedFor{UINT32_MAX};
+} // namespace
+
+bool threaded() {
+  const auto backend = static_cast<uint32_t>(webgpu::g_backendType);
+  const uint32_t cached = s_threadedFor.load(std::memory_order_relaxed);
+  if ((cached >> 1) == backend) LIKELY {
+    return (cached & 1u) != 0;
+  }
+  const bool on = threaded_for(static_cast<wgpu::BackendType>(backend));
+  s_threadedFor.store((backend << 1) | (on ? 1u : 0u), std::memory_order_relaxed);
+  return on;
+}
+
+bool async_copies() {
+  // On with the GX thread on 4+ hardware threads, where it has a core of its own. Below that the
+  // game thread decodes the tail itself whenever the GX thread is idle (sync_if_threaded), and a
+  // two-core CPU's frame worker is the critical path, so copies stay as they were there.
+  // NSMBW_ASYNC_COPY=0 or 1 forces it (still only with the GX thread).
+  static const bool wanted = [] {
+    const char* value = std::getenv("NSMBW_ASYNC_COPY");
+    if (value != nullptr && value[0] != '\0') {
+      return value[0] == '1';
+    }
+    return std::thread::hardware_concurrency() >= 4;
+  }();
+  return wanted && threaded();
 }
 
 void flush_async() {
@@ -201,8 +258,31 @@ void sync_if_threaded() {
   if (!threaded()) {
     return;
   }
-  hand_off();
   auto& t = gx_thread();
+  // With fewer than four hardware threads the GX thread shares a core with the frame worker and the
+  // audio mix, and waking it for the last few commands, then being woken back, cost more than those
+  // commands: on a two-core Celeron N2840 a third of the game thread's time went to these waits
+  // while the GX thread sat idle. So when it has nothing queued and nothing in hand, decode the rest
+  // here, in order, as the single-threaded path does. NSMBW_GX_INLINE_SYNC=0 or 1 forces it.
+  static const bool inlineWhenIdle = [] {
+    const char* value = std::getenv("NSMBW_GX_INLINE_SYNC");
+    if (value != nullptr && value[0] != '\0') {
+      return value[0] == '1';
+    }
+    return std::thread::hardware_concurrency() < 4;
+  }();
+  if (inlineWhenIdle) {
+    std::unique_lock lock(t.mutex);
+    if (t.jobs.empty() && !t.busy) {
+      lock.unlock();  // only this thread queues jobs, so the GX thread stays idle meanwhile
+      if (detail::sBufferSize != 0) {
+        process_buffer(detail::sBufferData, detail::sBufferSize);
+        detail::sBufferSize = 0;
+      }
+      return;
+    }
+  }
+  hand_off();
   std::unique_lock lock(t.mutex);
   t.idle.wait(lock, [&t] { return t.jobs.empty() && !t.busy; });
 }

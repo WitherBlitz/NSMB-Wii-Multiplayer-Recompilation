@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -110,6 +111,30 @@ inline const NativeButtonItem& NativeButtonForValue(uint32_t nativeButton) {
     const auto it = std::find_if(kNativeButtons.begin(), kNativeButtons.end(),
                                  [&](const NativeButtonItem& item) { return PADAxisButtonIdentity(nativeButton) == PADAxisButtonIdentity(item.nativeButton); });
     return it == kNativeButtons.end() ? *FindNativeButton("unmapped") : *it;
+}
+
+// "right_trigger" or "right_trigger@30" -> that physical input (an axis keeps its threshold, in percent).
+// PAD_NATIVE_BUTTON_INVALID when the name is unknown, empty or "unmapped": the action's default.
+inline uint32_t ParseNativeBinding(std::string_view token) {
+    const NativeButtonItem* item = FindNativeButton(token);
+    if (item == nullptr) {
+        return PAD_NATIVE_BUTTON_INVALID;
+    }
+    if (!PADIsAxisButton(item->nativeButton)) {
+        return item->nativeButton;
+    }
+    const size_t at = token.find('@');
+    if (at == std::string_view::npos) {
+        return item->nativeButton;
+    }
+    const std::string digits = TrimToken(token.substr(at + 1));
+    uint32_t threshold = 0;
+    const char* end = digits.data() + digits.size();
+    const auto parsed = std::from_chars(digits.data(), end, threshold);
+    if (parsed.ec != std::errc{} || parsed.ptr != end || threshold < 1 || threshold > 100) {
+        return item->nativeButton;
+    }
+    return PADAxisButtonIdentity(item->nativeButton) | (threshold << 8);
 }
 
 inline const GameCubeButtonItem* FindGameCubeButton(std::string_view configKey) {

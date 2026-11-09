@@ -38,7 +38,8 @@ python projects/nsmbw/tools/prelink_rels.py
 `unpack_game.py` checks the disc (SMNE01 revision 1, clean `main.dol`), copies `sys/main.dol` and
 unpacks the four boot RELs (`files/rels/*.rel.LZ`) into `..\game`. `prelink_rels.py` links the RELs
 offline the way the game links them at boot, into the one `nsmbw_linked.rel` the translator reads
-([`recomp.yml`](recomp.yml)).
+([`recomp.yml`](recomp.yml)). It also applies [`p1_character.py`](tools/p1_character.py) (mkwcat's "Player
+1 Can Change Character" code) to it and to `main_patched.dol`, the `main.dol` the translator reads.
 
 ## 3. Translate
 
@@ -99,6 +100,27 @@ projects/nsmbw/tools/build-linux.sh --game <your extracted game folder>
 The game is `../nsmbw-local-build/WiiCompiled`, with a `game` link to your extracted game beside it.
 SDL3, Dawn and the other third-party sources are fetched by CMake on the first configure.
 
+### Italian language-pack layouts
+
+The USA `SMNE01` executable does not include Italian. You can use the Italian files from your own
+NSMBW EU disc:
+
+1. Extract the EU disc with Dolphin's **Extract Entire Disc**. The language files are in
+   `files/EU/ItaEU/`.
+2. Locate the extracted USA game's `DATA` directory (the directory set as `paths.dvd_root` in
+   `Config.toml`).
+3. Copy the **contents** of the EU disc's `files/EU/ItaEU/` into
+   `<DATA>/files/EU/ItaEU/`, keeping the directory structure. For example, if the USA game is at
+   `~/Games/NSMBW/DATA`, the Italian message archive should be at
+   `~/Games/NSMBW/DATA/files/EU/ItaEU/Message/Message.arc`. Do not add another `ItaEU/` directory.
+4. Start the game, open **Settings > Language**, select **Italiano**, and restart the game.
+
+The runtime overlays the pack on the USA English files; only files present in the USA game are
+used. Because the EU layouts refer to differently named resources, the runtime adapts the internal
+resource names in `wiiStrap.arc`, `corseClear.arc` and `gameOver.arc` at startup. The originals in
+`DATA/files/EU/ItaEU/` are not modified; adapted copies are cached under `Cache/LanguageLayouts`
+beside `Config.toml`. Existing installations can still use `Languages/it/` beside `Config.toml`.
+
 ## 7. Newer Super Mario Bros. Wii
 
 [Newer Super Mario Bros. Wii](https://newerteam.com/wii/) runs on top of the USA game. Its disc
@@ -150,6 +172,10 @@ Things that are specific to Newer:
 - With `NSMBW_GAME_ID=SMNE03` the game calls itself Newer Super Mario Bros. Wii and accepts only Newer
   v1.30 for the USA (NTSC). Every Newer version keeps the disc ID, so the version is told by the size of
   `files/NewerRes/DLCodeUS_1.bin`, Newer's code (`src/product/base_product.cpp`).
+- Newer's program keeps its own settings, saves, logs and caches (`Documents\NewerWiiSaveData` on
+  Windows, a `NewerWiiSaveData` folder inside the base game's data folder elsewhere), and the extracted
+  game it finds by itself beside it is `game-newer`, not `game`. So both programs can share one folder
+  (releases name them `NSMBW` and `NewerSMBW`).
 
 ## Other tools
 

@@ -33,6 +33,10 @@ public:
     uint8_t ascent = 0;
     uint8_t cellWidth = 0;
     uint8_t cellHeight = 0;
+    // The rows of a capital letter's ink in its cell ('H', from the top; 0, 0 unknown): DrawParams::centerInk
+    // centres these, not the whole cell, whose descender room leaves letters looking high.
+    float inkTop = 0;
+    float inkBottom = 0;
     uint16_t defaultIndex = 0;
     std::vector<uint64_t> sheets;  // ImTextureID per sheet
     std::vector<Glyph> glyphs;     // by glyph index
@@ -103,6 +107,20 @@ bool ReadDiscFile(const std::string& dvdPath, std::vector<uint8_t>& out) {
     std::string relative = dvdPath;
     while (!relative.empty() && relative.front() == '/') {
         relative.erase(relative.begin());
+    }
+    // A language the disc doesn't have: the fonts with the letters riivolution.cpp made at boot.
+    static const bool madeFonts = !RuntimeConfigFile::DiscLanguage(RuntimeConfigFile::Language());
+    constexpr std::string_view kEnglishFonts = "US/EngUS/Font/";
+    if (madeFonts && relative.compare(0, kEnglishFonts.size(), kEnglishFonts) == 0) {
+        const std::filesystem::path made = RuntimeConfigFile::ResolveConfigPath().parent_path() / "Cache" /
+                                           "LanguageFonts" / std::filesystem::u8path(relative.substr(kEnglishFonts.size()));
+        std::ifstream madeIn(made, std::ios::binary);
+        if (madeIn) {
+            out.assign(std::istreambuf_iterator<char>(madeIn), std::istreambuf_iterator<char>());
+            if (!out.empty()) {
+                return true;
+            }
+        }
     }
     std::ifstream in(root / "files" / std::filesystem::u8path(relative), std::ios::binary);
     if (!in) {
@@ -419,6 +437,7 @@ std::shared_ptr<Font> LoadFontFile(const std::string& path) {
             font->height = f[20];
             font->width = f[21];
             font->ascent = f[22];
+            std::vector<Image> allSheets;  // kept until the capital's ink is measured (below)
             if (tglp + 0x18 <= data.size()) {
                 const uint8_t* t = &data[tglp];
                 font->cellWidth = t[0];
@@ -445,8 +464,9 @@ std::shared_ptr<Font> LoadFontFile(const std::string& path) {
                     }
                     font->sheets.push_back(Upload(sheet));
                     if (colour) {
-                        colourSheets.push_back(std::move(sheet));
+                        colourSheets.push_back(sheet);
                     }
+                    allSheets.push_back(std::move(sheet));
                 }
                 const uint32_t perSheet = static_cast<uint32_t>(perRow) * perColumn;
                 // Widths, then the glyph cells.
@@ -475,7 +495,8 @@ std::shared_ptr<Font> LoadFontFile(const std::string& path) {
                     const float y = static_cast<float>((cell / perRow) * (font->cellHeight + 1));
                     g.u0 = x / sheetWidth;
                     g.v0 = y / sheetHeight;
-                    g.u1 = (x + g.glyphWidth) / sheetWidth;
+                    // The whole cell: the letters' edge reaches past glyphWidth (the rest is clear).
+                    g.u1 = (x + font->cellWidth) / sheetWidth;
                     g.v1 = (y + font->cellHeight) / sheetHeight;
                     // An icon: a good part of what it draws is in colour (letters are one grey).
                     if (g.sheet < colourSheets.size()) {
@@ -521,6 +542,29 @@ std::shared_ptr<Font> LoadFontFile(const std::string& path) {
                 cmap = BE32(m + 8);
             }
             font->ok = !font->sheets.empty() && !font->glyphs.empty();
+            // The capital H's ink rows.
+            if (const auto h = font->map.find(u'H'); font->ok && h != font->map.end() && h->second < font->glyphs.size()) {
+                const Font::Glyph& g = font->glyphs[h->second];
+                if (g.sheet < allSheets.size()) {
+                    const Image& sheet = allSheets[g.sheet];
+                    const uint32_t x0 = static_cast<uint32_t>(g.u0 * sheet.width + 0.5f);
+                    const uint32_t y0 = static_cast<uint32_t>(g.v0 * sheet.height + 0.5f);
+                    int top = -1, bottom = -1;
+                    for (uint32_t row = 0; row < font->cellHeight && y0 + row < sheet.height; ++row) {
+                        for (uint32_t col = 0; col < font->cellWidth && x0 + col < sheet.width; ++col) {
+                            if (sheet.rgba[((static_cast<size_t>(y0) + row) * sheet.width + x0 + col) * 4 + 3] > 127) {
+                                top = top < 0 ? static_cast<int>(row) : top;
+                                bottom = static_cast<int>(row) + 1;
+                                break;
+                            }
+                        }
+                    }
+                    if (top >= 0) {
+                        font->inkTop = static_cast<float>(top);
+                        font->inkBottom = static_cast<float>(bottom);
+                    }
+                }
+            }
         }
     }
     return font;
@@ -653,7 +697,7 @@ ImVec2 ToScreen(const View& view, const Mtx& m, float x, float y) {
 void DrawTextLines(ImDrawList* list, const View& view, const Mtx& m, const Font& font, const std::u16string& text,
                    float rectX0, float rectY0, float rectW, float rectH, int textPosition, int alignment, float fontW,
                    float fontH, float charSpace, float lineSpace, const Rgba& top, const Rgba& bottom,
-                   bool plainText) {
+                   bool plainText, bool centerInk = false) {
     if (!font.ok || font.width == 0 || font.height == 0) {
         return;
     }
@@ -670,10 +714,28 @@ void DrawTextLines(ImDrawList* list, const View& view, const Mtx& m, const Font&
     const int posV = textPosition / 3;
     const float blockX = rectX0 + (posH == 0 ? 0.0f : posH == 1 ? (rectW - blockWidth) / 2 : rectW - blockWidth);
     float y = rectY0 - (posV == 0 ? 0.0f : posV == 1 ? (rectH - blockHeight) / 2 : rectH - blockHeight);
+    if (centerInk && posV == 1 && font.inkBottom > font.inkTop) {
+        // The capitals' ink, not the cell, in the middle of the rectangle (the lines' ink as one block).
+        y = rectY0 - rectH / 2 + (font.inkTop + font.inkBottom) / 2 * scaleY + lineHeight * (lines.size() - 1) / 2;
+    }
     const ImU32 topCol = ToImU32(top), bottomCol = ToImU32(bottom);
     for (const auto& line : lines) {
         const int align = alignment == 0 ? posH : alignment - 1;
         float x = blockX + (align == 0 ? 0.0f : align == 1 ? (blockWidth - line.width) / 2 : blockWidth - line.width);
+        if (centerInk && align == 1 && !line.text.empty()) {
+            // The ink, not the advances, in the middle: the first letter's left bearing and the last one's
+            // right bearing differ.
+            const Font* firstOwner = &font;
+            const Font* lastOwner = &font;
+            const Font::Glyph* first = font.Find(line.text.front(), &firstOwner, plainText);
+            const Font::Glyph* last = font.Find(line.text.back(), &lastOwner, plainText);
+            if (first != nullptr && last != nullptr) {
+                const float leftBearing = first->left * scaleX * OwnerScale(font, *firstOwner, false);
+                const float rightBearing =
+                    (last->charWidth - last->left - last->glyphWidth) * scaleX * OwnerScale(font, *lastOwner, false);
+                x -= (leftBearing - rightBearing) / 2;
+            }
+        }
         for (char16_t c : line.text) {
             const Font* owner = &font;
             const Font::Glyph* g = font.Find(c, &owner, plainText);
@@ -685,7 +747,7 @@ void DrawTextLines(ImDrawList* list, const View& view, const Mtx& m, const Font&
             // On this font's baseline.
             const float gy = y - (font.ascent * scaleY - owner->ascent * sy);
             const float gx = x + g->left * sx;
-            const float gw = g->glyphWidth * sx;
+            const float gw = owner->cellWidth * sx;
             const float gh = owner->cellHeight * sy;
             const ImVec2 p[4] = {ToScreen(view, m, gx, gy), ToScreen(view, m, gx + gw, gy),
                                  ToScreen(view, m, gx + gw, gy - gh), ToScreen(view, m, gx, gy - gh)};
@@ -1125,6 +1187,18 @@ bool Layout::StretchSlices(DrawParams& params, const std::string& left, const st
     return true;
 }
 
+bool Layout::PaneTransform(const std::string& paneName, float& tx, float& ty, float& sx, float& sy) const {
+    const auto it = m_byName.find(paneName);
+    if (it == m_byName.end()) {
+        return false;
+    }
+    tx = it->second->tx;
+    ty = it->second->ty;
+    sx = it->second->sx;
+    sy = it->second->sy;
+    return true;
+}
+
 std::vector<std::string> Layout::PaneNames() const {
     std::vector<std::string> names;
     for (const auto& pane : m_panes) {
@@ -1164,6 +1238,10 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
         sx = sy = s->second;
     }
     float tx = pane.tx, ty = pane.ty;
+    if (const auto t = params.paneTranslate.find(pane.name); t != params.paneTranslate.end()) {
+        tx = t->second.first;
+        ty = t->second.second;
+    }
     if (root) {
         tx += params.offsetX;
         ty += params.offsetY;
@@ -1193,6 +1271,10 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
     const Rgba tintColor = FromRgba8(tint);
     const auto matrixIt = params.colorMatrix.find(pane.name);
     const std::array<float, 9>* matrix = matrixIt != params.colorMatrix.end() ? &matrixIt->second : nullptr;
+    const uint32_t* paneVtx = pane.vtx;
+    if (const auto v = params.vertexColors.find(pane.name); v != params.vertexColors.end()) {
+        paneVtx = v->second.data();
+    }
 
     const auto quad = [&](const Material* mat, const uint32_t vtx[4], float ax0, float ay0, float ax1, float ay1,
                           const float uvIn[4][2], uint8_t flip) {
@@ -1309,13 +1391,13 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
     };
 
     if (pane.kind == Pane::kPicture && alpha > 0.001f) {
-        quad(material(pane.material), pane.vtx, x0, y0, x0 + paneW, y0 - paneH, pane.uv, 0);
+        quad(material(pane.material), paneVtx, x0, y0, x0 + paneW, y0 - paneH, pane.uv, 0);
     } else if (pane.kind == Pane::kWindow && alpha > 0.001f) {
         // Content, grown by its overflow, then nw4r's frame: four strips laid round the border like a
         // pinwheel (top from the left corner, right from the top, bottom from the right, left from the
         // bottom), each showing its frame texture anchored at its own corner at a texel per unit and
         // clamped past the texture's edge, which carries the border on along the side.
-        quad(material(pane.material), pane.vtx, x0 - pane.overflow[0], y0 + pane.overflow[2],
+        quad(material(pane.material), paneVtx, x0 - pane.overflow[0], y0 + pane.overflow[2],
              x0 + paneW + pane.overflow[1], y0 - paneH - pane.overflow[3], pane.uv, 0);
         if (!pane.frames.empty()) {
             const uint32_t white[4] = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
@@ -1337,7 +1419,7 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
             const float L = x0, R = x0 + paneW, T = y0, B = y0 - paneH;
             const float W = paneW, H = paneH;
             const float t = std::min(texH(0), H), r = std::min(texW(1), W), l = std::min(texW(2), W), b = std::min(texH(3), H);
-            const auto draw = [&](int i, float qx0, float qy0, float qx1, float qy1, float u0, float u1, float v0, float v1) {
+            const auto drawWhole = [&](int i, float qx0, float qy0, float qx1, float qy1, float u0, float u1, float v0, float v1) {
                 if ((flips[i] & 1) != 0) {
                     u0 = 1.0f - u0;
                     u1 = 1.0f - u1;
@@ -1348,6 +1430,31 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
                 }
                 const float uv[4][2] = {{u0, v0}, {u1, v0}, {u0, v1}, {u1, v1}};
                 quad(mats[i], white, qx0, qy0, qx1, qy1, uv, 0);
+            };
+            // DrawParams::frameClip: only what lies outside the inner rectangle, each piece keeping its part
+            // of the texture.
+            const auto clip = params.frameClip.find(pane.name);
+            const auto draw = [&](int i, float qx0, float qy0, float qx1, float qy1, float u0, float u1, float v0, float v1) {
+                if (clip == params.frameClip.end()) {
+                    drawWhole(i, qx0, qy0, qx1, qy1, u0, u1, v0, v1);
+                    return;
+                }
+                const float ix0 = L + clip->second.first, ix1 = R - clip->second.first;
+                const float iy0 = T - clip->second.second, iy1 = B + clip->second.second;
+                const auto piece = [&](float px0, float py0, float px1, float py1) {
+                    if (px1 - px0 <= 0.001f || py0 - py1 <= 0.001f) {
+                        return;
+                    }
+                    const float fx0 = (px0 - qx0) / (qx1 - qx0), fx1 = (px1 - qx0) / (qx1 - qx0);
+                    const float fy0 = (qy0 - py0) / (qy0 - qy1), fy1 = (qy0 - py1) / (qy0 - qy1);
+                    drawWhole(i, px0, py0, px1, py1, u0 + (u1 - u0) * fx0, u0 + (u1 - u0) * fx1, v0 + (v1 - v0) * fy0,
+                              v0 + (v1 - v0) * fy1);
+                };
+                piece(qx0, qy0, qx1, std::max(qy1, iy0));                         // above the inner rectangle
+                piece(qx0, std::min(qy0, iy1), qx1, qy1);                         // below it
+                const float my0 = std::min(qy0, iy0), my1 = std::max(qy1, iy1);  // beside it
+                piece(qx0, my0, std::min(qx1, ix0), my1);
+                piece(std::max(qx0, ix1), my0, qx1, my1);
             };
             // Top strip, anchored top-left; right strip, top-right; bottom strip, bottom-right;
             // left strip, bottom-left.
@@ -1371,9 +1478,13 @@ void Layout::DrawPane(ImDrawList* list, const View& view, const Pane& pane, cons
         }
         top.a *= alpha;
         bottom.a *= alpha;
+        float textScale = 1.0f;
+        if (const auto s = params.textScale.find(pane.name); s != params.textScale.end()) {
+            textScale = s->second;
+        }
         DrawTextLines(list, view, m, *m_fonts[pane.font], *text, x0, y0, paneW, paneH, pane.textPosition,
-                      pane.textAlignment, pane.fontW, pane.fontH, pane.charSpace, pane.lineSpace, top, bottom,
-                      false);
+                      pane.textAlignment, pane.fontW * textScale, pane.fontH * textScale, pane.charSpace,
+                      pane.lineSpace, top, bottom, params.plainText, params.centerInk);
     }
 
     const float mtx[6] = {m.a, m.b, m.c, m.d, m.tx, m.ty};
@@ -1392,6 +1503,8 @@ View GameView() {
     float aspect = 0.0f;  // 0 = fills the window
     if (!wide || settings.aspect == DisplaySettings::kAspect4x3) {
         aspect = 4.0f / 3.0f;
+    } else if (settings.aspect == DisplaySettings::kAspect16x10) {
+        aspect = 16.0f / 10.0f;
     } else if (settings.aspect == DisplaySettings::kAspect16x9 || w / std::max(h, 1.0f) <= 16.0f / 9.0f) {
         aspect = 16.0f / 9.0f;
     }
@@ -1435,6 +1548,330 @@ std::u16string Utf16(const std::string& utf8) {
         out.push_back(cp < 0x10000 ? static_cast<char16_t>(cp) : u'?');
     }
     return out;
+}
+
+// ---------------------------------------------------------------- animations
+namespace {
+struct AnimKey {
+    float frame = 0, value = 0, slope = 0;
+};
+struct AnimTrack {
+    uint8_t target = 0;
+    bool step = false;
+    std::vector<AnimKey> keys;
+};
+
+// nw4r's curve: Hermite between the keys either side of `frame` (each key's slope both ways; two keys
+// on one frame make a corner), held flat before the first and after the last.
+float Sample(const AnimTrack& track, float frame) {
+    const auto& keys = track.keys;
+    if (keys.empty()) {
+        return 0;
+    }
+    if (keys.size() == 1 || frame <= keys.front().frame) {
+        return keys.front().value;
+    }
+    if (frame >= keys.back().frame) {
+        return keys.back().value;
+    }
+    size_t i = 0;
+    while (i + 2 < keys.size() && keys[i + 1].frame <= frame) {
+        ++i;
+    }
+    const AnimKey& k0 = keys[i];
+    const AnimKey& k1 = keys[i + 1];
+    if (track.step || k1.frame <= k0.frame) {
+        return frame >= k1.frame ? k1.value : k0.value;
+    }
+    const float t1 = frame - k0.frame;
+    const float t2 = 1.0f / (k1.frame - k0.frame);
+    const float a = t1 * t1 * t2;        // t1^2 / d
+    const float b = a * t2;              // t1^2 / d^2
+    const float c = t1 * b;              // t1^3 / d^2
+    const float d = c * t2;              // t1^3 / d^3
+    return k0.value * (2 * d - 3 * b + 1) + k1.value * (-2 * d + 3 * b) + k0.slope * (c - 2 * a + t1) +
+           k1.slope * (c - a);
+}
+} // namespace
+
+struct Animation::PaneAnim {
+    std::string name;
+    std::vector<AnimTrack> srt;  // RLPA: 0-2 translate, 3-5 rotate, 6-7 scale, 8-9 size
+    std::vector<AnimTrack> vtx;  // RLVC: 0-15 the corners' RGBA, 16 the pane's alpha
+    std::vector<AnimTrack> vis;  // RLVI: 0 visible
+};
+
+Animation::Animation() = default;
+Animation::~Animation() = default;
+
+bool Animation::Load(const std::string& arcPath, const std::string& brlanName) {
+    std::vector<uint8_t> arc;
+    std::vector<uint8_t> lan;
+    if (!ReadDiscFile(arcPath, arc)) {
+        return false;
+    }
+    for (const auto& [path, where] : ListU8(arc)) {
+        if (path.find(brlanName) != std::string::npos && where.first + where.second <= arc.size()) {
+            lan.assign(arc.begin() + where.first, arc.begin() + where.first + where.second);
+            break;
+        }
+    }
+    if (lan.size() < 16 || BE32(lan.data()) != 0x524C414Eu) {  // RLAN
+        return false;
+    }
+    const uint8_t* d = lan.data();
+    const size_t size = lan.size();
+    size_t pos = BE16(d + 12);
+    const uint16_t sections = BE16(d + 14);
+    for (uint16_t s = 0; s < sections && pos + 8 <= size; ++s) {
+        const uint32_t kind = BE32(d + pos), secSize = BE32(d + pos + 4);
+        if (secSize < 8 || pos + secSize > size) {
+            break;
+        }
+        if (kind == 0x70616931u && pos + 20 <= size) {  // pai1
+            const uint8_t* b = d + pos + 8;
+            m_frames = BE16(b);
+            const uint16_t entries = BE16(b + 6);
+            const uint32_t table = BE32(b + 8);
+            for (uint16_t e = 0; e < entries && pos + table + e * 4 + 4 <= size; ++e) {
+                const size_t eo = pos + BE32(d + pos + table + e * 4);
+                if (eo + 28 > size) {
+                    break;
+                }
+                auto pane = std::make_unique<PaneAnim>();
+                pane->name.assign(reinterpret_cast<const char*>(d + eo), strnlen(reinterpret_cast<const char*>(d + eo), 20));
+                const uint8_t tags = d[eo + 20];
+                const bool material = d[eo + 21] != 0;
+                for (uint8_t t = 0; t < tags && eo + 24 + t * 4 + 4 <= size; ++t) {
+                    const size_t to = eo + BE32(d + eo + 24 + t * 4);
+                    if (to + 8 > size) {
+                        break;
+                    }
+                    const uint32_t tag = BE32(d + to);
+                    const uint8_t count = d[to + 4];
+                    std::vector<AnimTrack>* into = tag == 0x524C5041u   ? &pane->srt  // RLPA
+                                                   : tag == 0x524C5643u ? &pane->vtx  // RLVC
+                                                   : tag == 0x524C5649u ? &pane->vis  // RLVI
+                                                                        : nullptr;
+                    if (into == nullptr || material) {
+                        continue;
+                    }
+                    for (uint8_t k = 0; k < count && to + 8 + k * 4 + 4 <= size; ++k) {
+                        const size_t io = to + BE32(d + to + 8 + k * 4);
+                        if (io + 12 > size) {
+                            break;
+                        }
+                        AnimTrack track;
+                        track.target = d[io + 1];
+                        const uint8_t curve = d[io + 2];
+                        const uint16_t keyCount = BE16(d + io + 4);
+                        const size_t ko = io + BE32(d + io + 8);
+                        track.step = curve != 2;
+                        const size_t stride = curve == 2 ? 12 : 8;
+                        for (uint16_t n = 0; n < keyCount && ko + (n + 1) * stride <= size; ++n) {
+                            const uint8_t* key = d + ko + n * stride;
+                            if (curve == 2) {
+                                track.keys.push_back({BEF(key), BEF(key + 4), BEF(key + 8)});
+                            } else {
+                                track.keys.push_back({BEF(key), static_cast<float>(BE16(key + 4)), 0});
+                            }
+                        }
+                        into->push_back(std::move(track));
+                    }
+                }
+                m_panes.push_back(std::move(pane));
+            }
+        }
+        pos += secSize;
+    }
+    m_loaded = !m_panes.empty();
+    return m_loaded;
+}
+
+bool Animation::Animates(const std::string& paneName) const {
+    return std::any_of(m_panes.begin(), m_panes.end(), [&](const auto& pane) { return pane->name == paneName; });
+}
+
+void Animation::Apply(float frame, const Layout& layout, DrawParams& params,
+                      const std::vector<std::pair<std::string, std::string>>& only) const {
+    for (const auto& pane : m_panes) {
+        std::string target = pane->name;
+        if (!only.empty()) {
+            const auto it = std::find_if(only.begin(), only.end(), [&](const auto& m) { return m.first == pane->name; });
+            if (it == only.end()) {
+                continue;
+            }
+            target = it->second;
+        }
+        float tx = 0, ty = 0, sx = 1, sy = 1;
+        if (!layout.PaneTransform(target, tx, ty, sx, sy)) {
+            continue;
+        }
+        bool moved = false, scaled = false;
+        for (const AnimTrack& track : pane->srt) {
+            const float v = Sample(track, frame);
+            switch (track.target) {
+            case 0: tx = v; moved = true; break;
+            case 1: ty = v; moved = true; break;
+            case 6: sx = v; scaled = true; break;
+            case 7: sy = v; scaled = true; break;
+            default: break;
+            }
+        }
+        if (moved) {
+            params.paneTranslate[target] = {tx, ty};
+        }
+        if (scaled) {
+            params.paneScale[target] = (sx + sy) / 2;
+        }
+        bool colored = false;
+        std::array<uint32_t, 4> colors{0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
+        if (const auto v = params.vertexColors.find(target); v != params.vertexColors.end()) {
+            colors = v->second;
+        }
+        for (const AnimTrack& track : pane->vtx) {
+            const float v = Sample(track, frame);
+            if (track.target == 16) {
+                params.paneAlpha[target] = std::clamp(v, 0.0f, 255.0f) / 255.0f;
+            } else if (track.target < 16) {
+                const int corner = track.target / 4, channel = track.target % 4;
+                const uint32_t byte = static_cast<uint32_t>(std::lround(std::clamp(v, 0.0f, 255.0f)));
+                const int shift = 24 - 8 * channel;
+                colors[corner] = (colors[corner] & ~(0xFFu << shift)) | (byte << shift);
+                colored = true;
+            }
+        }
+        if (colored) {
+            params.vertexColors[target] = colors;
+        }
+        for (const AnimTrack& track : pane->vis) {
+            if (track.target == 0) {
+                params.visible[target] = Sample(track, frame) != 0.0f;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- CPU pixels
+bool ReadGameFile(const std::string& dvdPath, std::vector<uint8_t>& out) {
+    return ReadDiscFile(dvdPath, out);
+}
+
+bool ArchiveFile(const std::vector<uint8_t>& arc, const std::string& name, std::vector<uint8_t>& out) {
+    for (const auto& [path, where] : ListU8(arc)) {
+        if (path.size() >= name.size() && path.compare(path.size() - name.size(), name.size(), name) == 0 &&
+            where.first + where.second <= arc.size()) {
+            out.assign(arc.begin() + where.first, arc.begin() + where.first + where.second);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool DecodeTpl(const std::vector<uint8_t>& tpl, Pixels& out) {
+    Image image;
+    if (!ParseTpl(tpl.data(), tpl.size(), image)) {
+        return false;
+    }
+    out.width = image.width;
+    out.height = image.height;
+    out.rgba = std::move(image.rgba);
+    return true;
+}
+
+bool FontPixels::Cell(char16_t code, uint32_t& sheet, uint32_t& x, uint32_t& y, Width* width) const {
+    const auto it = map.find(static_cast<uint16_t>(code));
+    const uint32_t perSheet = perRow * perColumn;
+    if (it == map.end() || perSheet == 0) {
+        return false;
+    }
+    const uint32_t index = it->second;
+    sheet = index / perSheet;
+    const uint32_t cell = index % perSheet;
+    x = (cell % perRow) * (cellWidth + 1);
+    y = (cell / perRow) * (cellHeight + 1);
+    if (width != nullptr) {
+        *width = index < widths.size() ? widths[index] : Width{0, static_cast<int>(cellWidth), static_cast<int>(cellWidth)};
+    }
+    return sheet < sheets.size();
+}
+
+bool DecodeFont(const std::vector<uint8_t>& data, FontPixels& out) {
+    if (data.size() < 0x30 || BE32(data.data()) != 0x52464E54u) {  // RFNT
+        return false;
+    }
+    const uint16_t headerSize = BE16(&data[12]);
+    if (headerSize + 0x20 > data.size() || BE32(&data[headerSize]) != 0x46494E46u) {  // FINF
+        return false;
+    }
+    const uint8_t* f = &data[headerSize + 8];
+    const uint32_t tglp = BE32(f + 8);
+    uint32_t cwdh = BE32(f + 12);
+    uint32_t cmap = BE32(f + 16);
+    out.height = f[20];
+    out.width = f[21];
+    out.ascent = f[22];
+    if (tglp + 0x18 > data.size()) {
+        return false;
+    }
+    const uint8_t* t = &data[tglp];
+    out.cellWidth = t[0];
+    out.cellHeight = t[1];
+    out.sheetSize = BE32(t + 4);
+    const uint16_t sheetCount = BE16(t + 8);
+    out.sheetFormat = BE16(t + 10);
+    out.perRow = BE16(t + 12);
+    out.perColumn = BE16(t + 14);
+    out.sheetWidth = BE16(t + 16);
+    out.sheetHeight = BE16(t + 18);
+    out.sheetData = BE32(t + 20);
+    for (uint16_t i = 0; i < sheetCount; ++i) {
+        const size_t at = out.sheetData + static_cast<size_t>(i) * out.sheetSize;
+        Pixels sheet;
+        sheet.width = out.sheetWidth;
+        sheet.height = out.sheetHeight;
+        if (at + out.sheetSize > data.size() ||
+            !DecodeTexture(&data[at], out.sheetSize, out.sheetFormat, out.sheetWidth, out.sheetHeight, sheet.rgba)) {
+            break;
+        }
+        out.sheets.push_back(std::move(sheet));
+    }
+    while (cwdh != 0 && cwdh + 8 <= data.size()) {
+        const uint8_t* w = &data[cwdh];
+        const uint16_t first = BE16(w), last = BE16(w + 2);
+        for (uint32_t index = first; index <= last && cwdh + 8 + (index - first) * 3 + 3 <= data.size(); ++index) {
+            if (index >= out.widths.size()) {
+                out.widths.resize(index + 1);
+            }
+            const uint8_t* e = w + 8 + (index - first) * 3;
+            out.widths[index] = {static_cast<int8_t>(e[0]), e[1], static_cast<int8_t>(e[2])};
+        }
+        cwdh = BE32(w + 4);
+    }
+    while (cmap != 0 && cmap + 12 <= data.size()) {
+        const uint8_t* m = &data[cmap];
+        const uint16_t begin = BE16(m), end = BE16(m + 2), method = BE16(m + 4);
+        const uint8_t* body = m + 12;
+        if (method == 0) {
+            for (uint32_t code = begin; code <= end; ++code) {
+                out.map[static_cast<uint16_t>(code)] = static_cast<uint16_t>(code - begin + BE16(body));
+            }
+        } else if (method == 1) {
+            for (uint32_t code = begin; code <= end; ++code) {
+                const uint16_t index = BE16(body + (code - begin) * 2);
+                if (index != 0xFFFF) {
+                    out.map[static_cast<uint16_t>(code)] = index;
+                }
+            }
+        } else if (method == 2) {
+            const uint16_t count = BE16(body);
+            for (uint16_t i = 0; i < count; ++i) {
+                out.map[BE16(body + 2 + i * 4)] = BE16(body + 4 + i * 4);
+            }
+        }
+        cmap = BE32(m + 8);
+    }
+    return !out.sheets.empty();
 }
 
 } // namespace GameLayout

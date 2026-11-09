@@ -663,6 +663,17 @@ uint8_t* HostPointer(uint32_t guestAddress) {
     return nullptr;
 }
 
+bool BackRegisterPage(uint32_t address) {
+    const uint32_t page = address & ~0xFFFu;
+    if (RequiresCheckedAccess() || !g_initialized || !IsMmio(page) || IsGpuFifo(page)) return false;
+    std::lock_guard<std::mutex> lock(StateMutex());
+    // The MMIO window is committed PAGE_NOACCESS (Initialize); this page becomes ordinary memory.
+    if (!ProtectRange(g_base + page, kHostPageSize, kProtReadWrite)) return false;
+    std::memset(g_base + page, 0, kHostPageSize);
+    g_backedRegisterPage.store(page, std::memory_order_relaxed);
+    return true;
+}
+
 void ProtectDeferredRange(uint32_t address, size_t length) {
     if (RequiresCheckedAccess() || !g_initialized || length == 0) return;
     const uint64_t end = static_cast<uint64_t>(address) + length;

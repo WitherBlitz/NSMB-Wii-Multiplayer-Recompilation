@@ -67,9 +67,12 @@ typedef struct {
 
 void aurora_get_frame_interpolation_diagnostics(AuroraFrameInterpolationDiagnostics* diagnostics);
 
-// Generates transform-interpolated perspective frames between consecutive 60 Hz logical frames.
-// Supported targets are 0 (off), 120, 180 and 240. Guest simulation and VI timing are unchanged.
+// Generates transform-interpolated perspective frames between consecutive logical frames.
+// Supported targets are 0 (off), 60, 120, 180, 240 and 300. Guest simulation and VI timing are unchanged.
 void aurora_set_frame_interpolation_fps(uint32_t targetFps);
+// NSMBW: logical frames a second that carry a picture: 60, or 30 while Battery Saver draws every other
+// frame. A target at or below it inserts nothing.
+void aurora_set_frame_interpolation_source_fps(uint32_t sourceFps);
 // NSMBW: V-Sync on (Fifo) or off (Immediate, else Mailbox); off by default.
 void aurora_set_vsync(bool enabled);
 bool aurora_get_vsync();
@@ -80,6 +83,13 @@ uint32_t aurora_get_frame_interpolation_fps();
 void aurora_set_skip_unready_pipelines(bool enabled);
 bool aurora_get_skip_unready_pipelines();
 uint32_t aurora_get_queued_pipeline_count();
+// Cached pipelines held back at startup on drivers that stall the next present until every shader
+// handed to them is compiled: true until aurora_prewarm_release(UINT32_MAX). The embedder shows its
+// own loading screen meanwhile and releases them a batch at a time.
+bool aurora_prewarm_held();
+void aurora_prewarm_release(uint32_t count);
+// Cached pipelines built so far, and how many there are to build.
+void aurora_get_prewarm_progress(uint32_t* built, uint32_t* total);
 
 // Controls whether display copies bypass the Wii's vertical copy filter.
 void aurora_set_disable_copy_filter(bool disabled);

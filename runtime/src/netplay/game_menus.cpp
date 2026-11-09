@@ -90,6 +90,10 @@ bool HasProfile(uint16_t profile) {
     return Find(profile) != 0;
 }
 
+uint32_t ProfileObject(uint16_t profile) {
+    return Find(profile);
+}
+
 bool PlayerInSpinnableAir(int player, float* verticalSpeed, bool* onSpringboard) {
     // dBaseActor_c's last frame's movement (position minus the one before, set in postExecute).
     constexpr uint32_t kActorMoveY = 0xC8u;
@@ -158,6 +162,38 @@ bool PlayerInSpinnableAir(int player, float* verticalSpeed, bool* onSpringboard)
         }
     }
     return false;
+}
+
+std::vector<uint32_t> Objects() {
+    std::vector<uint32_t> objects;
+    uint32_t node = 0;
+    if (!Memory::TryRead32(kTreeRoot, node)) {
+        return objects;
+    }
+    for (int guard = 0; node != 0 && guard < 4096; ++guard) {
+        uint32_t owner = 0;
+        if (Memory::TryRead32(node + 0x10, owner) && owner != 0) {
+            objects.push_back(owner);
+        }
+        uint32_t child = 0;
+        Memory::TryRead32(node + 4, child);
+        if (child != 0) {
+            node = child;
+            continue;
+        }
+        while (node != 0) {
+            uint32_t next = 0;
+            Memory::TryRead32(node + 0xC, next);
+            if (next != 0) {
+                node = next;
+                break;
+            }
+            uint32_t parent = 0;
+            Memory::TryRead32(node, parent);
+            node = parent;
+        }
+    }
+    return objects;
 }
 
 std::vector<uint16_t> Profiles() {

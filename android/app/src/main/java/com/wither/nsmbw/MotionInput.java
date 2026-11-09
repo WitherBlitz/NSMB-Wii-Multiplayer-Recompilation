@@ -13,6 +13,10 @@ import android.view.Surface;
 /**
  * The phone as the remote's body. A phone held in landscape is held like a sideways Wii Remote, so
  * turning it like a steering wheel tilts the remote, and a sharp jolt in any direction is a shake.
+ *
+ * <p>Tilt follows Android's gravity sensor where the phone has one: the gyroscope fused with the
+ * accelerometer, so it turns with the phone at once and a shake doesn't swing it. Without one, the
+ * accelerometer is smoothed into gravity instead (slower, and shakes nudge it).
  */
 final class MotionInput implements SensorEventListener {
     interface Listener {
@@ -30,6 +34,7 @@ final class MotionInput implements SensorEventListener {
     private final Listener listener;
     private final SensorManager sensors;
     private final Sensor accelerometer;
+    private final Sensor gravitySensor;  // fused (gyroscope + accelerometer), or null
     private final float[] gravity = new float[3];
     private boolean haveGravity;
     private boolean tiltOn, shakeOn;
@@ -42,6 +47,7 @@ final class MotionInput implements SensorEventListener {
         this.listener = listener;
         sensors = (SensorManager) activity.getSystemService(Context.SENSOR_SERVICE);
         accelerometer = sensors != null ? sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) : null;
+        gravitySensor = sensors != null ? sensors.getDefaultSensor(Sensor.TYPE_GRAVITY) : null;
     }
 
     void start(boolean tilt, boolean shake) {
@@ -50,6 +56,9 @@ final class MotionInput implements SensorEventListener {
         haveGravity = false;
         if (accelerometer != null && (tilt || shake)) {
             sensors.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_GAME);
+        }
+        if (gravitySensor != null && (tilt || shake)) {
+            sensors.registerListener(this, gravitySensor, SensorManager.SENSOR_DELAY_GAME);
         }
     }
 
@@ -63,10 +72,16 @@ final class MotionInput implements SensorEventListener {
     @Override
     public void onSensorChanged(SensorEvent event) {
         final float[] v = event.values;
+        if (event.sensor.getType() == Sensor.TYPE_GRAVITY) {
+            System.arraycopy(v, 0, gravity, 0, 3);  // the fused sensor's gravity, as it is
+            haveGravity = true;
+            report(tiltFromGravity(), SystemClock.uptimeMillis() < shakeUntil);
+            return;
+        }
         if (!haveGravity) {
             System.arraycopy(v, 0, gravity, 0, 3);
             haveGravity = true;
-        } else {
+        } else if (gravitySensor == null) {
             for (int i = 0; i < 3; ++i) gravity[i] += (v[i] - gravity[i]) * LOW_PASS;
         }
 
@@ -78,7 +93,11 @@ final class MotionInput implements SensorEventListener {
             }
         }
         final boolean shake = now < shakeUntil;
+        report(gravitySensor != null ? lastTilt : tiltFromGravity(), shake);
+    }
 
+    /** The remote's tilt (-1..1) for the phone's turn against gravity, or 0 with tilt off. */
+    private float tiltFromGravity() {
         float tilt = 0f;
         if (tiltOn) {
             // Gravity in screen coordinates (x right, y up) for the way the phone is turned.
@@ -99,7 +118,7 @@ final class MotionInput implements SensorEventListener {
                 tilt = Math.min(1f, magnitude / (TILT_FULL_DEG - TILT_DEAD_ZONE_DEG)) * Math.signum(degrees);
             }
         }
-        report(tilt, shake);
+        return tilt;
     }
 
     private void report(float tilt, boolean shake) {

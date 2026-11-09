@@ -7,6 +7,8 @@
 
 #include "hle/storage/riivolution.h"
 
+#include "font_graves.h"
+
 #include "hle/riivolution_contract.h"
 #include "hle/runtime_parse_helpers.h"
 #include "memory.h"
@@ -20,6 +22,7 @@
 #include <cctype>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <mutex>
 #include <sstream>
 #include <system_error>
@@ -347,6 +350,61 @@ void RiivoInitialize() {
     g_riivoState.overlays = RiivoDiscoverRoots();
     for (auto& overlay : g_riivoState.overlays) {
         overlay.patches = RiivoLoadPatchSet(overlay.root, g_riivoState);
+    }
+
+    // A language the disc doesn't have (Italian) runs on the English files, with its language pack
+    // over them (runtime_config.h LanguagePackDir); last, so every mod outranks it. Under the pack,
+    // the French fonts (the English letters plus some with accents), with the grave-accented ones
+    // Italian needs and no disc font has made from them (FontGraves); a pack's own Font folder
+    // outranks those too.
+    const std::string language = RuntimeConfigFile::Language();
+    if (!RuntimeConfigFile::DiscLanguage(language)) {
+        const bool packed = RuntimeConfigFile::LanguagePackInstalled(language);
+        const fs::path packDir = RuntimeConfigFile::LanguagePackDir(language);
+        const fs::path frenchFonts = RuntimeConfigFile::ResolvedDvdRoot() / "files" / "US" / "FraUS" / "Font";
+        const fs::path madeFonts = RuntimeConfigFile::ResolveConfigPath().parent_path() / "Cache" / "LanguageFonts";
+        RuntimeRiivolution::Overlay overlay{packed ? packDir : madeFonts, RuntimeRiivolution::PatchSet{}};
+        RuntimeRiivolution::Mapping fonts;
+        fonts.kind = RuntimeRiivolution::Mapping::Kind::Folder;
+        fonts.discPath = "/US/EngUS/Font";
+        fonts.hostPath = frenchFonts;
+        overlay.patches->mappings.push_back(std::move(fonts));
+        std::error_code ec;
+        fs::create_directories(madeFonts, ec);
+        for (const char* name : {"mj2d00_MessageFont_32_I4.brfnt", "mj2d01_marioFont_64_IA4.brfnt"}) {
+            std::ifstream in(frenchFonts / name, std::ios::binary);
+            std::vector<uint8_t> font((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            const int added = FontGraves::Add(font);
+            if (added <= 0) {
+                continue;
+            }
+            std::ofstream out(madeFonts / name, std::ios::binary | std::ios::trunc);
+            out.write(reinterpret_cast<const char*>(font.data()), static_cast<std::streamsize>(font.size()));
+            if (!out) {
+                continue;
+            }
+            out.close();
+            RuntimeRiivolution::Mapping made;
+            made.kind = RuntimeRiivolution::Mapping::Kind::File;
+            made.discPath = std::string("/US/EngUS/Font/") + name;
+            made.hostPath = madeFonts / name;
+            overlay.patches->mappings.push_back(std::move(made));
+            RT_LOG(RT_TAG_RIIVOLUTION) << "language " << language << ": " << name << " with " << added
+                      << " grave-accented letters made" << std::endl;
+        }
+        if (packed) {
+            RuntimeRiivolution::Mapping english;
+            english.kind = RuntimeRiivolution::Mapping::Kind::Folder;
+            english.discPath = "/US/EngUS";
+            english.hostPath = packDir;
+            overlay.patches->mappings.push_back(std::move(english));
+            RT_LOG(RT_TAG_RIIVOLUTION) << "language " << language << ": language pack " << PathToUtf8(packDir)
+                      << std::endl;
+        } else {
+            RT_LOG(RT_TAG_RIIVOLUTION) << "language " << language << ": no language pack at " << PathToUtf8(packDir)
+                      << ", the game's text stays English" << std::endl;
+        }
+        g_riivoState.overlays.push_back(std::move(overlay));
     }
 }
 

@@ -1,16 +1,19 @@
 # Configure the NSMBW runtime for Android arm64-v8a: the same pinned Dependencies tree as the Windows
 # build (configure-native.ps1), the portable CMake/Ninja, and NDK 29 - the toolchain the pinned
 # Android Dawn archive was built with, so its static libc++ code links cleanly. Produces libmain.so.
+# -Newer: Newer Super Mario Bros. Wii's (generated/ translated from it, rebuild-all.ps1 -Newer) in
+# android-build-newer, accepting its disc (NSMBW_GAME_ID=SMNE03): the app's downloadable module.
 [CmdletBinding()]
 param(
     [int]$TranslatedJobs = 6,
     [string]$BuildDirectory,
-    [string]$LogPath
+    [string]$LogPath,
+    [switch]$Newer
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'paths.ps1')
-if (-not $BuildDirectory) { $BuildDirectory = Get-NsmbwBuildDirectory 'android-build' }
+if (-not $BuildDirectory) { $BuildDirectory = Get-NsmbwBuildDirectory $(if ($Newer) { 'android-build-newer' } else { 'android-build' }) }
 if (-not $LogPath) { $LogPath = Join-Path (Get-NsmbwLogDirectory $BuildDirectory) 'configure-android.log' }
 $workspace = $NsmbwRepo
 $toolchain = Get-NsmbwToolchain
@@ -33,14 +36,16 @@ $configure = @(
     "-DCMAKE_MAKE_PROGRAM=$(ConvertTo-CMakePath (Join-Path $toolchain 'Ninja\ninja.exe'))",
     "-DCMAKE_TOOLCHAIN_FILE=$(ConvertTo-CMakePath (Join-Path $ndk 'build\cmake\android.toolchain.cmake'))",
     '-DANDROID_ABI=arm64-v8a',
-    # memfd_create (guest RAM) is in bionic from API 30.
-    '-DANDROID_PLATFORM=android-30',
+    # API 26, as every released build: the app supports Android 9 (API 28), and a library built for 30
+    # needs symbols Android 9 and 10 lack (pthread_cond_clockwait), so it would not load there.
+    '-DANDROID_PLATFORM=android-26',
     # One native library holds everything (SDL, Dawn, the game), so libc++ is linked in statically.
     '-DANDROID_STL=c++_static',
     '-DCMAKE_BUILD_TYPE=Release',
     '-DAURORA_DAWN_PROVIDER=package', '-DAURORA_SDL3_PROVIDER=vendor',
     '-DCMAKE_POLICY_DEFAULT_CMP0168=NEW', '-DFETCHCONTENT_FULLY_DISCONNECTED=ON',
-    "-DMKW_TRANSLATED_COMPILE_JOBS=$TranslatedJobs"
+    "-DMKW_TRANSLATED_COMPILE_JOBS=$TranslatedJobs",
+    "-DNSMBW_GAME_ID=$(if ($Newer) { 'SMNE03' } else { 'SMNE01' })"
 )
 foreach ($directory in Get-ChildItem -LiteralPath $dependencies -Directory) {
     # Windows-only trees, and the Windows Dawn package (the Android one replaces it below).

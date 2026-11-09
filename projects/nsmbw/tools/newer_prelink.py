@@ -22,6 +22,7 @@ import struct
 import sys
 from pathlib import Path
 
+import p1_character
 from unpack_game import RELS, find_root, lz11
 
 REPO = Path(__file__).resolve().parents[3]
@@ -324,6 +325,15 @@ def main():
 
     blob = bytearray((res / f"DLCode{VARIANT}.bin").read_bytes())
     img = Image(dol, rel, rel_base, blob)
+    # P1 can pick any character: the REL has it from prelink_rels.py, Newer's own main.dol doesn't yet
+    # (the same writes again in the REL change nothing). Its stubs are the REL's already: placed there.
+    clean_stubs = next(((o, s) for o, s in (struct.unpack_from(">II", rel, 0x4C + i * 8)
+                                            for i in range(struct.unpack_from(">I", rel, 0x0C)[0]))
+                        if o & 1 and (o & ~1) + rel_base >= int(layout["image_end"], 16)), None)
+    if clean_stubs is None:
+        sys.exit("the clean nsmbw_linked.rel has no P1 character stubs: run prelink_rels.py again")
+    stub_base = (clean_stubs[0] & ~1) + rel_base
+    p1_character.apply(img.rd32, img.wr32, stub_base)
     records = apply_system(img, (res / f"System{VARIANT}.bin").read_bytes())
     counts, hooks = apply_relocs(img, (res / f"DLRelocs{VARIANT}.bin").read_bytes())
     text_end = blob_text_end(blob, hooks)
@@ -378,7 +388,13 @@ def main():
             sys.exit(f"0x{addr:08X} holds 0x{img.rd32(addr):08X}, not dSys_c::create's replay heap size")
         img.wr32(addr, new)
 
-    base_map = (REPO / "projects" / "nsmbw" / "MAP.txt").read_text()
+    # Newer's main.dol calls DVDDiskCheck (the disc's BCA, read over the drive interface) from main,
+    # where the retail game has a nop; there is no drive here, so the check fails the disc. The
+    # retail nop again.
+    if img.rd32(0x800C9FC8) == encode_b(0x800C9FC8, 0x80006780, link=True):
+        img.wr32(0x800C9FC8, 0x60000000)
+
+    base_map =(REPO / "projects" / "nsmbw" / "MAP.txt").read_text()
     lines = [base_map.rstrip("\n"), "# Newer Super Mario Bros. Wii loader (main.dol .data) and blob"]
     lines += [f"{a:08x} {a:08x}" for a in LOADER]
     lines += [f"{a:08x} newer_{a - DLCODE_ADDR:05x}" for a in sorted(starts)]

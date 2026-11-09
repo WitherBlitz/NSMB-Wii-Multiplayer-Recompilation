@@ -476,11 +476,23 @@ struct PatchTarget {
   u32 x = 0, y = 0;
 };
 std::vector<PatchTarget> find_patch_targets(const void* dest);
+// NSMBW: AuroraSetTextureOverride (GXAurora.h). Any thread; the decode thread applies it.
+void set_texture_override(u32 slot, const void* source, u32 sourceSize, u32 width, u32 height, u32 format,
+                          const void* rgba, u32 rgbaWidth, u32 rgbaHeight);
 // Drops retired GX copy targets so they cannot outlive the destination they were recycled for.
 void prune_copy_texture_pool(const void* dest) noexcept;
+// NSMBW: a GXCopyTex queued with GX_LOAD_AURORA_COPY_TEX, run by the decoder. Leaves everything
+// untouched and returns false if the staging buffers lack room for it: the caller splits the batch
+// and runs it again.
+bool run_queued_copy_tex(void* dest, bool clear);
+// NSMBW: GXSetTexCopySrc(Render)'s producer side: notes the source and, with async copies, queues it
+// (returns true). Returns false when the caller must set the decoded state itself.
+bool queue_tex_copy_src(u16 left, u16 top, u16 wd, u16 ht, bool renderSpace);
 void evict_texture_object(u32 texObjId) noexcept;
 void evict_tlut_object(u32 tlutObjId) noexcept;
 void invalidate_static_texture_cache() noexcept;
+// Drops every texture the static caches resolved (texture replacement switched on or off).
+void reset_static_texture_caches() noexcept;
 Vec2<uint32_t> logical_fb_size() noexcept;
 MappedRenderState map_logical_render_state() noexcept;
 gfx::Viewport map_logical_viewport(const gfx::Viewport& logicalViewport) noexcept;

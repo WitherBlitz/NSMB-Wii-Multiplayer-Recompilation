@@ -33,7 +33,7 @@ using WiiRemoteInput::Kind;
 using WiiRemoteInput::KpadSample;
 
 constexpr uint32_t kMagic = 0x4E50574Eu;  // "NWPN"
-constexpr uint8_t kVersion = 1;
+constexpr uint8_t kVersion = 2;  // 2: Exit Course in uncleared courses (hle/pause_exit.cpp)
 constexpr uint32_t kNone = 0xFFFFFFFFu;
 constexpr int kMaxSlots = 4;
 constexpr uint32_t kRing = 512;          // frames of input kept per slot

@@ -18,6 +18,7 @@
 #include <tracy/Tracy.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
 #include <chrono>
 #include <cstdint>
@@ -710,8 +711,128 @@ std::vector<PatchTarget> find_patch_targets(const void* dest) {
 
 namespace {
 
+// NSMBW: AuroraSetTextureOverride. A slot names a guest texture by its size, format and the digest of its
+// bytes, and holds the host pixels drawn instead. Set from the runtime's thread, read here on the
+// decode thread; s_overrideGeneration tells the decode thread to drop its memos of what it resolved.
+struct TextureOverride {
+  bool active = false;
+  u64 sourceDigest = 0;
+  u32 sourceSize = 0;
+  u32 width = 0, height = 0, format = 0;
+  std::vector<u8> rgba;
+  u32 rgbaWidth = 0, rgbaHeight = 0;
+  gfx::TextureHandle handle;  // made from rgba on first use
+};
+// The picture font's sheets (one per language folder whose sheet differs) and two standalone prompt icons.
+constexpr u32 kTextureOverrideSlots = 8;
+std::mutex s_overrideMutex;
+std::array<TextureOverride, kTextureOverrideSlots> s_overrides;
+std::atomic<u32> s_overrideCount{0};
+std::atomic<u32> s_overrideGeneration{0};
+// Which slot a guest texture's bytes were last found to be (-1 none), so its digest is taken again
+// only when the game writes them or the slots change.
+struct OverrideMatch {
+  const void* data = nullptr;
+  u64 writeGeneration = 0;
+  u32 overrideGeneration = 0;
+  int slot = -1;
+};
+std::array<OverrideMatch, 8> s_overrideMatches{};
+u32 s_overrideMatchNext = 0;
+
+gfx::TextureHandle find_texture_override(const GXTexObj_& obj) {
+  if (obj.data == nullptr || obj.has_mips()) {
+    return {};
+  }
+  std::lock_guard lock(s_overrideMutex);
+  const u32 format = static_cast<u32>(obj.format());
+  bool sized = false;
+  for (const auto& slot : s_overrides) {
+    sized = sized || (slot.active && slot.width == obj.width() && slot.height == obj.height() && slot.format == format);
+  }
+  if (!sized) {
+    return {};
+  }
+  const u32 size = GXGetTexBufferSize(static_cast<u16>(obj.width()), static_cast<u16>(obj.height()), obj.format(),
+                                      GX_FALSE, 0);
+  const u32 generation = s_overrideGeneration.load(std::memory_order_relaxed);
+  const u64 written = guest_write_generation(obj.data, size);
+  int found = -2;
+  for (const auto& match : s_overrideMatches) {
+    if (match.data == obj.data && match.overrideGeneration == generation &&
+        guest_write_generation_matches(match.writeGeneration, written)) {
+      found = match.slot;
+      break;
+    }
+  }
+  if (found == -2) {
+    found = -1;
+    const u64 digest = digest_source_bytes(obj.data, size);
+    for (u32 i = 0; i < kTextureOverrideSlots; ++i) {
+      const auto& slot = s_overrides[i];
+      if (slot.active && slot.sourceSize == size && slot.sourceDigest == digest && slot.width == obj.width() &&
+          slot.height == obj.height() && slot.format == format) {
+        found = static_cast<int>(i);
+      }
+    }
+    s_overrideMatches[s_overrideMatchNext++ % s_overrideMatches.size()] = {obj.data, written, generation, found};
+  }
+  if (found < 0) {
+    return {};
+  }
+  auto& slot = s_overrides[static_cast<size_t>(found)];
+  if (!slot.handle) {
+    slot.handle = gfx::new_static_texture_2d(slot.rgbaWidth, slot.rgbaHeight, 1, GX_TF_RGBA8_PC,
+                                             {slot.rgba.data(), slot.rgba.size()}, false, "NSMBW texture override");
+  }
+  return slot.handle;
+}
+
+} // namespace
+
+void set_texture_override(u32 slot, const void* source, u32 sourceSize, u32 width, u32 height, u32 format,
+                          const void* rgba, u32 rgbaWidth, u32 rgbaHeight) {
+  if (slot >= kTextureOverrideSlots) {
+    return;
+  }
+  {
+    std::lock_guard lock(s_overrideMutex);
+    auto& entry = s_overrides[slot];
+    const bool wasActive = entry.active;
+    entry = TextureOverride{};
+    if (rgba != nullptr && source != nullptr && sourceSize != 0 && rgbaWidth != 0 && rgbaHeight != 0) {
+      entry.active = true;
+      entry.sourceDigest = digest_source_bytes(source, sourceSize);
+      entry.sourceSize = sourceSize;
+      entry.width = width;
+      entry.height = height;
+      entry.format = format;
+      entry.rgbaWidth = rgbaWidth;
+      entry.rgbaHeight = rgbaHeight;
+      const auto* bytes = static_cast<const u8*>(rgba);
+      entry.rgba.assign(bytes, bytes + static_cast<size_t>(rgbaWidth) * rgbaHeight * 4);
+    }
+    if (entry.active != wasActive) {
+      if (entry.active) {
+        s_overrideCount.fetch_add(1, std::memory_order_relaxed);
+      } else {
+        s_overrideCount.fetch_sub(1, std::memory_order_relaxed);
+      }
+    }
+  }
+  s_overrideGeneration.fetch_add(1, std::memory_order_release);
+}
+
+namespace {
+
 gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
   ZoneScoped;
+  // NSMBW: a texture the runtime draws differently (AuroraSetTextureOverride), ahead of every cache.
+  if (s_overrideCount.load(std::memory_order_relaxed) != 0) {
+    if (auto handle = find_texture_override(obj)) {
+      return handle;
+    }
+  }
   const bool canCacheUpload = !obj.no_cache() && can_cache_static_texture_upload(obj);
 
   if (canCacheUpload && obj.texObjId != 0) {
@@ -1328,6 +1449,36 @@ void invalidate_static_texture_cache() noexcept {
   g_gxState.stateDirty = true;
 }
 
+// Texture replacement was switched on or off (texture_replacement::apply_pending, at a frame's start):
+// every tier holds textures resolved under the old setting, so all of them go, as when the revision wraps
+// in invalidate_static_texture_cache, and each texture is looked up again the next time it is drawn.
+void reset_static_texture_caches() noexcept {
+  ++s_staticTextureCacheValidationRevision;
+  if (s_staticTextureCacheValidationRevision == 0) {
+    s_staticTextureCacheValidationRevision = 1;
+  }
+  s_textureCacheStamps = 0;
+  s_textureObjectCaches.clear();
+  s_tlutObjectCaches.clear();
+  s_staticTextureSourceCache.clear();
+  clear_static_texture_content_cache();
+  s_staticPaletteTextureSourceCache.clear();
+  s_texObjSourceKeys.clear();
+  s_texObjPaletteSourceKeys.clear();
+  s_texObjSourceKeyMemo.reset();
+  s_texObjPaletteSourceKeyMemo.reset();
+  clear_static_source_front_cache();
+  for (auto& entry : s_textureResolveIdentityCache) {
+    entry.valid = false;
+    entry.binding.reset();
+  }
+  s_lastTextureResolveIdentityValid.fill(false);
+  s_lastNoCopyResolveRevision.fill(0);
+  s_lastStaticSourceResolveKeyValid.fill(false);
+  s_lastStaticSourceNoCopyRevision.fill(0);
+  g_gxState.stateDirty = true;
+}
+
 void clear_copy_texture_cache() noexcept {
   g_gxState.copyTextures.clear();
   g_gxState.copyTextureCache.clear();
@@ -1508,6 +1659,14 @@ GXState::CopyTextureRef* find_copy_texture_for_texobj(const GXTexObj_& obj) noex
 
 void resolve_sampled_textures(const ShaderInfo& info) noexcept {
   ZoneScoped;
+  // NSMBW: a texture override changed: forget every texture resolved so far, so the next draws look again.
+  static u32 s_seenOverrideGeneration = 0;
+  if (const u32 generation = s_overrideGeneration.load(std::memory_order_acquire);
+      generation != s_seenOverrideGeneration) {
+    s_seenOverrideGeneration = generation;
+    note_texture_cache_stamp();
+    invalidate_static_texture_cache();
+  }
 
   for (u32 i = 0; i < MaxTextures; ++i) {
     if (!info.sampledTextures.test(i)) {

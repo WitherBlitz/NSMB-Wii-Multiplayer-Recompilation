@@ -4,7 +4,9 @@
 #include "display_settings.h"
 #include "host_suspend.h"
 #include "graphics_info.h"
+#include "hle/gameplay_options.h"
 #include "runtime_config.h"
+#include "runtime_log.h"
 #include "settings_overlay.h"
 #include "updater.h"
 #include "virtual_remote.h"
@@ -65,6 +67,114 @@ bool StartAppUpdate() {
     return true;
 }
 
+// The Mods tab's HD Texture Pack (hd_texture_pack.cpp), from its worker thread: GameActivity.downloadForGame
+// GETs `url` into the file `path` on this thread and answers null, or why it failed.
+std::string DownloadFile(const std::string& url, const std::string& path) {
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (env == nullptr || activity == nullptr) {
+        return "no activity";
+    }
+    jclass type = env->GetObjectClass(activity);
+    jmethodID download = type != nullptr
+                             ? env->GetMethodID(type, "downloadForGame", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;")
+                             : nullptr;
+    std::string error;
+    if (download == nullptr) {
+        env->ExceptionClear();
+        error = "the app has no downloadForGame";
+    } else {
+        jstring jUrl = env->NewStringUTF(url.c_str());
+        jstring jPath = env->NewStringUTF(path.c_str());
+        auto result = static_cast<jstring>(env->CallObjectMethod(activity, download, jUrl, jPath));
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            error = "downloadForGame threw";
+        } else if (result != nullptr) {
+            const char* text = env->GetStringUTFChars(result, nullptr);
+            error = text != nullptr ? text : "failed";
+            if (text != nullptr) {
+                env->ReleaseStringUTFChars(result, text);
+            }
+            env->DeleteLocalRef(result);
+        }
+        env->DeleteLocalRef(jUrl);
+        env->DeleteLocalRef(jPath);
+    }
+    if (type != nullptr) {
+        env->DeleteLocalRef(type);
+    }
+    env->DeleteLocalRef(activity);
+    return error;
+}
+
+// The Wii Remote's rumble on the phone itself (player 1 with no controller): GameActivity.vibrateForGame
+// honours the app's Vibration setting.
+void Vibrate(bool on) {
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (env == nullptr || activity == nullptr) {
+        return;
+    }
+    jclass type = env->GetObjectClass(activity);
+    jmethodID vibrate = type != nullptr ? env->GetMethodID(type, "vibrateForGame", "(Z)V") : nullptr;
+    if (vibrate == nullptr) {
+        env->ExceptionClear();
+    } else {
+        env->CallVoidMethod(activity, vibrate, on ? JNI_TRUE : JNI_FALSE);
+    }
+    if (type != nullptr) {
+        env->DeleteLocalRef(type);
+    }
+    env->DeleteLocalRef(activity);
+}
+
+// The game's Controls tab's Edit Touch Layout: GameActivity's layout editor, on the UI thread.
+void EditTouchLayout() {
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (env == nullptr || activity == nullptr) {
+        return;
+    }
+    jclass type = env->GetObjectClass(activity);
+    jmethodID edit = type != nullptr ? env->GetMethodID(type, "editTouchLayoutFromGame", "()V") : nullptr;
+    if (edit == nullptr) {
+        env->ExceptionClear();
+    } else {
+        env->CallVoidMethod(activity, edit);
+    }
+    if (type != nullptr) {
+        env->DeleteLocalRef(type);
+    }
+    env->DeleteLocalRef(activity);
+}
+
+// Join's Direct Connection: GameActivity.askDirectAddress asks for the host's address with a dialog,
+// which answers through nativeDirectAddress.
+void AskDirectAddress(const std::string& title, const std::string& hint) {
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (env == nullptr || activity == nullptr) {
+        return;
+    }
+    jclass type = env->GetObjectClass(activity);
+    jmethodID ask = type != nullptr ? env->GetMethodID(type, "askDirectAddress", "(Ljava/lang/String;Ljava/lang/String;)V")
+                                    : nullptr;
+    if (ask == nullptr) {
+        env->ExceptionClear();
+    } else {
+        jstring jTitle = env->NewStringUTF(title.c_str());
+        jstring jHint = env->NewStringUTF(hint.c_str());
+        env->CallVoidMethod(activity, ask, jTitle, jHint);
+        env->DeleteLocalRef(jTitle);
+        env->DeleteLocalRef(jHint);
+    }
+    if (type != nullptr) {
+        env->DeleteLocalRef(type);
+    }
+    env->DeleteLocalRef(activity);
+}
+
 } // namespace AndroidBridge
 
 extern "C" {
@@ -77,6 +187,36 @@ JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeSetTouchState(
     VirtualRemote::SetTouchState(static_cast<uint32_t>(buttons), shake == JNI_TRUE, tilt);
 }
 
+// GameActivity's Cheat button: whether the save being played is marked "Cheated" already (no need to
+// ask again), and P1 getting the Power-Up picked in the settings (GameplayOptions).
+JNIEXPORT jboolean JNICALL Java_com_wither_nsmbw_GameActivity_nativeFileCheated(JNIEnv*, jclass)
+{
+    return RuntimeConfigFile::FileCheated(GameplayOptions::ActiveFile()) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeGivePowerUp(JNIEnv*, jclass, jint powerUp)
+{
+    GameplayOptions::GivePowerUp(powerUp);
+}
+
+// The game's Gameplay tab's Cheat Button, for the on-screen remote.
+JNIEXPORT jboolean JNICALL Java_com_wither_nsmbw_GameActivity_nativeCheatButton(JNIEnv*, jclass)
+{
+    return RuntimeConfigFile::CheatButton() ? JNI_TRUE : JNI_FALSE;
+}
+
+// The touch editor's Add and Delete for it.
+JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeSetCheatButton(JNIEnv*, jclass, jboolean on)
+{
+    RuntimeConfigFile::SetCheatButton(on == JNI_TRUE);
+}
+
+// Whether player 1's controller has motion sensors of its own: the phone's then stay out of it.
+JNIEXPORT jboolean JNICALL Java_com_wither_nsmbw_GameActivity_nativeControllerMotion(JNIEnv*, jclass)
+{
+    return VirtualRemote::ControllerMotion() ? JNI_TRUE : JNI_FALSE;
+}
+
 // GameActivity.nativeApplyDisplaySettings: the Display menu. The aspect (0 original 4:3, 1 16:9,
 // 2 fill the screen) and the render scale (480 lines per 1x) apply at the next frame; 4:3 versus a
 // widescreen mode only at the next start, since the game reads it at boot. performanceMonitor: the
@@ -86,7 +226,7 @@ JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeApplyDisplaySett
 {
     // Through the settings overlay, so the game's own settings window shows the same choice. A scale
     // of 0 is "match the screen".
-    settings_overlay::SetAspect(aspect < 0 || aspect > 2 ? DisplaySettings::kAspectFill : static_cast<int32_t>(aspect));
+    settings_overlay::SetAspect(aspect < 0 || aspect > 3 ? DisplaySettings::kAspectFill : static_cast<int32_t>(aspect));
     settings_overlay::SetRenderScale(renderScale >= 0.0f ? renderScale : 1.0f);
     if (settings_overlay::FrameGraph() != (performanceMonitor == JNI_TRUE)) {
         settings_overlay::SetFrameGraph(performanceMonitor == JNI_TRUE);
@@ -165,8 +305,9 @@ JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeTap(JNIEnv*, jcl
 
 // GameActivity.nativeTakeSettings: {render scale, show FPS 1/0, aspect, spinning coins 1/0, frame graph 1/0,
 // V-Sync 1/0, frametime graph size %, touch controls 1/0 or -1 unchanged, renderer 0 automatic / 1 Vulkan /
-// 2 OpenGL ES or -1 unchanged} when the game's settings window changed them since the last call, else null;
-// the app saves them for the next start.
+// 2 OpenGL ES or -1 unchanged, Depth Blur 1/0, Battery Saver 1/0, HD Texture Pack on 1/0, frame interpolation FPS
+// (0 off)} when the game's settings window changed them since the last call, else null; the app saves them for the
+// next start.
 JNIEXPORT jfloatArray JNICALL Java_com_wither_nsmbw_GameActivity_nativeTakeSettings(JNIEnv* env, jclass)
 {
     float scale = 1.0f;
@@ -178,15 +319,21 @@ JNIEXPORT jfloatArray JNICALL Java_com_wither_nsmbw_GameActivity_nativeTakeSetti
     int frameGraphSize = 50;
     int touchControls = -1;
     int renderer = -1;
+    bool depthBlur = true;
+    bool batterySaver = false;
+    bool textureReplacements = false;
     if (!NetplayUi::TakeSettingsChange(scale, showFps, aspect, spinningCoins, frameGraph, vsync, frameGraphSize,
-                                       touchControls, renderer)) {
+                                       touchControls, renderer, depthBlur, batterySaver, textureReplacements)) {
         return nullptr;
     }
-    constexpr jsize kCount = 9;
+    constexpr jsize kCount = 13;
     jfloatArray result = env->NewFloatArray(kCount);
     const jfloat values[kCount] = {scale, showFps ? 1.0f : 0.0f, static_cast<jfloat>(aspect), spinningCoins ? 1.0f : 0.0f,
                                    frameGraph ? 1.0f : 0.0f, vsync ? 1.0f : 0.0f, static_cast<jfloat>(frameGraphSize),
-                                   static_cast<jfloat>(touchControls), static_cast<jfloat>(renderer)};
+                                   static_cast<jfloat>(touchControls), static_cast<jfloat>(renderer),
+                                   depthBlur ? 1.0f : 0.0f, batterySaver ? 1.0f : 0.0f,
+                                   textureReplacements ? 1.0f : 0.0f,
+                                   static_cast<jfloat>(settings_overlay::FrameInterpolationFps())};
     env->SetFloatArrayRegion(result, 0, kCount, values);
     return result;
 }
@@ -203,6 +350,32 @@ JNIEXPORT jboolean JNICALL Java_com_wither_nsmbw_GameActivity_nativeTapScreen(JN
     return NetplayUi::TapScreenUp() ? JNI_TRUE : JNI_FALSE;
 }
 
+// GameActivity.nativeLog: a line from the app (the input devices Android reports) into the run log.
+JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeLog(JNIEnv* env, jclass, jstring line)
+{
+    if (line == nullptr) {
+        return;
+    }
+    const char* text = env->GetStringUTFChars(line, nullptr);
+    if (text != nullptr) {
+        RT_LOGF(RT_TAG_RUNTIME, "%s\n", text);
+        env->ReleaseStringUTFChars(line, text);
+    }
+}
+
+// GameActivity.nativeDirectAddress: what was typed into the Direct Connection dialog.
+JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeDirectAddress(JNIEnv* env, jclass, jstring address)
+{
+    std::string text;
+    if (address != nullptr) {
+        if (const char* utf8 = env->GetStringUTFChars(address, nullptr)) {
+            text = utf8;
+            env->ReleaseStringUTFChars(address, utf8);
+        }
+    }
+    NetplayUi::DirectAddressEntered(text);
+}
+
 // GameActivity.nativePlaying: in a course or on the world map with no menu up (NetplayUi::Playing).
 JNIEXPORT jboolean JNICALL Java_com_wither_nsmbw_GameActivity_nativePlaying(JNIEnv*, jclass)
 {
@@ -210,7 +383,7 @@ JNIEXPORT jboolean JNICALL Java_com_wither_nsmbw_GameActivity_nativePlaying(JNIE
 }
 
 // GameActivity.nativeSetBackground: the app left the screen (true) or came back (false). Leaving, the
-// game writes a backup Quick Save (backup: the app left; not when the screen just turned off) and
+// game saves as a backup (backup: the app left; not when the screen just turned off) and
 // pauses (host_suspend.h); nativeGamePaused says when it has.
 JNIEXPORT void JNICALL Java_com_wither_nsmbw_GameActivity_nativeSetBackground(JNIEnv*, jclass, jboolean background,
                                                                              jboolean backup)

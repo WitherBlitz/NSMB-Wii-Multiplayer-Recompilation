@@ -663,8 +663,10 @@ inline PpcPairVec PpcFmaddPairInline(PpcPairVec multiplicand, PpcPairVec multipl
     _mm_store_ps(m, multiplicand);
     _mm_store_ps(n, multiplier);
     _mm_store_ps(a, addend);
-    for (int lane = 0; lane < 4; ++lane) {
-        m[lane] = PpcSoftFma::Fmaf(m[lane], n[lane], a[lane], MkwHostNiActiveInline());
+    // Only the two paired-single lanes: every caller keeps just the low 64 bits.
+    const bool flush = MkwHostNiActiveInline();
+    for (int lane = 0; lane < 2; ++lane) {
+        m[lane] = PpcSoftFma::Fmaf(m[lane], n[lane], a[lane], flush);
     }
     return _mm_load_ps(m);
 #elif defined(__x86_64__)
@@ -684,7 +686,8 @@ inline PpcPairVec PpcFmsubPairInline(PpcPairVec multiplicand, PpcPairVec multipl
     _mm_store_ps(m, multiplicand);
     _mm_store_ps(n, multiplier);
     _mm_store_ps(c, subtractor);
-    for (int lane = 0; lane < 4; ++lane) {
+    // Only the two paired-single lanes: every caller keeps just the low 64 bits.
+    for (int lane = 0; lane < 2; ++lane) {
         // vfmsub returns a sole NaN subtractor as it is: negating it first would flip its sign.
         m[lane] = std::isnan(c[lane]) && !std::isnan(m[lane]) && !std::isnan(n[lane])
                       ? c[lane] + c[lane]

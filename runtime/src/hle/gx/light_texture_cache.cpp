@@ -28,6 +28,8 @@
 #include <dolphin/gx/GXAurora.h>
 #include <xxhash.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -69,6 +71,76 @@ bool Read16(uint32_t address, uint16_t& value) {
     if (!Memory::TryRead32(address & ~3u, word)) return false;
     value = static_cast<uint16_t>((address & 2) ? word : word >> 16);
     return true;
+}
+
+// Intel's D3D11 driver (HD 4600, 20.19.15.5126): skipping here breaks some scenes outright. World 2's
+// map comes out solid yellow at 18 fps, and redrawing every frame gives the right picture at 60, while
+// World 1's map and the courses run better skipping than redrawing. The cause is not known, so no list
+// of scenes: on that driver, a stretch of slow frames while skipping turns skipping off until the scene
+// changes. The slow frames there alternate with fast ones, so it's the stretch's average that counts,
+// with each frame capped so that a load's lone long frame can't make a slow stretch by itself.
+bool ReuseIsBackfiring() {
+    static const bool watched = AuroraLightTextureReuseWatched() != 0;
+    if (!watched) {
+        return false;
+    }
+    using Clock = std::chrono::steady_clock;
+    constexpr auto kSameFrame = std::chrono::milliseconds(2);  // a scene layer's own manager, same frame
+    constexpr auto kFrameCap = std::chrono::milliseconds(50);
+    constexpr auto kSlowStretch = std::chrono::milliseconds(16 * 26);
+    constexpr uint32_t kStretchFrames = 16;
+    constexpr uint32_t kSceneAddress = 0x80428732u;  // dScene_c::m_nowScene
+    static Clock::time_point last{};
+    static uint16_t lastScene = 0;
+    static uint32_t frames = 0;
+    static Clock::duration stretch{};
+    static bool backfiring = false;
+    // World 8's map ran at 3-6 fps with frames of ~600 ms while skipping (since cured in aurora:
+    // webgpu::g_mergeSamePrimitiveOnly), mixed with fast stretches (dialogs, the view moving), which
+    // kept the average under the bar for ~20 s. A few such frames close together are no load: count
+    // them on their own.
+    constexpr auto kVerySlowFrame = std::chrono::milliseconds(200);
+    constexpr uint32_t kVerySlowFrames = 3, kVerySlowForget = 60;
+    static uint32_t verySlow = 0, sinceVerySlow = 0;
+    const auto now = Clock::now();
+    const auto elapsed = now - last;
+    uint16_t scene = 0;
+    Read16(kSceneAddress, scene);
+    if (scene != lastScene) {
+        lastScene = scene;
+        frames = 0;
+        stretch = {};
+        backfiring = false;
+        verySlow = 0;
+        sinceVerySlow = 0;
+        last = now;
+        return false;
+    }
+    if (elapsed < kSameFrame) {
+        return backfiring;
+    }
+    last = now;
+    stretch += std::min<Clock::duration>(elapsed, kFrameCap);
+    if (elapsed >= kVerySlowFrame) {
+        sinceVerySlow = 0;
+        if (++verySlow >= kVerySlowFrames && !backfiring) {
+            backfiring = true;
+            RT_LOGF(RT_TAG_RUNTIME, "light textures: redrawing them for this scene (scene 0x%03X had %u frames over %d ms reusing them)\n",
+                    scene, verySlow, static_cast<int>(kVerySlowFrame.count()));
+        }
+    } else if (++sinceVerySlow >= kVerySlowForget) {
+        verySlow = 0;
+    }
+    if (++frames == kStretchFrames) {
+        if (!backfiring && stretch > kSlowStretch) {
+            backfiring = true;
+            RT_LOGF(RT_TAG_RUNTIME, "light textures: redrawing them for this scene (scene 0x%03X ran slowly reusing them)\n",
+                    scene);
+        }
+        frames = 0;
+        stretch = {};
+    }
+    return backfiring;
 }
 
 // Folds the bytes of the heap block at `object` (or kUnknownBlock bytes of it) into `hash`.
@@ -161,6 +233,7 @@ struct State {
     bool valid = false;
     uint64_t key = 0;
     uint32_t calls = 0, repeats = 0, skips = 0, outputMismatches = 0, writeMismatches = 0;
+    uint32_t stable = 0;  // repeats in a row since the key last changed
 };
 
 // Per manager: m3d keeps one per scene layer.
@@ -228,9 +301,16 @@ extern "C" void LightTextureDrawAndCapture_802cd4b0(CpuContext* ctx) {
     const bool keyed = ComputeKey(call, key);
     const bool repeat = keyed && s.valid && key == s.key;
     s.repeats += repeat ? 1 : 0;
+    s.stable = repeat ? s.stable + 1 : 0;
+    // Intel's D3D11 driver again: the first real draw after skipped ones can come out black while draws
+    // in a row are right (the opening's castle and hall went black, and redrawing every 8th call blacked
+    // out nearly everything). So there, skip only once the lights have held still for a second: lights
+    // that keep changing stay drawn every frame, and steady scenes still get the saving.
+    static const uint32_t kSettleCalls = AuroraLightTextureReuseWatched() != 0 ? 60 : 0;
+    const bool backfiring = ReuseIsBackfiring();
     if (mode == Mode::Verify) {
         RunVerified(ctx, call, s, keyed, key, repeat);
-    } else if (repeat && MarkDrawn(call.manager)) {
+    } else if (repeat && !backfiring && s.stable >= kSettleCalls && MarkDrawn(call.manager)) {
         ++s.skips;
     } else {
         func_802CD4B0(ctx);
